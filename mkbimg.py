@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
-"""B.img for AMUNOS v6.4 — C test files + ELF executable (multi-cluster)"""
+r"""B.img for AMUNOS v6.5 — data disk: user ELFs (run-by-name) + USR\SRC\ sources
+
+Tree:
+  B:\
+  ├─ HELLO.ELF, INP.ELF, EDIT.ELF   (根: 按名运行 — 输入 HELLO 即运行)
+  ├─ USR\SRC\HW.C, RETVAL.C, COUNT5.C, LOOP99.C, CALC.C, IFDEMO.C, WHILE.C
+  └─ CMDS.TXT                       (EDIT → \\EDIT.ELF)
+"""
 import struct, sys, os
 
 path = sys.argv[1] if len(sys.argv) > 1 else 'B.img'
 d = bytearray(2880 * 512)
 
-# ── BPB ──
+# ── BPB (保留 1 扇区: 无内核) ──
 d[0:3] = b'\xeb\x3c\x90'; d[3:11] = b'AMUNOS  '
 struct.pack_into('<H', d, 11, 512); d[13] = 1; struct.pack_into('<H', d, 14, 1)
 d[16] = 2; struct.pack_into('<H', d, 17, 224); struct.pack_into('<H', d, 19, 2880)
@@ -13,17 +20,16 @@ d[21] = 0xF0; struct.pack_into('<H', d, 22, 9)
 struct.pack_into('<H', d, 24, 18); struct.pack_into('<H', d, 26, 2)
 d[510] = 0x55; d[511] = 0xAA
 # 保留簇 0/1 (media descriptor 0xF0 + reserved)
-d[512:518] = b'\xf0\xff\xff\x0f\xf0\xff'
-d[5120:5126] = b'\xf0\xff\xff\x0f\xf0\xff'
+d[512:515] = b'\xf0\xff\xff'
 
 ROOT = 19 * 512          # 根目录 LBA 19
-ENT = 32                 # 目录条目大小
 DATA = 33 * 512          # 数据区 LBA 33
+
 clu = 2                  # 下一个可分配簇
-nfiles = 0               # 已添加的文件数
+all_dirs = []            # 非根目录 (供最终落盘)
 
 def set_fat(c, val):
-    """设置 FAT12 条目 c -> val (12 位), 与 fs.c 的 fat12_set_cluster 一致"""
+    """FAT12 条目 c -> val (12 位), 与 fs.c 的 fat12_set_cluster 一致"""
     boff = 512 + (c + c // 2)
     cur = struct.unpack('<H', d[boff:boff + 2])[0]
     if c & 1:
@@ -31,49 +37,64 @@ def set_fat(c, val):
     else:
         d[boff:boff + 2] = struct.pack('<H', (cur & 0xF000) | (val & 0x0FFF))
 
-def add(name8, ext3, attr, content):
-    """添加文件, 支持多簇 (跨簇链)"""
-    global clu, nfiles
+def alloc_clusters(n):
+    """分配 n 个连续簇并链到 EOF, 返回首簇"""
+    global clu
+    c = clu; clu += n
+    if c + n - 1 > 0xFE0:
+        raise SystemExit('disk full')
+    for i in range(n):
+        nxt = (c + i + 1) if i < n - 1 else 0xFFF
+        set_fat(c + i, nxt)
+    return c
+
+def mk_entry(name8, ext3, attr, start, size):
+    e = bytearray(32)
+    e[0:8] = name8.ljust(8).encode()
+    e[8:11] = ext3.encode()
+    e[11] = attr
+    struct.pack_into('<H', e, 26, start)
+    struct.pack_into('<I', e, 28, size)
+    return e
+
+class Dir:
+    def __init__(self, name8, cluster):
+        self.name = name8
+        self.cluster = cluster          # 0 = root
+        self.entries = []
+
+def mkdir(name8, parent, cap):
+    global all_dirs
+    ncl = max(1, (cap * 32 + 511) // 512)
+    c = alloc_clusters(ncl)
+    sub = Dir(name8, c)
+    sub.entries.append(mk_entry('.', '   ', 0x10, c, 0))
+    sub.entries.append(mk_entry('..', '   ', 0x10, parent.cluster, 0))
+    parent.entries.append(mk_entry(name8, '   ', 0x10, c, 0))
+    all_dirs.append(sub)
+    return sub
+
+def add_to(parent, name8, ext3, content, attr=0x20):
     C = content if isinstance(content, (bytes, bytearray)) else content.encode()
     nc = (len(C) + 511) // 512
     if nc == 0:
         nc = 1
-    if clu + nc - 1 > 0xFE0:
-        raise SystemExit('disk full')
-    # 目录条目 (每个文件占一个目录项, 用文件计数 nfiles 而非簇计数 clu --
-    # 否则多簇文件之后的文件会被放到错误的条目位置, 留出空隙导致目录提前结束)
-    off = ROOT + nfiles * ENT
-    d[off:off + 8] = name8.ljust(8).encode()
-    d[off + 8:off + 11] = ext3.encode()
-    d[off + 11] = attr
-    struct.pack_into('<H', d, off + 26, clu)      # start_cluster
-    struct.pack_into('<I', d, off + 28, len(C))   # size
-    # 数据 (跨簇, 末簇补零)
+    c = alloc_clusters(nc)
     for i in range(nc):
-        doff = DATA + (clu + i - 2) * 512
+        doff = DATA + (c + i - 2) * 512
         d[doff:doff + 512] = C[i * 512:(i + 1) * 512].ljust(512, b'\x00')
-    # FAT 链: 簇[i] -> 簇[i+1], 末簇 -> 0xFFF (EOF)
-    for i in range(nc):
-        nxt = (clu + i + 1) if i < nc - 1 else 0xFFF
-        set_fat(clu + i, nxt)
-    clu += nc
-    nfiles += 1
+    parent.entries.append(mk_entry(name8, ext3, attr, c, len(C)))
     return nc
 
 def add_file(name8, ext3, path, attr=0x20):
     with open(path, 'rb') as f:
-        return add(name8, ext3, attr, f.read())
+        return add_to(root, name8, ext3, f.read(), attr)
 
-# ── C 测试文件 (CC 编译器用) ──
-add('HW', 'C  ', 0x20, 'int main(){printf(42);printf(123);return 0;}\n')
-add('RETVAL', 'C  ', 0x20, 'int main(){return 1;}\n')
-add('COUNT5', 'C  ', 0x20, 'int main(){printf(1);printf(2);printf(3);printf(4);printf(5);return 0;}\n')
-add('LOOP99', 'C  ', 0x20, 'int main(){while(1){printf(99);}return 0;}\n')
-add('CALC', 'C  ', 0x20, 'int main(){\n  a = input();\n  b = input();\n  printf(a + b);\n  printf(a * b);\n  return a - b;\n}\n')
-add('IFDEMO', 'C  ', 0x20, 'int main(){\n  a = input();\n  if (a > 10) { printf(1); }\n  if (a <= 10) { printf(0); }\n  return a;\n}\n')
-add('WHILE', 'C  ', 0x20, 'int main(){\n  a = 0;\n  while (a < 3) { printf(a); a = a + 1; }\n  return a;\n}\n')
+root = Dir('', 0)
+USR_SRC = mkdir('USR', root, 16)
+USR_SRC = mkdir('SRC', USR_SRC, 16)
 
-# ── ELF 可执行文件 (多簇) ──
+# ── 用户 ELF (根: 按名运行) ──
 if os.path.exists('hello.elf'):
     n = add_file('HELLO', 'ELF', 'hello.elf')
     print(f'hello.elf: {n} cluster(s)')
@@ -86,9 +107,44 @@ if os.path.exists('inp.elf'):
 else:
     print('WARN: inp.elf not found (run: make inp.elf)')
 
-# 复制 FAT1 -> FAT2
+if os.path.exists('edit.elf'):
+    n = add_file('EDIT', 'ELF', 'edit.elf')
+    print(f'edit.elf: {n} cluster(s)')
+else:
+    print('WARN: edit.elf not found (run: make edit.elf)')
+
+# ── C 测试源码 (USR\SRC\) ──
+C_FILES = {
+    'HW':      'int main(){printf(42);printf(123);return 0;}\n',
+    'RETVAL':  'int main(){return 1;}\n',
+    'COUNT5':  'int main(){printf(1);printf(2);printf(3);printf(4);printf(5);return 0;}\n',
+    'LOOP99':  'int main(){while(1){printf(99);}return 0;}\n',
+    'CALC':    'int main(){\n  a = input();\n  b = input();\n  printf(a + b);\n  printf(a * b);\n  return a - b;\n}\n',
+    'IFDEMO':  'int main(){\n  a = input();\n  if (a > 10) { printf(1); }\n  if (a <= 10) { printf(0); }\n  return a;\n}\n',
+    'WHILE':   'int main(){\n  a = 0;\n  while (a < 3) { printf(a); a = a + 1; }\n  return a;\n}\n',
+}
+for name, content in C_FILES.items():
+    add_to(USR_SRC, name, 'C  ', content)
+
+# ── 命令对照表 ──
+CMDS_TXT = '''\
+; AMUNOS 命令→ELF 对照表 (v6.5)
+EDIT \\EDIT.ELF
+'''
+add_to(root, 'CMDS', 'TXT', CMDS_TXT)
+
+# ── 落盘 ──
+for i, e in enumerate(root.entries):
+    d[ROOT + i * 32:ROOT + i * 32 + 32] = e
+for sub in all_dirs:
+    base = DATA + (sub.cluster - 2) * 512
+    for i, e in enumerate(sub.entries):
+        d[base + i * 32:base + i * 32 + 32] = e
+# FAT1 -> FAT2
 d[5120:5120 + 9 * 512] = d[512:512 + 9 * 512]
 
 with open(path, 'wb') as f:
     f.write(d)
-print(f'B.img ready ({nfiles} files, {clu - 2} clusters)')
+nfiles = sum(1 for sub in all_dirs for e in sub.entries if e[11] != 0x10) + \
+         sum(1 for e in root.entries if e[11] != 0x10)
+print(f'{path} ready ({nfiles} files, {clu - 2} clusters, {len(all_dirs)} dirs)')

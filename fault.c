@@ -17,7 +17,7 @@ void fault_handler(int vector, int eip, int errcode) {
     put_str("\n");
 
     if (vector == 13) put_str("General Protection Fault\n");
-    if (vector == 6)  put_str("Invalid Opcode — bad .COM?\n");
+    if (vector == 6)  put_str("Invalid Opcode — bad ELF?\n");
     if (vector == 14) put_str("Page Fault\n");
     if (vector == 8)  put_str("Double Fault\n");
 

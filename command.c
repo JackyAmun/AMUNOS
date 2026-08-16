@@ -1,4 +1,4 @@
-/* command.c — AMUNOS v6.4 */
+/* command.c — AMUNOS v6.5 */
 
 #include "common.h"
 
@@ -19,7 +19,7 @@ static void p_pop(){
 /* ── 等待按键: 返回 1=继续, 0=中止 (Ctrl+C) ── */
 static int wait_key_or_abort(void){
     int kp = 0;
-    while(!kp){ kbd_poll(); kp = key_pressed; }
+    while(!kp){ input_poll(); kp = key_pressed; }
     if(kp == 12){              /* Ctrl+C 中止分页 */
         key_pressed = 0; force_kill = 0;
         return 0;
@@ -109,7 +109,8 @@ void cmd_cd(char* arg){
 void cmd_type(char* arg){
     upper(arg);
     if(!*arg){put_str("Usage: TYPE file\n");return;}
-    FAT12Entry e;if(fs_find_entry_in_dir(cwd_cluster,arg,&e)<0){put_str("Not found.\n");return;}
+    int dc=fs_resolve_path(arg);if(dc<0){put_str("Not found.\n");return;}
+    FAT12Entry e;if(fs_find_entry_in_dir(dc,arg,&e)<0){put_str("Not found.\n");return;}
     char b[2048];fs_read_file(&e,b);put_str(b);put_char('\n',0x07);
 }
 
@@ -119,17 +120,24 @@ void cmd_echo(char* arg){
     char* g=arg;while(*g&&*g!='>')g++;
     if(*g=='>'){*g=0;g++;while(*g==' ')g++;upper(g);char*t=arg;int tl=strlen(t);while(tl>0&&t[tl-1]==' ')t[--tl]=0;
         if(!*g||!tl){put_str("Usage: ECHO text > file\n");return;}
-        if(fs_create_file_in_dir(cwd_cluster,g,t,tl)==0)put_str("Written.\n");}
+        int dc=fs_resolve_path(g);if(dc<0){put_str("Not found.\n");return;}
+        if(fs_create_file_in_dir(dc,g,t,tl)==0)put_str("Written.\n");}
     else{put_str(arg);put_char('\n',0x07);}
 }
+
+/* ── SER / LPT — 串口/并口输出 (v6.5) ──
+ * 输出走 serial_puts/lpt_puts (会把 \n 翻成 CRLF), 与按键回显 (LF-only) 区分 */
+void cmd_ser(char* a1){ if(!*a1){put_str("Usage: SER text\n");return;} serial_puts(a1); serial_puts("\n"); }
+void cmd_lpt(char* a1){ if(!*a1){put_str("Usage: LPT text\n");return;} lpt_puts(a1); lpt_puts("\n"); }
 
 /* ── REN ── */
 void cmd_ren(char* arg){
     upper(arg);char* sp=arg;while(*sp&&*sp!=' ')sp++;
     if(!*sp||!*(sp+1)){put_str("Usage: REN old new\n");return;}
     *sp++=0;while(*sp==' ')sp++;
-    FAT12Entry e;int idx=fs_find_entry_in_dir(cwd_cluster,arg,&e);if(idx<0){put_str("Not found.\n");return;}
-    int lba=(cwd_cluster==0)?fs_root_lba+(idx/16):fs_data_lba+(cwd_cluster-2)+(idx/16);
+    int dc=fs_resolve_path(arg);if(dc<0){put_str("Not found.\n");return;}
+    FAT12Entry e;int idx=fs_find_entry_in_dir(dc,arg,&e);if(idx<0){put_str("Not found.\n");return;}
+    int lba=(dc==0)?fs_root_lba+(idx/16):fs_data_lba+(dc-2)+(idx/16);
     FAT12Entry b[16];read_sector_asm(lba,b,current_drive_idx);
     to_fat12_name(sp,b[idx%16].name);write_sector_asm(lba,b,current_drive_idx);
     put_str("Renamed.\n");
@@ -140,9 +148,14 @@ void cmd_copy(char* arg){
     upper(arg);char* sp=arg;while(*sp&&*sp!=' ')sp++;
     if(!*sp||!*(sp+1)){put_str("Usage: COPY src dst\n");return;}
     *sp++=0;while(*sp==' ')sp++;
-    FAT12Entry e;if(fs_find_entry_in_dir(cwd_cluster,arg,&e)<0){put_str("Src not found.\n");return;}
+    int dc_src=fs_resolve_path(arg);if(dc_src<0){put_str("Src not found.\n");return;}
+    FAT12Entry e;if(fs_find_entry_in_dir(dc_src,arg,&e)<0){put_str("Src not found.\n");return;}
     if(e.attr&0x10){put_str("Cannot copy dir.\n");return;}
-    char b[2048];int sz=e.size;if(sz>2048)sz=2048;fs_read_file(&e,b);fs_create_file_in_dir(cwd_cluster,sp,b,sz);
+    char b[2048];int sz=e.size;if(sz>2048)sz=2048;fs_read_file(&e,b);
+    int dc_dst=cwd_cluster;
+    { char *sep=sp;int has=0;while(*sep){if(*sep=='\\'||*sep=='/'){has=1;break;}sep++;}
+      if(has){dc_dst=fs_resolve_path(sp);if(dc_dst<0){put_str("Dst not found.\n");return;}} }
+    if(fs_create_file_in_dir(dc_dst,sp,b,sz)==0)put_str("Copied.\n");
 }
 
 /* ── MOV ── */
@@ -150,15 +163,19 @@ void cmd_mov(char* arg){
     upper(arg);char* sp=arg;while(*sp&&*sp!=' ')sp++;
     if(!*sp||!*(sp+1)){put_str("Usage: MOV src dst\n");return;}
     *sp++=0;while(*sp==' ')sp++;
-    FAT12Entry e;if(fs_find_entry_in_dir(cwd_cluster,arg,&e)<0){put_str("Src not found.\n");return;}
+    int dc_src=fs_resolve_path(arg);if(dc_src<0){put_str("Src not found.\n");return;}
+    FAT12Entry e;if(fs_find_entry_in_dir(dc_src,arg,&e)<0){put_str("Src not found.\n");return;}
     if(e.attr&0x10){put_str("Cannot move dir.\n");return;}
     char b[2048];int sz=e.size;if(sz>2048)sz=2048;fs_read_file(&e,b);
-    if(fs_create_file_in_dir(cwd_cluster,sp,b,sz)==0){fs_delete_file(arg);put_str("Moved.\n");}
+    int dc_dst=cwd_cluster;
+    { char *sep=sp;int has=0;while(*sep){if(*sep=='\\'||*sep=='/'){has=1;break;}sep++;}
+      if(has){dc_dst=fs_resolve_path(sp);if(dc_dst<0){put_str("Dst not found.\n");return;}} }
+    if(fs_create_file_in_dir(dc_dst,sp,b,sz)==0){fs_delete_file_in_dir(dc_src,arg);put_str("Moved.\n");}
 }
 
 /* ── CLS/VER/TIME ── */
 void cmd_cls(){cls();}
-void cmd_ver(){put_str("\nAMUN-DOS 6.4 (C)2026 AMUNOS Team\n\n");}
+void cmd_ver(){put_str("\nAMUN-DOS 6.5 (C)2026 AMUNOS Team\n\n");}
 static unsigned char r(unsigned char r){io_out8(0x70,r);return io_in8(0x71);}
 static void pb(unsigned char v){put_char('0'+((v>>4)&0x0F),0x07);put_char('0'+(v&0x0F),0x07);}
 void cmd_time(){pb(r(0x04));put_char(':',0x07);pb(r(0x02));put_char(':',0x07);pb(r(0x00));put_str(" ");pb(r(0x09));put_char('-',0x07);pb(r(0x08));put_char('-',0x07);pb(r(0x07));put_char('\n',0x07);}
@@ -171,16 +188,16 @@ void cmd_help(char* arg){
         else if(!strcmp(arg,"CD"))put_str("CD [dir|..|<|\\] — change dir\n");
         else if(!strcmp(arg,"TYPE"))put_str("TYPE file — show file content\n");
         else if(!strcmp(arg,"ECHO"))put_str("ECHO text > file — write file\nECHO text — print text\n");
+        else if(!strcmp(arg,"SER"))put_str("SER text — write text to COM1 serial\n");
+        else if(!strcmp(arg,"LPT"))put_str("LPT text — write text to LPT1 parallel\n");
         else if(!strcmp(arg,"REN"))put_str("REN old new — rename file\n");
         else if(!strcmp(arg,"COPY"))put_str("COPY src dst — copy file\n");
         else if(!strcmp(arg,"MOV"))put_str("MOV src dst — move file\n");
         else if(!strcmp(arg,"DEL"))put_str("DEL file — delete file\n");
         else if(!strcmp(arg,"MD"))put_str("MD name — create directory\n");
         else if(!strcmp(arg,"EDIT"))put_str("EDIT file — text editor\n");
-        else if(!strcmp(arg,"CC"))put_str("CC [-V] file.c — C4 compiler\n");
-        else if(!strcmp(arg,"RUN"))put_str("RUN — execute compiled program\n");
         else if(!strcmp(arg,"ELF"))put_str("ELF file.elf — load & run ELF executable\n");
-        else if(!strcmp(arg,"TCC"))put_str("TCC file.c [-o out] — compile C to ELF\n");
+        else if(!strcmp(arg,"TCC"))put_str("TCC file.c [-o out] — compile C to ELF (run on A:, uses BIN\\TCC.ELF + USR\\INCLUDE/LIB)\n");
         else if(!strcmp(arg,"HELP"))put_str("HELP [cmd] — show help\n");
         else put_str("No help for that command.\n");
         return;
@@ -189,121 +206,30 @@ void cmd_help(char* arg){
     put_str(" CD  dir\\dir\\dir  Change dir (multi-level)\n");
     put_str(" TYPE file        Show file content\n");
     put_str(" ECHO text > file Write file\n");
+    put_str(" SER text         Write text to COM1 (serial)\n");
+    put_str(" LPT text         Write text to LPT1 (parallel)\n");
     put_str(" REN old new      Rename file\n");
     put_str(" COPY src dst     Copy file\n");
     put_str(" MOV src dst      Move file\n");
     put_str(" DEL file         Delete file\n");
     put_str(" MD  name         Create directory\n");
     put_str(" RMDIR name       Delete empty directory\n");
-    put_str(" EDIT file        Text editor\n");
-    put_str(" CC  [-x] file.c  Compile C (native/bytecode)\n");
-    put_str(" LOAD file.com    Load & run native executable\n");
+    put_str(" EDIT file        Text editor (F1-Help F2-Save F3-Open F4-New F5-Quit)\n");
     put_str(" ELF  file.elf    Load & run ELF executable\n");
-    put_str(" TCC  file.c      Compile C to ELF (TinyCC)\n");
-    put_str(" RUN              Run bytecode program\n");
+    put_str(" TCC  file.c      Compile C to ELF (TinyCC, shows elapsed)\n");
     put_str(" CLS              Clear screen\n");
     put_str(" TIME             Show time\n");
     put_str(" VER              Show version\n");
     put_str(" HELP [cmd]       This help\n");
-    put_str(" A: / B:          Switch drive\n\n");
+    put_str(" CMD /?           Show any command's usage\n");
+    put_str(" A: / B:          Switch drive\n");
+    put_str(" (file args accept dirs: TYPE BIN\\X.ELF, COPY S\\A.TXT D\\B.TXT)\n");
+    put_str(" (type name: XXX runs XXX.ELF in current dir)\n");
+    put_str(" (tree: A:\\BOOT A:\\BIN A:\\USR\\INCLUDE A:\\USR\\LIB A:\\USR\\SRC B:\\USR\\SRC)\n");
+    put_str(" (custom cmds: EDIT CMDS.TXT, lines \"NAME TARGET\")\n\n");
 }
 
-/* ═══════════════ CC / RUN / LOAD ═══════════════ */
-extern int cc_compile(char* src, int len);
-extern int cc_run();
-extern int x86_compile(char *src, unsigned char *out);
-
-void cmd_cc(char* arg){
-    char f[2];arg=fparse(arg,f);upper(arg);
-    if(f[0]=='V'||f[0]=='v'){put_str("AMUNOS CC v6.2\nModes: CC file.c (bytecode), CC -x file.c (native)\n");return;}
-    if(!*arg){put_str("Usage: CC [-V] [-x] file.c\n");return;}
-
-    int native = (f[0]=='X'||f[0]=='x');
-    FAT12Entry e;
-    if(fs_find_entry_in_dir(cwd_cluster,arg,&e)<0){put_str("Not found.\n");return;}
-    if(e.size>4096){put_str("Too large.\n");return;}
-    static char sbuf[4096];
-    fs_read_file(&e,sbuf);
-    put_str("Compiling ");put_str(arg);
-
-    if(native){
-        // ── 原生 x86 模式 ──
-        put_str(" (native)...\n");
-        static unsigned char xbuf[1024];
-        int xlen = x86_compile(sbuf, xbuf);
-        if(xlen <= 0){ put_str("x86: unsupported pattern\n"); return; }
-
-        // 写 .COM 文件 (删旧→新建)
-        char com_name[16];
-        char *dot = arg; while(*dot && *dot!='.' && (dot-arg)<12) dot++;
-        int nlen = (dot - arg < 12) ? (int)(dot-arg) : 8;
-        int j=0; while(j<nlen){ com_name[j]=arg[j]; j++; }
-        com_name[j++]='.'; com_name[j++]='C'; com_name[j++]='O'; com_name[j++]='M'; com_name[j]=0;
-
-        fs_delete_file(com_name); // 删旧的
-        if(fs_create_file_in_dir(cwd_cluster, com_name, (char*)xbuf, xlen)==0)
-            { put_str("OK: "); put_str(com_name); put_str(" ("); put_num(xlen); put_str("B)\n"); }
-    } else {
-        // ── 字节码模式 ──
-        // 检查是否混入原生模式语法 (input/未声明赋值) — C4 不识别，提前警告
-        int has_native = 0;
-        for(int i=0;i<e.size && i<4090;i++){
-            if(sbuf[i]=='i'&&sbuf[i+1]=='n'&&sbuf[i+2]=='p'&&sbuf[i+3]=='u'&&sbuf[i+4]=='t')
-                {has_native=1;break;}
-            // 形如 "a =" 未声明赋值
-            if((sbuf[i]>='a'&&sbuf[i]<='z')&&sbuf[i+1]=='='){has_native=1;break;}
-        }
-        if(has_native){
-            put_str("\nThis file uses native-only syntax (input/var-assign).\n");
-            put_str("Use: CC -x ");put_str(arg);put_str("\n");
-            return;
-        }
-        put_str(" (bytecode)...\n");
-        int r=cc_compile(sbuf,e.size);
-        if(r==0)put_str("OK. Use RUN to execute.\n");
-        else put_str("Compile error.\n");
-    }
-}
-
-void cmd_load(char* arg){
-    upper(arg);
-    if(!*arg){put_str("Usage: LOAD file.com\n");return;}
-    FAT12Entry e;
-    if(fs_find_entry_in_dir(cwd_cluster,arg,&e)<0){put_str("Not found.\n");return;}
-    if(e.size>8192){put_str("Too large.\n");return;}
-    static char lbuf[8192];
-    fs_read_file(&e,lbuf);
-
-    // 验证 .COM 合法性 (必须以 0x55=PUSH EBP 开头)
-    if (e.size < 4 || (unsigned char)lbuf[0] != 0x55) {
-        put_str("Invalid .COM format\n"); return;
-    }
-
-    // 复制到 0x100000
-    char *dst = (char*)0x100000;
-    for(int i=0;i<e.size;i++) dst[i]=lbuf[i];
-
-    // 设置运行时 trampoline:
-    //   0x1000: JMP amunos_printnum   (.COM 用 CALL 0x1000 输出)
-    //   0x1010: JMP amunos_getnum     (.COM 用 CALL 0x1010 输入)
-    extern void amunos_printnum();
-    extern int amunos_getnum();
-    unsigned char *t = (unsigned char*)0x1000;
-    int paddr = (int)&amunos_printnum;
-    t[0] = 0xE9; int pr = paddr - 0x1005;
-    t[1]=pr&0xFF; t[2]=(pr>>8)&0xFF; t[3]=(pr>>16)&0xFF; t[4]=(pr>>24)&0xFF;
-    unsigned char *g = (unsigned char*)0x1010;
-    int gaddr = (int)&amunos_getnum;
-    g[0] = 0xE9; int gr = gaddr - 0x1015;
-    g[1]=gr&0xFF; g[2]=(gr>>8)&0xFF; g[3]=(gr>>16)&0xFF; g[4]=(gr>>24)&0xFF;
-
-    put_str("> ");
-    int ret;
-    __asm__ volatile("call *%%eax" : "=a"(ret) : "a"(0x100000) : "memory");
-    put_str("ret="); put_num(ret); put_char('\n', 0x07);
-}
-
-/* ── ELF: 加载并运行静态 ELF 可执行文件 (v6.4) ── */
+/* ── ELF: 加载并运行静态 ELF 可执行文件 (v6.5) ── */
 static void put_hex(unsigned n){
     char d[]="0123456789ABCDEF";
     char b[9]; int i=0;
@@ -351,16 +277,18 @@ static void build_argv(const char *prog, char *args){
 void cmd_elf(char* arg){
     if(!*arg){put_str("Usage: ELF file [args]\n");return;}
 
-    /* 提取程序名 (首 token), 仅文件名转大写; 参数保持原大小写 */
-    char prog[13];
+    /* 提取程序名 (首 token), 仅文件名转大写; 参数保持原大小写
+     * 缓冲足够容纳路径 (如 BIN\TCC.ELF, \BIN\EDIT.ELF) */
+    char prog[64];
     int i = 0;
-    while(arg[i] && arg[i]!=' ' && arg[i]!='\t' && i<12){ prog[i]=arg[i]; i++; }
+    while(arg[i] && arg[i]!=' ' && arg[i]!='\t' && i<62){ prog[i]=arg[i]; i++; }
     prog[i] = 0;
     upper(prog);
     char *args = arg + i;
 
     FAT12Entry e;
-    if(fs_find_entry_in_dir(cwd_cluster,prog,&e)<0){put_str("Not found.\n");return;}
+    int dc=fs_resolve_path(prog);if(dc<0){put_str("Not found.\n");return;}
+    if(fs_find_entry_in_dir(dc,prog,&e)<0){put_str("Not found.\n");return;}
 
     /* 从内核堆暂存 (去掉 32KB 限制, 支持 ~300KB 的 tcc.elf) */
     char *ebuf = (char*)mem_alloc((unsigned)e.size + 1);
@@ -400,24 +328,82 @@ void cmd_elf(char* arg){
     }
 }
 
-/* ── TCC: 编译 C 源码为 ELF (复用 cmd_elf 的加载/argv/任务运行) ── */
+/* ── TCC: 编译 C 源码为 ELF (复用 cmd_elf 的加载/argv/任务运行) ──
+ * v6.5 目录树: TCC.ELF 在 BIN\; 头/库在 USR\INCLUDE|LIB → 注入 -I/-L/-B
+ * (crt1.o/crti.o/crtn.o 的 crt_paths="." 只在 cwd 找, 故留 A: 根)。 */
 void cmd_tcc(char* arg){
     if(!*arg){put_str("Usage: TCC file.c [-o out]\n");return;}
-    char full[64];
+    unsigned t0 = task_ticks();
+    put_str("Compiling ");put_str(arg);put_str(" ...\n");
+    char full[128];
     int n = 0;
-    const char *pre = "TCC.ELF ";
-    while(*pre && n < 62) full[n++] = *pre++;
-    while(*arg && n < 62) full[n++] = *arg++;
+    const char *pre = "BIN\\TCC.ELF -I USR\\INCLUDE -L USR\\LIB -B USR\\LIB ";
+    while(*pre && n < 126) full[n++] = *pre++;
+    while(*arg && n < 126) full[n++] = *arg++;
     full[n] = 0;
     cmd_elf(full);
-}
-
-void cmd_run(){
-    put_str("Running (VM)...\n");
-    cc_run();
+    unsigned dt = task_ticks() - t0;
+    put_str("TCC done (");put_num(dt/100);put_char('.',0x07);put_num((dt/10)%10);put_str("s)\n");
 }
 
 /* ═══════════════ DISPATCH ═══════════════ */
+
+/* ── 自定义命令 (v6.5): 返回 1=已处理
+ *   1) CMDS.TXT 命令→ELF 对照表 (当前盘根目录; 行格式 "NAME TARGET",
+ *      可被 EDIT CMDS.TXT 编辑以添加自定义命令; ;/# 开头为注释)
+ *   2) 当前目录存在 XXX.ELF → 输入 XXX 即运行该 ELF */
+static int cmd_custom(char* cmd, char* a1) {
+    char line[112];
+    int n = 0, j = 0;
+
+    FAT12Entry ce;
+    if (fs_find_entry_in_dir(0, "CMDS.TXT", &ce) >= 0) {
+        char cbuf[1024];
+        fs_read_file(&ce, cbuf);
+        char* p = cbuf;
+        while (*p) {
+            char* ln = p;
+            while (*p && *p != '\n') p++;
+            if (*p == '\n') { *p = 0; p++; }
+            char* q = ln;
+            while (*q == ' ' || *q == '\t') q++;
+            if (*q && *q != ';' && *q != '#') {
+                char cn[12]; int ci = 0;
+                while (*q && *q != ' ' && *q != '\t' && ci < 11) cn[ci++] = to_upper(*q++);
+                cn[ci] = 0;
+                if (!strcmp(cn, cmd)) {
+                    while (*q == ' ' || *q == '\t') q++;
+                    n = 0;
+                    while (*q && *q != '\r' && *q != '\n' && n < 60) line[n++] = *q++;
+                    line[n++] = ' ';
+                    j = 0; while (a1[j] && n < 108) line[n++] = a1[j++];
+                    line[n] = 0;
+                    cmd_elf(line);
+                    return 1;
+                }
+            }
+        }
+    }
+
+    /* 2) cwd 下 XXX.ELF */
+    char fn[13];
+    int ci = 0;
+    while (cmd[ci] && ci < 8) fn[ci] = cmd[ci], ci++;
+    fn[ci] = '.'; fn[ci + 1] = 'E'; fn[ci + 2] = 'L'; fn[ci + 3] = 'F'; fn[ci + 4] = 0;
+    FAT12Entry e2;
+    if (fs_find_entry_in_dir(cwd_cluster, fn, &e2) >= 0 && !(e2.attr & 0x10)) {
+        n = 0;
+        while (cmd[n] && n < 8) line[n++] = cmd[n];
+        const char* ext = ".ELF ";
+        while (*ext && n < 60) line[n++] = *ext++;
+        j = 0; while (a1[j] && n < 108) line[n++] = a1[j++];
+        line[n] = 0;
+        cmd_elf(line);
+        return 1;
+    }
+    return 0;
+}
+
 void exec_cmd(char* line){
     char cmd[16],a1[48];int i=0,j=0;
     while(line[i]==' ')i++;if(!line[i])return;
@@ -429,19 +415,24 @@ void exec_cmd(char* line){
     while(line[i]&&line[i]!=' '&&j<15)cmd[j++]=to_upper(line[i++]);cmd[j]=0;
     while(line[i]==' ')i++;j=0;while(line[i]&&j<47)a1[j++]=line[i++];a1[j]=0;
 
+    /* 命令辅助参数: CMD /? 或 CMD -? → 显示该命令用法 (v6.5; ECHO 的 /? 是文本) */
+    if (strcmp(cmd,"ECHO") && strcmp(cmd,"HELP") &&
+        (a1[0]=='/'||a1[0]=='-') && a1[1]=='?' && !a1[2]) {
+        cmd_help(cmd); return;
+    }
+
     if(!strcmp(cmd,"DIR"))cmd_dir(a1);else if(!strcmp(cmd,"CD"))cmd_cd(a1);
     else if(!strcmp(cmd,"CLS"))cls();else if(!strcmp(cmd,"VER"))cmd_ver();
     else if(!strcmp(cmd,"HELP"))cmd_help(a1);else if(!strcmp(cmd,"ECHO"))cmd_echo(a1);
+    else if(!strcmp(cmd,"SER"))cmd_ser(a1);else if(!strcmp(cmd,"LPT"))cmd_lpt(a1);
     else if(!strcmp(cmd,"TIME"))cmd_time();else if(!strcmp(cmd,"TYPE"))cmd_type(a1);
     else if(!strcmp(cmd,"REN"))cmd_ren(a1);else if(!strcmp(cmd,"COPY"))cmd_copy(a1);
     else if(!strcmp(cmd,"MOV"))cmd_mov(a1);
-    else if(!strcmp(cmd,"CC"))cmd_cc(a1);else if(!strcmp(cmd,"RUN"))cmd_run();
-    else if(!strcmp(cmd,"LOAD"))cmd_load(a1);
     else if(!strcmp(cmd,"ELF"))cmd_elf(a1);
     else if(!strcmp(cmd,"TCC"))cmd_tcc(a1);
     else if(!strcmp(cmd,"MD")){if(*a1)fs_create_directory(a1);else put_str("Usage: MD name\n");}
-    else if(!strcmp(cmd,"EDIT")){if(*a1)start_editor(a1);else put_str("Usage: EDIT file\n");}
     else if(!strcmp(cmd,"DEL")){if(*a1){upper(a1);fs_delete_file(a1);}else put_str("Usage: DEL file\n");}
     else if(!strcmp(cmd,"RMDIR")){if(*a1){upper(a1);fs_delete_directory(a1);}else put_str("Usage: RMDIR dir\n");}
-    else put_str("Bad command\n");
+    /* EDIT 不再是内置命令: 走 CMDS.TXT 映射或 cwd 下 EDIT.ELF */
+    else if(!cmd_custom(cmd, a1)) put_str("Bad command\n");
 }

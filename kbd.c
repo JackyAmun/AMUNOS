@@ -161,6 +161,10 @@ void keyboard_handler() {
             key_pressed = 12; // 通知 REPL 清行 (程序运行时由 syscall 层消费)
             return;
         }
+        if (sc >= 0x3B && sc <= 0x3F) {  // F1-F5 功能键
+            key_pressed = 13 + (sc - 0x3B);
+            return;
+        }
         if (sc < sizeof(kmap)) {
             // 根据 shift / caps_lock 状态选择映射表
             int shift = (is_shift ^ caps_lock) ? 1 : 0;
@@ -188,4 +192,48 @@ void kbd_poll() {
     if (io_in8(0x64) & 0x01) {  // bit 0 = output buffer full
         keyboard_handler();
     }
+}
+
+/* 统一输入轮询: 键盘 + 串口 (远程控制台, v6.5)
+ * 键盘事件优先; 无键盘事件时读 COM1 RX, 映射成同一套 key_pressed 编码。
+ * 这样 shell / DIR 分页 / 编辑器 / 程序 stdin 都自动支持串口输入,
+ * Ctrl+C (0x03) 在串口上也生效。
+ * key_pressed: 1=字符 2=回车 3=退格 4-7=方向 8=ESC 9=DEL 10=HOME 11=END
+ *              12=Ctrl+C 13-17=F1-F5 */
+void input_poll(void) {
+    kbd_poll();
+    if (key_pressed) return;              /* 键盘事件优先 */
+    int c = serial_getc();
+    if (c < 0) return;
+
+    /* ── 串口 VT100 功能键 (F1-F5): ESC[11~..ESC[15~ 或 ESC O P..T ── */
+    static int sesc = 0, sdigit = 0;
+    if (sesc == 1) {                      /* 已收 ESC, 等 [ 或 O */
+        if (c == '[') { sesc = 2; sdigit = 0; return; }
+        if (c == 'O') { sesc = 3; return; }
+        sesc = 0; key_pressed = 8; return;/* 裸 ESC */
+    }
+    if (sesc == 2) {                      /* ESC[ 等 <数字>~ */
+        if (c >= '0' && c <= '9') { sdigit = sdigit * 10 + (c - '0'); return; }
+        if (c == '~') {
+            sesc = 0;
+            int f = (sdigit == 11) ? 13 : (sdigit == 12) ? 14 : (sdigit == 13) ? 15
+                  : (sdigit == 14) ? 16 : (sdigit == 15) ? 17 : 0;
+            sdigit = 0;
+            if (f) key_pressed = f;
+            return;
+        }
+        sesc = 0; sdigit = 0; return;     /* 非法序列丢弃 */
+    }
+    if (sesc == 3) {                      /* ESC O P/Q/R/S/T = F1..F5 */
+        sesc = 0;
+        if (c >= 'P' && c <= 'T') key_pressed = 13 + (c - 'P');
+        return;
+    }
+    if (c == 0x1B) { sesc = 1; return; }
+
+    if (c == '\r' || c == '\n')      key_pressed = 2;                 /* 回车 */
+    else if (c == '\b' || c == 0x7F) key_pressed = 3;                 /* 退格 */
+    else if (c == 3)                 { force_kill = 1; key_pressed = 12; } /* Ctrl+C */
+    else                             { current_char = (char)c; key_pressed = 1; }
 }

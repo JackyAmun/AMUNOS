@@ -28,6 +28,7 @@
 #define SYS_LSEEK    12
 #define SYS_EXIT     13
 #define SYS_BRK      14
+#define SYS_GETKEY   15
 
 /* ── 内联汇编封装 ── */
 static inline long syscall0(long nr) {
@@ -141,6 +142,7 @@ static inline long sys_write(int fd, const void *buf, unsigned int len) { return
 static inline long sys_lseek(int fd, int offset, int whence)  { return syscall3(SYS_LSEEK, fd, offset, whence); }
 static inline long sys_brk(void *addr)                        { return syscall1(SYS_BRK, (long)addr); }
 static inline void sys_exit(int status)                       { syscall1(SYS_EXIT, status); }
+static inline int  sys_getkey(void)                           { return (int)syscall0(SYS_GETKEY); }
 
 /* ── 桩 (TCC 引用的 POSIX 表层, AMUNOS 暂未实现) ── */
 static inline int  sys_stat(const char *path, struct stat *st)      { (void)path; (void)st; return -1; }

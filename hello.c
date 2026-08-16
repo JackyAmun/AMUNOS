@@ -16,12 +16,16 @@ static void sys_puts(const char *s) {
 static void sys_putnum(int n) {
     __asm__ volatile("int $0x30" : : "a"(4), "b"(n) : "memory");
 }
+static void sys_exit(int status) {
+    __asm__ volatile("int $0x30" : : "a"(13), "b"(status) : "memory");
+}
 
 void _start(void) {
-    sys_puts("Hello from ELF! (AMUNOS v6.4)\n");
+    sys_puts("Hello from ELF! (AMUNOS v6.5)\n");
     int i;
     for (i = 1; i <= 5; i++) {
         sys_putnum(i * 100);
     }
     sys_puts("\n[ELF] done, returning to shell\n");
+    sys_exit(0);        /* 显式退出, 防止 ret 弹出垃圾返回地址 → PF */
 }

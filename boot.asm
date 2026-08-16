@@ -7,12 +7,12 @@
 ;   偏移 510-511: 0xAA55
 ;
 ; 磁盘布局 (A.img, 2880 扇区, 1.44MB):
-;   扇区 0:     引导扇区
-;   扇区 1-80:  内核 (保留区, 81 保留扇区)
-;   扇区 71-79: FAT1 (9 扇区)
-;   扇区 80-88: FAT2 (9 扇区)
-;   扇区 89-102: 根目录 (14 扇区 × 224 条目)
-;   扇区 103+:  数据簇
+;   扇区 0:       引导扇区
+;   扇区 1-104:   内核 (保留区, 105 保留扇区)
+;   扇区 105-113: FAT1 (9 扇区)
+;   扇区 114-122: FAT2 (9 扇区)
+;   扇区 123-136: 根目录 (14 扇区 × 224 条目)
+;   扇区 137+:    数据簇
 
 [BITS 16]
 org 0x7C00
@@ -25,7 +25,7 @@ org 0x7C00
 bpb_oem:            db "AMUNOS  "  ; OEM 名称 (8 字节)
 bpb_bytes_per_sec:  dw 512         ; 每扇区字节数
 bpb_sec_per_cluster: db 1          ; 每簇扇区数
-bpb_rsvd_sec:       dw 100          ; 保留扇区数 (1引导+70内核)
+bpb_rsvd_sec:       dw 105          ; 保留扇区数 (1引导+104内核)
 bpb_num_fats:       db 2           ; FAT 表份数
 bpb_root_entries:   dw 224         ; 根目录条目数
 bpb_total_sec:      dw 2880        ; 总扇区数 (1.44MB)
@@ -68,7 +68,7 @@ boot_code:
     mov ch, 0             ; 柱面 0
     mov dh, 0             ; 磁头 0
     mov dl, 0x80          ; 第一硬盘
-    mov al, 99            ; 读 99 扇区 (kernel<=49KB) (内核最大 70×512=35KB)
+    mov al, 104           ; 读 104 扇区 (kernel<=52KB)
     mov ah, 0x02
     int 0x13
     jnc .load_ok

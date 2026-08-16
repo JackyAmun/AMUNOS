@@ -70,6 +70,9 @@ void fs_create_directory(char* dirname);
 void fs_delete_directory(char* dirname);
 int fs_create_file_in_dir(int dir_cluster, char* name, char* data, int size);
 void fs_delete_file(char* filename);
+void fs_delete_file_in_dir(int dir_cluster, char* name);
+int fs_resolve_path(char* path);
+void fs_write_file_in_dir(int dir_cluster, char* name, char* data, int size);
 int fs_list_dir(int dir_cluster, FAT12Entry* out_buf, int max_entries);
 unsigned short fat12_get_next_cluster(unsigned short cluster);
 int fs_dir_secs(int dc);
@@ -90,8 +93,8 @@ void cls();
 void init_idt();
 void keyboard_init();
 void kbd_poll();
+void input_poll();
 void exec_cmd(char *cmd_line);
-void start_editor(char* filename);
 void print_prompt();
 
 // --- 7. 内存管理 (mem.c) ---
@@ -123,5 +126,13 @@ void force_terminate(void);       // 定时器中断重定向入口 (CPU 密集�
 
 // --- 11. FS 覆盖写 (syscall fd 层落盘用) ---
 void fs_write_file(char* name, char* data, int size);
+
+// --- 12. 串口/并口 (serial.c) ---
+void serial_init(void);
+void serial_putc(char c);
+void serial_puts(char *s);
+int  serial_getc(void);
+void lpt_putc(char c);
+void lpt_puts(char *s);
 
 #endif

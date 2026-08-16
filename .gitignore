@@ -22,3 +22,7 @@ makar/
 # ── 其它 ──
 *.pyc
 __pycache__/
+
+# ── 串口/并口日志 (run-serial 产物) ──
+serial.log
+lpt.log

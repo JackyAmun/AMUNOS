@@ -1,4 +1,4 @@
-/* elf.c — AMUNOS ELF32 静态可执行文件加载器 (v6.4)
+/* elf.c — AMUNOS ELF32 静态可执行文件加载器 (v6.5)
  *
  * 参考 Makar OS 的 ELF 加载思路, 简化版:
  *   - 仅支持 32 位小端 ET_EXEC (静态链接, 无动态链接/无重定位)

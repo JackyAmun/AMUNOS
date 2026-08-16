@@ -8,10 +8,10 @@
 | 项 | 现状 |
 |---|---|
 | 执行模型 | Ring 0、平坦内存、**无分页**（VA==PA）、ELF 加载到 `0x100000`、程序作为独立抢占式内核任务运行、`task_exit_current` 结束 |
-| 系统调用 | `int 0x30`，号 1–14，fd 表 0/1/2=控制台、3+=文件 |
+| 系统调用 | `int 0x30`，号 1–15，fd 表 0/1/2=控制台、3+=文件 |
 | 文件系统 | FAT12，A.img(系统盘)+B.img(数据盘)，根目录固定 224 项，`cwd_cluster` 单级子目录 |
 | 显示 | VGA 文本模式 `0xB8000`（80×25，8×16 ROM 字库，仅 ASCII） |
-| 设备 | 无抽象，无串口/并口/网络驱动 |
+| 设备 | 串口/并口**轮询驱动**已实现（serial.c，SER/LPT + 远程控制台）；无设备抽象层（VFS 属 P1） |
 
 ---
 
@@ -45,6 +45,12 @@ C:\                    （未来）IDE 硬盘，见第 4 节
 - 内核维护"搜索路径"表（`BIN` → `USR\BIN`），执行程序按 PATH 找，等价 `$PATH`。
 - `fs.c` 现只支持 `cwd_cluster` 单级，要支撑这棵树需把 `fs_find_entry_in_dir`
   泛化成"按 `/` 逐段下钻"，并给 FAT12 子目录链配深度上限（如 4 级）。
+
+> **v6.5 已落地的部分**：A: 上 `BOOT\`、`BIN\`、`USR\LIB\`、`USR\INCLUDE\`、`USR\SRC\`
+> 与 B: 上 `USR\SRC\` 已在镜像里建成真实 FAT12 子目录（`fs_resolve_path` 逐段下钻 +
+> `CD` 多级导航 + `fs_find_entry_in_dir` 读子目录簇链均已实现）。执行程序的定位改用
+> **`CMDS.TXT` 命令→ELF 对照表** + **cwd 下按名运行** 替代 PATH 搜索；`TCC` 内置命令
+> 注入 `-I/-L/-B` 定位头/库。完整 `$PATH` 搜索表仍是后续工作。
 
 ---
 
@@ -108,8 +114,8 @@ struct dev_ops {
 **串口（16550 UART）**
 - COM1=`0x3F8`、COM2=`0x2F8`、COM3=`0x3E8`、COM4=`0x2E8`；IRQ4(COM1/3)、IRQ3(COM2/4)。
 - 初始化：置 DLAB → 写波特率除数（115200→1）→ 8N1 → 开 FIFO。先轮询收发，暂不碰 IRQ。
-- QEMU：`-serial file:log.txt`（日志）、`-serial tcp:127.0.0.1:PORT,server`（telnet 远程控制台）。
-- 价值：远程控制台、内核日志、以及第 5 节 SLIP 网络的地基。
+- QEMU：`-serial file:log.txt`（日志）、`-serial tcp:127.0.0.1:PORT,server`（交互远程控制台）。
+- 价值：**远程控制台（v6.5 已实现：`input_poll()` 统一键盘+串口 RX，`make run-serial` + `./serial-console.sh`）**、内核日志、以及第 5 节 SLIP 网络的地基。
 
 **并口（LPT）**
 - LPT1=`0x378`、LPT2=`0x278`：数据(基址)/状态(+1)/控制(+2)。
@@ -158,9 +164,9 @@ struct dev_ops {
 
 | 阶段 | 内容 | 量级 |
 |---|---|---|
-| **P0** | ① 修输入缺口（回车→`\n`+回显）→ 闭环"输入输出 C 程序"　② 串口 UART　③ 并口 LPT | 小时级 |
+| **P0** | ① 修输入缺口（回车→`\n`+回显）→ 闭环"输入输出 C 程序" ✅v6.4　② 串口 UART（+远程控制台）✅v6.5　③ 并口 LPT ✅v6.5 | 小时级 |
 | **P1** | VFS 设备抽象（vnode+ops+ioctl+`/dev`+procfs），把 P0 的设备挂进去 | 天级 |
-| **P2** | 可执行文件概念：argv/envp、返回码 `$?`、PATH 搜索、无 `.EXE` 执行、`>`/`>>`/`<`/`\|`、目录树泛化 | 天级 |
+| **P2** | 可执行文件概念：argv/envp、返回码 `$?`、PATH 搜索、无 `.EXE` 执行、`>`/`>>`/`<`/`\|`、目录树泛化（注：路径遍历已部分落地 v6.5——文件命令支持 `SUB\X.C` 两级目录与 `..`） | 天级 |
 | **P3** | **中文**：boot 设 VBE 模式 → LFB 控制台 → 16×16 字库 → UTF-8/GBK 解码 | 周级 XL |
 | **P4** | 块设备抽象 + IDE(PATA) + FAT16/32 + `C:` 盘 | 周级 |
 | **P5** | **网络**：SLIP（复用 P0 串口）→ NE2000/RTL8139 → ARP/IP/ICMP/UDP → TCP(移植 lwIP) → socket syscall → PING/WGET/DNS/HTTP | 周–月级 XL |

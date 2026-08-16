@@ -39,16 +39,14 @@ static void scroll_up() {
     }
 }
 
-/* 串口输出 (COM1, 用于调试) */
-static void serial_putc(char c) {
-    // 等待发送缓冲区空
-    while ((io_in8(0x3FD) & 0x20) == 0);
-    io_out8(0x3F8, c);
-}
-
-/* 输出一个字符到当前光标位置 (VGA + 串口双输出) */
+/* 输出一个字符到当前光标位置 (VGA + 串口双输出)
+ * serial_putc 在 serial.c 定义, 经 common.h 声明调用 (v6.5 起正式驱动) */
 void put_char(char c, char color) {
-    serial_putc(c);  // 调试：同时输出到串口
+    /* 串口镜像: 文本原样; 控制字符翻译, 避免远程控制台错乱
+     * (LF→CRLF 防换行不回车; TAB→4 空格) */
+    if (c == '\n') { serial_putc('\r'); serial_putc('\n'); }
+    else if (c == '\t') { serial_puts("    "); }
+    else serial_putc(c);
     if (c == '\n') {
         cur_x = 0;
         cur_y++;

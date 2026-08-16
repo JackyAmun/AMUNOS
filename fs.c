@@ -211,6 +211,60 @@ int fs_find_entry_in_dir(int dir_cluster, char* name, FAT12Entry* out_entry) {
     return -1;
 }
 
+/* ── 路径解析 (v6.5): 支持 "USR\SRC\HELLO.C" / "\ROOT\FILE" / "FILE" ──
+ * 入参 path 原地改写为纯文件名, 返回所在目录簇; 目录不存在返回 -1。
+ * 支持 .. (上一级) 与 / 或 \ 分隔符。 */
+int fs_resolve_path(char* path) {
+    int dir = cwd_cluster;
+    char *p = path;
+    int from_root = 0;
+    if (p[0] == '\\' || p[0] == '/') { dir = 0; p++; from_root = 1; }
+    if (!*p) return -1;
+
+    char *lastsep = 0;
+    for (char *q = p; *q; q++)
+        if (*q == '\\' || *q == '/') lastsep = q;
+    if (!lastsep) {
+        if (from_root) {               /* "\NAME.EXT": 根目录, 剥掉前导反斜杠 */
+            char *dst = path;
+            while (*p) *dst++ = *p++;
+            *dst = 0;
+        }
+        return dir;                    /* 纯文件名, 就在 cwd */
+    }
+
+    *lastsep = 0;                      /* 拆开: 目录部分 | 文件名 */
+    char *seg = p;
+    while (*seg) {
+        char *sep = seg;
+        while (*sep && *sep != '\\' && *sep != '/') sep++;
+        char save = *sep; if (*sep) *sep = 0;
+        if (*seg) {
+            if (seg[0] == '.' && seg[1] == '.' && !seg[2]) {   /* .. 上一级 */
+                if (dir != 0) {
+                    unsigned char d[512];
+                    read_sector_asm(fs_data_lba + (dir - 2), d, current_drive_idx);
+                    dir = ((FAT12Entry*)d)[1].start_cluster;
+                }
+            } else if (seg[0] == '.' && !seg[1]) {
+                /* 当前目录, 跳过 */
+            } else {
+                FAT12Entry e;
+                if (fs_find_entry_in_dir(dir, seg, &e) < 0 || !(e.attr & 0x10))
+                    return -1;         /* 目录不存在或不是目录 */
+                dir = e.start_cluster;
+            }
+        }
+        if (save) { *sep = save; seg = sep + 1; } else break;
+    }
+    /* 文件名搬到 path 开头 */
+    char *fname = lastsep + 1;
+    char *dst = path;
+    while (*fname) *dst++ = *fname++;
+    *dst = 0;
+    return dir;
+}
+
 /* ── 读取文件内容 ── */
 void fs_read_file(FAT12Entry* entry, char* buffer) {
     unsigned short cluster = entry->start_cluster;
@@ -385,14 +439,14 @@ void fs_create_directory(char* dirname) {
     put_str("Directory created.\n");
 }
 
-/* ── 覆盖写文件 (已存在则先静默删除再创建) ──
- * 供 syscall 的 fd 层在 close 时落盘用 */
-void fs_write_file(char* name, char* data, int size) {
+/* ── 覆盖写文件到指定目录 (已存在则先静默删除再创建) ──
+ * 供 syscall 的 fd 层在 close 时落盘用 (v6.5 支持路径) */
+void fs_write_file_in_dir(int dir_cluster, char* name, char* data, int size) {
     FAT12Entry e;
-    int idx = fs_find_entry_in_dir(cwd_cluster, name, &e);
+    int idx = fs_find_entry_in_dir(dir_cluster, name, &e);
     if (idx >= 0) {
         /* 标记条目 0xE5 */
-        int sector_off = fs_dir_lba(cwd_cluster, idx / 16);
+        int sector_off = fs_dir_lba(dir_cluster, idx / 16);
         int entry_off  = idx % 16;
         FAT12Entry buf[16];
         read_sector_asm(sector_off, buf, current_drive_idx);
@@ -406,17 +460,22 @@ void fs_write_file(char* name, char* data, int size) {
             clus = nx;
         }
     }
-    fs_create_file_in_dir(cwd_cluster, name, data, size);
+    fs_create_file_in_dir(dir_cluster, name, data, size);
 }
 
-/* ── 删除文件 ── */
-void fs_delete_file(char* filename) {
+/* ── 覆盖写文件 (cwd, 兼容旧调用) ── */
+void fs_write_file(char* name, char* data, int size) {
+    fs_write_file_in_dir(cwd_cluster, name, data, size);
+}
+
+/* ── 删除文件 (核心: 在指定目录中, 静默不打印, 供命令/编辑器复用) ── */
+void fs_delete_file_in_dir(int dir_cluster, char* name) {
     FAT12Entry entry;
-    int idx = fs_find_entry(filename, &entry);
-    if (idx == -1) { put_str("Not found.\n"); return; }
+    int idx = fs_find_entry_in_dir(dir_cluster, name, &entry);
+    if (idx == -1) return;
 
     int sector_off, entry_off;
-    sector_off = fs_dir_lba(cwd_cluster, idx / 16);
+    sector_off = fs_dir_lba(dir_cluster, idx / 16);
     entry_off  = idx % 16;
 
     FAT12Entry buf[16];
@@ -431,6 +490,13 @@ void fs_delete_file(char* filename) {
         fat12_set_cluster(clus, 0);
         clus = next;
     }
+}
+
+/* ── 删除文件 (路径感知: 支持 "SUB\FILE.EXT") ── */
+void fs_delete_file(char* path) {
+    int dc = fs_resolve_path(path);
+    if (dc < 0) { put_str("Not found.\n"); return; }
+    fs_delete_file_in_dir(dc, path);
     put_str("Deleted.\n");
 }
 

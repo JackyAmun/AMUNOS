@@ -1,20 +1,31 @@
 #!/usr/bin/env python3
-"""A.img for AMUNOS v6.4 — boot + kernel (sectors 0..99) + FAT12 system disk.
+r"""A.img for AMUNOS v6.5 — boot + kernel (sectors 0..104) + FAT12 system disk
+with a two-level directory tree (BOOT\ BIN\ USR\LIB USR\INCLUDE USR\SRC).
 
-Geometry (matches boot.asm BPB: reserved=100 sectors for boot+kernel):
+Geometry (matches boot.asm BPB: reserved=105 sectors for boot+kernel):
   sector 0       boot.bin
-  sector 1..99   kernel.bin (must stay < 99 sectors = 50688 bytes)
-  sector 100..108  FAT1 (9 sectors)
-  sector 109..117  FAT2 (9 sectors)
-  sector 118..131  root dir (224 entries = 14 sectors)
-  sector 132..     data area
+  sector 1..104  kernel.bin (must stay < 104 sectors = 53248 bytes)
+  sector 105..113  FAT1 (9 sectors)
+  sector 114..122  FAT2 (9 sectors)
+  sector 123..136  root dir (224 entries = 14 sectors)
+  sector 137..     data area (root files + subdirectories)
+
+Tree:
+  A:\
+  ├─ BOOT\BOOT.BIN, KERNEL.BIN
+  ├─ BIN\TCC.ELF, EDIT.ELF
+  ├─ USR\LIB\LIBC.A, LIBTCC1.A      (TCC 链接库; -L/-B 注入)
+  ├─ USR\INCLUDE\*.H                (TCC 头; -I 注入)
+  ├─ USR\SRC\HELLO.C, INP.C
+  ├─ CRT1.O, CRTI.O, CRTN.O         (TCC crt_paths="." 需在 cwd, 故留根)
+  └─ CMDS.TXT                       (EDIT → \\BIN\\EDIT.ELF)
 """
 import struct, sys, os
 
 path = sys.argv[1] if len(sys.argv) > 1 else 'A.img'
 d = bytearray(2880 * 512)
 
-RESV   = 100              # reserved sectors (boot + kernel)
+RESV   = 105              # reserved sectors (boot + kernel)
 FATSEC = 9                # sectors per FAT
 ROOTENT= 224              # root directory entries
 FAT1   = RESV * 512       # offset of FAT1
@@ -35,7 +46,7 @@ d[512:512 + len(k)] = k
 d[FAT1:FAT1 + 3] = b'\xf0\xff\xff'
 
 clu = 2                  # next allocatable cluster
-nfiles = 0               # files added so far
+all_dirs = []            # non-root dirs (for final layout pass)
 
 def set_fat(c, val):
     """FAT12 entry c -> val (12-bit), consistent with fs.c fat12_set_cluster."""
@@ -46,64 +57,97 @@ def set_fat(c, val):
     else:
         d[boff:boff + 2] = struct.pack('<H', (cur & 0xF000) | (val & 0x0FFF))
 
-def add(name8, ext3, content, attr=0x20):
-    """Add a file (multi-cluster).  Directory entry index uses the file count,
-    not the cluster count, so multi-cluster files don't leave entry gaps."""
-    global clu, nfiles
+def alloc_clusters(n):
+    """Allocate n consecutive clusters, chain them to EOF, return first."""
+    global clu
+    c = clu; clu += n
+    if c + n - 1 > 0xFE0:
+        raise SystemExit('disk full')
+    for i in range(n):
+        nxt = (c + i + 1) if i < n - 1 else 0xFFF
+        set_fat(c + i, nxt)
+    return c
+
+def mk_entry(name8, ext3, attr, start, size):
+    e = bytearray(32)
+    e[0:8] = name8.ljust(8).encode()
+    e[8:11] = ext3.encode()
+    e[11] = attr
+    struct.pack_into('<H', e, 26, start)
+    struct.pack_into('<I', e, 28, size)
+    return e
+
+def mkdir(name8, parent, cap):
+    """Create a subdir `name8` inside `parent` (a Dir), capacity `cap` entries.
+    Allocates the cluster chain, writes . / .. entries, returns the Dir."""
+    global all_dirs
+    ncl = max(1, (cap * 32 + 511) // 512)
+    c = alloc_clusters(ncl)
+    sub = Dir(name8, c)
+    sub.entries.append(mk_entry('.', '   ', 0x10, c, 0))
+    sub.entries.append(mk_entry('..', '   ', 0x10, parent.cluster, 0))
+    parent.entries.append(mk_entry(name8, '   ', 0x10, c, 0))
+    all_dirs.append(sub)
+    return sub
+
+def add_to(parent, name8, ext3, content, attr=0x20):
+    """Write a file into `parent`, multi-cluster. Returns cluster count."""
     C = content if isinstance(content, (bytes, bytearray)) else content.encode()
     nc = (len(C) + 511) // 512
     if nc == 0:
         nc = 1
-    if clu + nc - 1 > 0xFE0:
-        raise SystemExit('disk full')
-
-    off = ROOT + nfiles * 32
-    d[off:off + 8] = name8.ljust(8).encode()
-    d[off + 8:off + 11] = ext3.encode()
-    d[off + 11] = attr
-    struct.pack_into('<H', d, off + 26, clu)
-    struct.pack_into('<I', d, off + 28, len(C))
-
+    c = alloc_clusters(nc)
     for i in range(nc):
-        doff = DATA + (clu + i - 2) * 512
+        doff = DATA + (c + i - 2) * 512
         d[doff:doff + 512] = C[i * 512:(i + 1) * 512].ljust(512, b'\x00')
-
-    for i in range(nc):
-        nxt = (clu + i + 1) if i < nc - 1 else 0xFFF
-        set_fat(clu + i, nxt)
-    clu += nc
-    nfiles += 1
+    parent.entries.append(mk_entry(name8, ext3, attr, c, len(C)))
     return nc
 
-def add_file(name8, ext3, path):
+def add_file_to(parent, name8, ext3, path):
     with open(path, 'rb') as f:
-        return add(name8, ext3, f.read())
+        return add_to(parent, name8, ext3, f.read())
 
-def add_opt_file(name8, ext3, path):
+def add_opt_to(parent, name8, ext3, path):
     if os.path.exists(path):
-        return add_file(name8, ext3, path)
+        return add_file_to(parent, name8, ext3, path)
     print(f'WARN: {path} not found (skipping)')
     return 0
 
-# ── binaries ──
-add_opt_file('TCC',     'ELF', 'tcc.elf')
-add_opt_file('LIBC',    'A  ', 'libc/libc.a')
-add_opt_file('LIBTCC1', 'A  ', 'makar/vendor/tinycc/lib/libtcc1.a')
-add_opt_file('CRT1',    'O  ', 'libc/crt1.o')
-add_opt_file('CRTI',    'O  ', 'libc/crti.o')
-add_opt_file('CRTN',    'O  ', 'libc/crtn.o')
+class Dir:
+    def __init__(self, name8, cluster):
+        self.name = name8
+        self.cluster = cluster          # 0 = root
+        self.entries = []               # 32-byte entry blobs
 
-# ── TCC built-in headers ──
+root = Dir('', 0)
+BOOT = mkdir('BOOT', root, 16)
+BIN  = mkdir('BIN',  root, 16)
+USR  = mkdir('USR',  root, 16)
+USR_LIB = mkdir('LIB',     USR, 16)
+USR_INC = mkdir('INCLUDE', USR, 40)
+USR_SRC = mkdir('SRC',     USR, 16)
+
+# ── BOOT\ : 引导/内核副本 ──
+add_opt_to(BOOT, 'BOOT',   'BIN', 'boot.bin')
+add_opt_to(BOOT, 'KERNEL', 'BIN', 'kernel.bin')
+
+# ── BIN\ : 系统可执行程序 (CMDS.TXT 表指向这里; TCC 走命令前缀) ──
+add_opt_to(BIN, 'TCC',  'ELF', 'tcc.elf')
+add_opt_to(BIN, 'EDIT', 'ELF', 'edit.elf')
+
+# ── USR\LIB\ : TCC 链接库 (cmd_tcc 注入 -L/-B) ──
+add_opt_to(USR_LIB, 'LIBC',    'A  ', 'libc/libc.a')
+add_opt_to(USR_LIB, 'LIBTCC1', 'A  ', 'makar/vendor/tinycc/lib/libtcc1.a')
+
+# ── USR\INCLUDE\ : TCC 内置头 + libc 头 (cmd_tcc 注入 -I) ──
 for h in ['stdarg', 'stddef', 'stdbool', 'float', 'varargs']:
-    add_opt_file(h.upper(), 'H  ', f'makar/vendor/tinycc/include/{h}.h')
-
-# ── libc headers (flat root dir; sys/ subdir headers are host-compile only) ──
+    add_opt_to(USR_INC, h.upper(), 'H  ', f'makar/vendor/tinycc/include/{h}.h')
 for h in ['stdio', 'stdlib', 'string', 'strings', 'ctype', 'malloc', 'syscall',
           'errno', 'fcntl', 'unistd', 'limits', 'stdint', 'inttypes', 'setjmp',
           'math', 'time', 'assert', 'dirent']:
-    add_opt_file(h.upper(), 'H  ', f'libc/{h}.h')
+    add_opt_to(USR_INC, h.upper(), 'H  ', f'libc/{h}.h')
 
-# ── example source ──
+# ── USR\SRC\ : 示例源码 ──
 HELLO_C = '''\
 #include <stdio.h>
 #include <stdlib.h>
@@ -122,12 +166,34 @@ int main(int argc, char **argv)
     return 0;
 }
 '''
-add('HELLO', 'C  ', HELLO_C)
-add_opt_file('INP', 'C  ', 'inp.c')     # 输入测试源码 (可在 OS 内 TCC 编译)
+add_to(USR_SRC, 'HELLO', 'C  ', HELLO_C)
+add_opt_to(USR_SRC, 'INP', 'C  ', 'inp.c')     # 输入测试源码 (可在 OS 内 TCC 编译)
 
-# ── copy FAT1 -> FAT2 ──
+# ── TCC crt 文件留根 (TCC crt_paths="." 只在 cwd 找 crt1.o/crti.o/crtn.o) ──
+add_opt_to(root, 'CRT1', 'O  ', 'libc/crt1.o')
+add_opt_to(root, 'CRTI', 'O  ', 'libc/crti.o')
+add_opt_to(root, 'CRTN', 'O  ', 'libc/crtn.o')
+
+# ── 命令→ELF 对照表 (v6.5) ──
+CMDS_TXT = '''\
+; AMUNOS 命令→ELF 对照表 (v6.5)
+; 格式: 命令名 目标ELF   (目标以 \\ 开头表示当前盘根目录)
+; 注释以 ; 或 # 开头; 用 EDIT CMDS.TXT 编辑即可添加自定义命令
+EDIT \\BIN\\EDIT.ELF
+'''
+add_to(root, 'CMDS', 'TXT', CMDS_TXT)
+
+# ── 布局落盘: 根目录 + 各子目录 + FAT2 ──
+for i, e in enumerate(root.entries):
+    d[ROOT + i * 32:ROOT + i * 32 + 32] = e
+for sub in all_dirs:
+    base = DATA + (sub.cluster - 2) * 512
+    for i, e in enumerate(sub.entries):
+        d[base + i * 32:base + i * 32 + 32] = e
 d[FAT2:FAT2 + FATSEC * 512] = d[FAT1:FAT1 + FATSEC * 512]
 
 with open(path, 'wb') as f:
     f.write(d)
-print(f'{path} ready ({nfiles} files, {clu - 2} clusters)')
+nfiles = sum(1 for sub in all_dirs for e in sub.entries if e[11] != 0x10) + \
+         sum(1 for e in root.entries if e[11] != 0x10)
+print(f'{path} ready ({nfiles} files, {clu - 2} clusters, {len(all_dirs)} dirs)')

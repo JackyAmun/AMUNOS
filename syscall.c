@@ -18,6 +18,7 @@
  *   12 = lseek(fd, off, whence) — 定位
  *   13 = exit(status)           — 结束当前程序任务
  *   14 = brk(addr)              — 用户堆断点 (0=查询)
+ *   15 = getkey()               — 读原始键码 (阻塞, 无回显, 全屏编辑器用)
  *
  * fd 表: 0=stdin 1=stdout 2=stderr (控制台), 3+ = 文件 (内存缓冲 + 游标)
  */
@@ -40,6 +41,7 @@ int prog_exit_status = 0;
 typedef struct {
     int used;
     char name[13];          /* 8.3 文件名 (close 落盘用) */
+    int dir;                /* 文件所在目录簇 (close 落盘用, 路径支持 v6.5) */
     unsigned char *buf;     /* 内存缓冲 */
     int size;               /* 逻辑大小 */
     int capacity;           /* 分配容量 */
@@ -59,7 +61,7 @@ static int kbd_read_char(void) {
     for (;;) {
         int kp = 0;
         while (kp == 0) {
-            kbd_poll();
+            input_poll();
             kp = key_pressed;
             if (kp == 0) __asm__ volatile("hlt");
         }
@@ -97,27 +99,30 @@ static int sys_malloc(int size) {
 static int sys_free(void *ptr) { mem_free(ptr); return 0; }
 static int sys_sleep(int ticks) { task_sleep(ticks); return 0; }
 
-/* ── 提取路径 basename (去掉目录前缀) 就地修改 ──
- * "/usr/include/stdarg.h" → "stdarg.h"; "HELLO.C" → "HELLO.C" */
-static void path_basename(char *p) {
-    int last = 0, i = 0, j = 0;
-    while (p[i]) {
-        if (p[i] == '/' || p[i] == '\\') last = i + 1;
-        i++;
-    }
-    while (p[last]) p[j++] = p[last++];
-    p[j] = 0;
-}
-
 /* ── 8. open ──
- * flags: O_RDONLY=0 O_WRONLY=1 O_RDWR=2 O_CREAT=64 O_TRUNC=512 */
+ * flags: O_RDONLY=0 O_WRONLY=1 O_RDWR=2 O_CREAT=64 O_TRUNC=512
+ * 路径 (v6.5): 支持 "SUB\FILE.EXT" / "\ROOT\FILE" — 目录部分经 fs_resolve_path
+ * 解析, 纯文件名在 cwd 中查找; 落盘目录记在 fd.dir, close 时写回那里。 */
 static int sys_open(char *path, int flags) {
     if (!path) return -1;
-    char name[13];
+    char full[64];
     int i;
-    for (i = 0; i < 12 && path[i]; i++) name[i] = path[i];
+    for (i = 0; path[i] && i < 62; i++) full[i] = path[i];
+    full[i] = 0;
+
+    int has_sep = 0;
+    for (i = 0; full[i]; i++)
+        if (full[i] == '\\' || full[i] == '/') { has_sep = 1; break; }
+
+    int dc = cwd_cluster;
+    if (has_sep) {
+        dc = fs_resolve_path(full);   /* full 变为纯文件名, dc=目录簇; -1=目录不存在 */
+        if (dc < 0) return -1;
+    }
+
+    char name[13];
+    for (i = 0; i < 12 && full[i]; i++) name[i] = full[i];
     name[i] = 0;
-    path_basename(name);          /* 现在 name 是 basename */
 
     int fd = 3;
     while (fd < MAX_FD && fds[fd].used) fd++;
@@ -126,6 +131,7 @@ static int sys_open(char *path, int flags) {
     fd_t *f = &fds[fd];
     for (i = 0; i < 12 && name[i]; i++) f->name[i] = name[i];
     f->name[i] = 0;
+    f->dir = dc;                        /* close 落盘目录 */
     f->dirty = 0;
     f->pos = 0;
 
@@ -133,7 +139,7 @@ static int sys_open(char *path, int flags) {
     int trunc    = (flags & 0x200) != 0;  /* O_TRUNC */
 
     FAT12Entry e;
-    int found = (fs_find_entry_in_dir(cwd_cluster, name, &e) >= 0);
+    int found = (fs_find_entry_in_dir(dc, name, &e) >= 0);
 
     if (!found) {
         if (writable || (flags & 0x40)) {  /* 写或 O_CREAT: 新建空文件 */
@@ -161,7 +167,7 @@ static int sys_close(int fd) {
     if (fd < 3 || fd >= MAX_FD) return -1;
     fd_t *f = &fds[fd];
     if (!f->used) return -1;
-    if (f->dirty) fs_write_file(f->name, (char*)f->buf, f->size);
+    if (f->dirty) fs_write_file_in_dir(f->dir, f->name, (char*)f->buf, f->size);
     mem_free(f->buf);
     f->used = 0;
     f->buf = 0;
@@ -237,7 +243,7 @@ static void close_all_fds(void) {
     for (int fd = 3; fd < MAX_FD; fd++) {
         fd_t *f = &fds[fd];
         if (!f->used) continue;
-        if (f->dirty) fs_write_file(f->name, (char*)f->buf, f->size);
+        if (f->dirty) fs_write_file_in_dir(f->dir, f->name, (char*)f->buf, f->size);
         mem_free(f->buf);
         f->used = 0;
         f->buf = 0;
@@ -279,6 +285,42 @@ static int sys_brk(int addr) {
     return addr;
 }
 
+/* ── 15. getkey — 读原始键码 (阻塞, 无回显; 供编辑器等全屏程序) ──
+ * 返回: 32..126 可打印字符; '\r' 回车; '\b' 退格; 27 ESC; 127 DEL;
+ *       3 Ctrl+C; 128+ 方向/Home/End/F1-F5 (见 edit.c 的常量)。
+ * 程序显式读 Ctrl+C: 该键由程序接管, 清掉 force_kill, 避免下一次
+ * fopen/syscall 被强制终止逻辑误杀。 */
+static int sys_getkey(void) {
+    int kp = 0;
+    while (kp == 0) {
+        input_poll();
+        kp = key_pressed;
+        if (kp == 0) __asm__ volatile("hlt");
+    }
+    key_pressed = 0;
+    if (kp == 12) force_kill = 0;
+    switch (kp) {
+    case 1:  return current_char;        /* 可打印字符 */
+    case 2:  return '\r';
+    case 3:  return '\b';
+    case 4:  return 128;                 /* ← */
+    case 5:  return 129;                 /* → */
+    case 6:  return 130;                 /* ↑ */
+    case 7:  return 131;                 /* ↓ */
+    case 8:  return 27;                  /* ESC */
+    case 9:  return 127;                 /* DEL */
+    case 10: return 132;                 /* HOME */
+    case 11: return 133;                 /* END */
+    case 12: return 3;                   /* Ctrl+C */
+    case 13: return 134;                 /* F1 */
+    case 14: return 135;                 /* F2 */
+    case 15: return 136;                 /* F3 */
+    case 16: return 137;                 /* F4 */
+    case 17: return 138;                 /* F5 */
+    }
+    return 0;
+}
+
 /* ── 分发器 (由 head.asm 的 asm_syscall_handler 调用) ──
  * frame: [4]=edi [5]=esi [6]=ebp [7]=esp [8]=ebx [9]=edx [10]=ecx [11]=eax */
 void syscall_handler(unsigned *frame) {
@@ -311,6 +353,7 @@ void syscall_handler(unsigned *frame) {
     case 12: result = sys_lseek(a1, a2, a3); break;
     case 13: sys_exit(a1); result = 0; break;
     case 14: result = sys_brk(a1); break;
+    case 15: result = sys_getkey(); break;
     default: result = -1; break;
     }
 

@@ -25,9 +25,14 @@ void print_prompt(){
 /* 从 cmd_pos 位置开始重绘 */
 static void redraw(int pos){
     cur_x=prompt_len+pos;
-    for(int i=pos;i<=cmd_len;i++){
-        if(i<cmd_len)put_char(cmd_buf[i],0x0F);
-        else put_char(' ',0x07);
+    for(int i=pos;i<cmd_len;i++){
+        put_char(cmd_buf[i],0x0F);
+    }
+    /* 末尾清空格直接写 VRAM, 不镜像到串口 (否则回显变成 "s e r" 错乱) */
+    int ec = prompt_len + cmd_len;
+    if (ec < 80) {
+        char *v = (char*)0xB8000 + (cur_y * 80 + ec) * 2;
+        v[0] = ' '; v[1] = 0x07;
     }
     cur_x=prompt_len+pos;update_cursor();
 }
@@ -45,8 +50,10 @@ static void demo_clock_task() {
 }
 
 void kmain(){
+    serial_init();
     cls();
-    put_str("AMUNOS Kernel v6.4 (ELF Exec)\n");
+    put_str("AMUNOS Kernel v6.5 (ELF Exec)\n");
+    serial_puts("AMUNOS v6.5 serial ready\n");   /* 冒烟标记: serial_puts 把 \n 翻成 CRLF */
     init_idt();
     mem_init();
     timer_init();
@@ -58,7 +65,7 @@ void kmain(){
     print_prompt();
 
     while(1){
-        kbd_poll();
+        input_poll();
 
         if(key_pressed==1){  // 字符插入
             char c=current_char;
