@@ -1,0 +1,24 @@
+# ── 构建产物 ──
+*.o
+*.bin
+*.img
+*.elf
+*.a
+*.com
+*.exe
+
+# ── 第三方 / 参考资料 (各自独立, 与 AMUNOS 源码无关) ──
+FreeBASIC-1.10.1-source/
+kernel-master/
+mikanos/
+makar/
+
+# ── 本地 Claude Code 配置 (机器相关) ──
+.claude/
+
+# ── 参考网页存档 ──
+计算机自制操作系统*
+
+# ── 其它 ──
+*.pyc
+__pycache__/
