@@ -7,12 +7,12 @@ static void upper(char* s){while(*s){if(*s>='a'&&*s<='z')*s-=32;s++;}}
 
 static void p_add(char* n){
     int l=strlen(cwd_path),a=strlen(n);if(l+a+2>126)return;
-    if(l&&cwd_path[l-1]!='\\')cwd_path[l++]='\\';
+    if(l&&cwd_path[l-1]!='/')cwd_path[l++]='/';
     for(int i=0;i<a;i++)cwd_path[l++]=n[i];cwd_path[l]=0;
 }
 static void p_pop(){
     int l=strlen(cwd_path);if(!l)return;
-    while(l>0&&cwd_path[l-1]!='\\')l--;
+    while(l>0&&cwd_path[l-1]!='/')l--;
     if(l>0)l--;cwd_path[l]=0;
 }
 
@@ -36,7 +36,7 @@ void cmd_dir(char* arg){
     int max=fs_dir_secs(cwd_cluster);
     FAT12Entry b[16];int cnt=0,line=0;
     put_str("\n ");put_char(drive_letter(),0x0E);
-    put_str(":\\");if(*cwd_path)put_str(cwd_path);
+    put_str(":/");if(*cwd_path)put_str(cwd_path);
     put_str("\n\n");
     for(int s=0;s<max;s++){
         int lba=fs_dir_lba(cwd_cluster,s);
@@ -66,18 +66,18 @@ ed: put_str("\n ");put_num(cnt);put_str(" file(s)\n\n");
 /* ── CD — 多级目录导航 ── */
 void cmd_cd(char* arg){
     upper(arg);
-    if(!*arg||(*arg=='\\'&&!arg[1])){cwd_cluster=0;cwd_path[0]=0;return;}
+    if(!*arg||(*arg=='/'&&!arg[1])){cwd_cluster=0;cwd_path[0]=0;return;}
 
     char path[64]; strcpy(path, arg);
     char *p = path;
     int cur = cwd_cluster;
 
-    // 绝对路径 \a\b → 从根开始
-    if (p[0]=='\\'||p[0]=='/') { cur=0; cwd_path[0]=0; p++; }
+    // 绝对路径 /a/b → 从根开始
+    if (p[0]=='/') { cur=0; cwd_path[0]=0; p++; }
 
     while (p && *p) {
         char *sep = p;
-        while (*sep && *sep!='\\' && *sep!='/') sep++;
+        while (*sep && *sep!='/') sep++;
         char save = *sep; if (*sep) *sep = 0;
 
         if (*p) {
@@ -85,7 +85,7 @@ void cmd_cd(char* arg){
                 // 上一级
                 if (cur != 0) {
                     unsigned char d[512];
-                    read_sector_asm(fs_data_lba+(cur-2),d,current_drive_idx);
+                    read_sector_asm(fs_cluster_lba(cur),d,current_drive_idx);
                     cur = ((FAT12Entry*)d)[1].start_cluster;
                     p_pop();
                 }
@@ -149,7 +149,7 @@ void cmd_ren(char* arg){
     to_fat12_name(arg,oldnm);to_fat12_name(sp,newnm);   /* arg 已被剥成裸名 */
     if(is_cmds_file(oldnm)||is_cmds_file(newnm)){if(od>=0)fs_drive_restore(octx);put_str("CMDS.BIN is protected.\n");return;}
     FAT12Entry e;int idx=fs_find_entry_in_dir(dc,arg,&e);if(idx<0){if(od>=0)fs_drive_restore(octx);put_str("Not found.\n");return;}
-    int lba=(dc==0)?fs_root_lba+(idx/16):fs_data_lba+(dc-2)+(idx/16);
+    int lba=fs_dir_lba(dc, idx/16);   /* v6.5.1: 统一目录寻址 (FAT16 每簇多扇也正确) */
     FAT12Entry b[16];read_sector_asm(lba,b,current_drive_idx);
     to_fat12_name(sp,b[idx%16].name);write_sector_asm(lba,b,current_drive_idx);
     if(od>=0)fs_drive_restore(octx);
@@ -175,7 +175,7 @@ void cmd_copy(char* arg){
     drive_ctx_t dctx; int dd=fs_drive_open(sp,&dctx);
     int dc_dst=cwd_cluster;char *dstname=sp;
     if(!*sp){dc_dst=0;dstname=arg;}
-    else{char *sep=sp;int has=0;while(*sep){if(*sep=='\\'||*sep=='/'){has=1;break;}sep++;}
+    else{char *sep=sp;int has=0;while(*sep){if(*sep=='/'){has=1;break;}sep++;}
       if(has){dc_dst=fs_resolve_path(sp);if(dc_dst<0){mem_free(b);if(dd>=0)fs_drive_restore(dctx);put_str("Dst not found.\n");return;}}}
     int r=fs_create_file_in_dir(dc_dst,dstname,b,sz);
     if(dd>=0)fs_drive_restore(dctx);
@@ -200,7 +200,7 @@ void cmd_mov(char* arg){
     drive_ctx_t dctx; int dd=fs_drive_open(sp,&dctx);
     int dc_dst=cwd_cluster;char *dstname=sp;
     if(!*sp){dc_dst=0;dstname=arg;}
-    else{char *sep=sp;int has=0;while(*sep){if(*sep=='\\'||*sep=='/'){has=1;break;}sep++;}
+    else{char *sep=sp;int has=0;while(*sep){if(*sep=='/'){has=1;break;}sep++;}
       if(has){dc_dst=fs_resolve_path(sp);if(dc_dst<0){mem_free(b);if(dd>=0)fs_drive_restore(dctx);put_str("Dst not found.\n");return;}}}
     int r=fs_create_file_in_dir(dc_dst,dstname,b,sz);
     if(dd>=0)fs_drive_restore(dctx);
@@ -225,7 +225,7 @@ void cmd_help(char* arg){
     int page=(f[0]=='p'||f[0]=='P');
     if(*arg){
         if(!strcmp(arg,"DIR"))put_str("DIR [-w] [-p] — list directory (p=paged)\n");
-        else if(!strcmp(arg,"CD"))put_str("CD [dir|..|<|\\] — change dir\n");
+        else if(!strcmp(arg,"CD"))put_str("CD [dir|..|<|/] — change dir\n");
         else if(!strcmp(arg,"TYPE"))put_str("TYPE file — show file content\n");
         else if(!strcmp(arg,"ECHO"))put_str("ECHO text > file — write file\nECHO text — print text\n");
         else if(!strcmp(arg,"SER"))put_str("SER text — write text to COM1 serial\n");
@@ -237,21 +237,21 @@ void cmd_help(char* arg){
         else if(!strcmp(arg,"MD"))put_str("MD name — create directory\n");
         else if(!strcmp(arg,"EDIT"))put_str("EDIT file — text editor\n");
         else if(!strcmp(arg,"ELF"))put_str("ELF file.elf — load & run ELF executable\n");
-        else if(!strcmp(arg,"TCC"))put_str("TCC file.c [-o out] — compile C to ELF (run on A:, uses BIN\\TCC.ELF + USR\\INCLUDE/LIB)\n");
-        else if(!strcmp(arg,"INSTALL"))put_str("INSTALL prog[.ext] [name] — copy to A:\\BIN + register in CMDS.BIN\n");
+        else if(!strcmp(arg,"TCC"))put_str("TCC file.c [-o out] — compile C to ELF (run on A:, uses BIN/TCC.ELF + USR/INCLUDE/LIB)\n");
+        else if(!strcmp(arg,"INSTALL"))put_str("INSTALL prog[.ext] [name] — copy to A:/BIN + register in CMDS.BIN\n");
         else if(!strcmp(arg,"HELP"))put_str("HELP [cmd] [-p] — show help (p=paged)\n");
         else put_str("No help for that command.\n");
         return;
     }
     static const char *h[] = {
         " DIR [-w] [-p]    List directory (p=paged)",
-        " CD  dir\\dir\\dir  Change dir (multi-level)",
+        " CD  dir/dir/dir  Change dir (multi-level)",
         " TYPE file        Show file content",
         " ECHO text > file Write file",
         " SER text         Write text to COM1 (serial)",
         " LPT text         Write text to LPT1 (parallel)",
         " REN old new      Rename file",
-        " COPY src dst     Copy file (cross-drive: COPY C:\\A.TXT B:)",
+        " COPY src dst     Copy file (cross-drive: COPY C:/A.TXT B:)",
         " MOV src dst      Move file",
         " DEL file         Delete file",
         " MD  name         Create directory",
@@ -259,17 +259,17 @@ void cmd_help(char* arg){
         " EDIT file        Text editor (F1-Help F2-Save F3-Open F4-New F5-Quit)",
         " ELF  file.elf    Load & run ELF executable",
         " TCC  file.c      Compile C to ELF (TinyCC, shows elapsed)",
-        " INSTALL prg      Copy to A:\\BIN + register in CMDS.BIN (any drive)",
+        " INSTALL prg      Copy to A:/BIN + register in CMDS.BIN (any drive)",
         " CLS              Clear screen",
         " TIME             Show time",
         " VER              Show version",
         " HELP [cmd]       This help",
-        " CMD /?           Show any command's usage",
+        " CMD -?           Show any command's usage",
         " A: - D:          Switch drive",
-        " (file args accept dirs & drives: TYPE A:\\BIN\\X.ELF, COPY C:\\A.TXT B:)",
+        " (file args accept dirs & drives: TYPE A:/BIN/X.ELF, COPY C:/A.TXT B:)",
         " (type name: XXX runs XXX.ELF/.EXE/.COM/.BIN in cwd or any drive root)",
         " (CMDS.BIN holds \"NAME TARGET\" lines, searchable on all drives)",
-        " (tree: A:\\BOOT A:\\BIN A:\\USR\\INCLUDE A:\\USR\\LIB A:\\USR\\SRC B:\\USR\\SRC)",
+        " (tree: A:/BOOT A:/BIN A:/USR/INCLUDE A:/USR/LIB A:/USR/SRC B:/USR/SRC)",
     };
     put_str("\n");
     int nlines = (int)(sizeof(h)/sizeof(h[0]));
@@ -396,7 +396,7 @@ void cmd_tcc(char* arg){
     put_str("Compiling ");put_str(arg);put_str(" ...\n");
     char full[128];
     int n = 0;
-    const char *pre = "A:\\BIN\\TCC.ELF -I A:\\USR\\INCLUDE -L A:\\USR\\LIB -B A:\\USR\\LIB ";
+    const char *pre = "A:/BIN/TCC.ELF -static -I A:/USR/INCLUDE -L A:/USR/LIB -B A:/USR/LIB ";
     while(*pre && n < 126) full[n++] = *pre++;
     while(*arg && n < 126) full[n++] = *arg++;
     full[n] = 0;
@@ -450,8 +450,8 @@ void cmd_install(char* arg){
     }
     char add[88];int an=0,j=0;
     while(name[j]&&an<70)add[an++]=name[j++];
-    add[an++]=' ';add[an++]='A';add[an++]=':';add[an++]='\\';
-    add[an++]='B';add[an++]='I';add[an++]='N';add[an++]='\\';
+    add[an++]=' ';add[an++]='A';add[an++]=':';add[an++]='/';
+    add[an++]='B';add[an++]='I';add[an++]='N';add[an++]='/';
     j=0;while(base[j]&&an<82)add[an++]=base[j++];
     add[an++]='\n';
     char *nb=(char*)mem_alloc((unsigned)(csize+an+1));
@@ -462,7 +462,7 @@ void cmd_install(char* arg){
     fs_write_file_in_dir(0,"CMDS.BIN",nb,csize+an);   /* 走 inner: INSTALL 需改写 CMDS.BIN */
     mem_free(nb);mem_free(cbuf);mem_free(b);
     fs_drive_restore(actx);
-    put_str("Installed: ");put_str(name);put_str(" -> A:\\BIN\\");put_str(base);put_char('\n',0x07);
+    put_str("Installed: ");put_str(name);put_str(" -> A:/BIN/");put_str(base);put_char('\n',0x07);
 }
 
 /* ═══════════════ DISPATCH ═══════════════ */
@@ -507,7 +507,7 @@ static int cmd_custom(char* cmd, char* a1) {
                                      (tgt[0]>='a'&&tgt[0]<='d'&&tgt[1]==':');
                             if (!dq) {
                                 line[n++] = (char)('A'+d), line[n++] = ':';
-                                if (tgt[0] != '\\' && tgt[0] != '/') line[n++] = '\\';
+                                if (tgt[0] != '/') line[n++] = '/';
                             }
                             for (ti = 0; tgt[ti] && n < 60; ti++) line[n++] = tgt[ti];
                             line[n++] = ' ';
@@ -539,7 +539,7 @@ static int cmd_custom(char* cmd, char* a1) {
             FAT12Entry e2;
             if (fs_find_entry_in_dir(tries[t], fn, &e2) >= 0 && !(e2.attr & 0x10)) {
                 n = 0;
-                if (tries[t] == 0 && cwd_cluster != 0) line[n++] = '\\';   /* 根命中且非根 cwd → 补 \ */
+                if (tries[t] == 0 && cwd_cluster != 0) line[n++] = '/';   /* 根命中且非根 cwd → 补 / */
                 j = 0; while (fn[j] && n < 60) line[n++] = fn[j];
                 line[n++] = ' ';
                 j = 0; while (a1[j] && n < 108) line[n++] = a1[j++];
@@ -565,7 +565,7 @@ void exec_cmd(char* line){
 
     /* 命令辅助参数: CMD /? 或 CMD -? → 显示该命令用法 (v6.5; ECHO 的 /? 是文本) */
     if (strcmp(cmd,"ECHO") && strcmp(cmd,"HELP") &&
-        (a1[0]=='/'||a1[0]=='-') && a1[1]=='?' && !a1[2]) {
+        a1[0]=='-' && a1[1]=='?' && !a1[2]) {
         cmd_help(cmd); return;
     }
 
@@ -582,6 +582,6 @@ void exec_cmd(char* line){
     else if(!strcmp(cmd,"MD")){if(*a1)fs_create_directory(a1);else put_str("Usage: MD name\n");}
     else if(!strcmp(cmd,"DEL")){if(*a1){upper(a1);fs_delete_file(a1);}else put_str("Usage: DEL file\n");}
     else if(!strcmp(cmd,"RMDIR")){if(*a1){upper(a1);fs_delete_directory(a1);}else put_str("Usage: RMDIR dir\n");}
-    /* EDIT 不再是内置命令: 走 CMDS.TXT 映射或 cwd 下 EDIT.ELF */
+    /* EDIT 不再是内置命令: 走 CMDS.BIN 映射或 cwd 下 EDIT.ELF */
     else if(!cmd_custom(cmd, a1)) put_str("Bad command\n");
 }

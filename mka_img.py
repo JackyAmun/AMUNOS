@@ -179,7 +179,7 @@ CMDS_BIN = '''\
 ; AMUNOS 命令→ELF 对照表 (v6.5.1)
 ; 格式: 命令名 目标ELF   (相对路径自动补来源盘盘符; 全盘 A:-D: 搜索)
 ; 注释以 ; 或 # 开头; 用 EDIT CMDS.BIN 编辑或 INSTALL 命令追加
-EDIT \\BIN\\EDIT.ELF
+EDIT /BIN/EDIT.ELF
 '''
 add_to(root, 'CMDS', 'BIN', CMDS_BIN)
 

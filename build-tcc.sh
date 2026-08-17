@@ -38,7 +38,7 @@ CFLAGS_TCC="-m32 -O2 -std=gnu99 -ffreestanding -fno-stack-protector \
  -DCONFIG_TCCDIR=\".\" \
  -DCONFIG_TCC_SYSINCLUDEPATHS=\".\" \
  -DCONFIG_TCC_LIBPATHS=\".\" \
- -DCONFIG_TCC_CRTPREFIX=\"A:\\\\\" \
+ -DCONFIG_TCC_CRTPREFIX=\"A:/\" \
  -DCONFIG_LDDIR=\"lib\" \
  -DCONFIG_TCC_STATIC -DCONFIG_TCCBOOT -DONE_SOURCE=1"
 

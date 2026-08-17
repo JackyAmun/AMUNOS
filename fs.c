@@ -12,6 +12,8 @@ int cwd_cluster = 0;            // 当前目录起始簇 (0=根目录)
 
 // 内部变量
 int fs_data_lba = 0;
+int fs_spc = 1;                 // 每簇扇区数 (BPB off 13; FAT12=1, FAT16 通常 8)
+int fs_fat_bits = 12;           // FAT 位宽: 12 或 16 (v6.5.1 自动识别)
 static int fs_fat_lba = 0;
 static int fs_sectors_per_fat = 0;
 static int fs_max_data_cluster = 0;   // 最后一个有效数据簇 (由 BPB 总扇区数算出)
@@ -51,12 +53,18 @@ void fs_init() {
     int total_sectors = *(unsigned short*)(bpb + 19);
     fs_sectors_per_fat = sectors_per_fat;
     fs_root_entries = *(unsigned short*)(bpb + 17);
+    { int spc = bpb[13]; fs_spc = (spc >= 1 && spc <= 128) ? spc : 1; }
 
     fs_fat_lba = reserved_sectors;
     fs_root_lba = fs_fat_lba + (fat_count * sectors_per_fat);
     fs_data_lba = fs_root_lba + ((fs_root_entries * 32 + 511) / 512);
-    if (total_sectors == 0) total_sectors = *(unsigned int*)(bpb + 32);  /* FAT32 大容量 */
-    fs_max_data_cluster = total_sectors - fs_data_lba + 1;  /* 簇 N → 扇区 fs_data_lba+(N-2) */
+    if (total_sectors == 0) total_sectors = *(unsigned int*)(bpb + 32);  /* >65535 扇区大容量 */
+    {   /* v6.5.1: 按簇数判定 FAT 位宽 (FAT12≤4084 簇, FAT16≤65524) */
+        unsigned int data_secs = (total_sectors > fs_data_lba) ? (total_sectors - fs_data_lba) : 0;
+        unsigned int clusters = data_secs / fs_spc;
+        fs_fat_bits = (clusters <= 4084) ? 12 : 16;
+        fs_max_data_cluster = (int)clusters + 1;
+    }
     cwd_cluster = 0;  // 切盘后回到根目录
 }
 
@@ -118,15 +126,31 @@ int fs_drive_present(int d) {
     return (ret == 0 && b[510] == 0x55 && b[511] == 0xAA);
 }
 
-/* ── FAT 表操作 ── */
-/* FAT12 条目只有 12 位, 两个条目挤占 3 字节; 一个条目可能横跨两个
- * FAT 扇区 (奇数簇落在扇区末字节时), 所以读/写都要处理边界。 */
+/* ── FAT 表操作 (v6.5.1: FAT12/16 自动识别) ──
+ * FAT12 条目 12 位, 两个条目挤占 3 字节; 一个条目可能横跨两个
+ * FAT 扇区 (奇数簇落在扇区末字节时), 所以读/写都要处理边界。
+ * FAT16 条目 16 位 LE (offset=cluster*2), 奇数字节偏移 511 时同样跨扇区。 */
+static int fat_is_eoc(unsigned int c) { return c >= ((fs_fat_bits == 12) ? 0xFF8u : 0xFFF8u); }
+static unsigned int fat_eoc_marker(void) { return (fs_fat_bits == 12) ? 0xFFF : 0xFFFF; }
+
 unsigned short fat12_get_next_cluster(unsigned short cluster) {
-    if (cluster < 2 || cluster >= 0xFF8) return 0xFFF;
+    if (cluster < 2 || fat_is_eoc(cluster)) return (unsigned short)fat_eoc_marker();
     unsigned char fat_buf[512];
+    unsigned int fat_sector, ent_offset;
+    if (fs_fat_bits == 16) {
+        unsigned int off = (unsigned int)cluster * 2;
+        fat_sector = fs_fat_lba + (off / 512);
+        ent_offset = off % 512;
+        read_sector_asm(fat_sector, fat_buf, current_drive_idx);
+        unsigned char lo = fat_buf[ent_offset];
+        unsigned char hi;
+        if (ent_offset == 511) { read_sector_asm(fat_sector + 1, fat_buf, current_drive_idx); hi = fat_buf[0]; }
+        else hi = fat_buf[ent_offset + 1];
+        return (unsigned short)(lo | ((unsigned short)hi << 8));
+    }
     unsigned int fat_offset = cluster + (cluster / 2);
-    unsigned int fat_sector = fs_fat_lba + (fat_offset / 512);
-    unsigned int ent_offset = fat_offset % 512;
+    fat_sector = fs_fat_lba + (fat_offset / 512);
+    ent_offset = fat_offset % 512;
 
     read_sector_asm(fat_sector, fat_buf, current_drive_idx);
     unsigned char lo = fat_buf[ent_offset];
@@ -142,12 +166,38 @@ unsigned short fat12_get_next_cluster(unsigned short cluster) {
     return (cluster & 1) ? (val >> 4) : (val & 0x0FFF);
 }
 
-/* 写入一个 FAT 条目 */
-static void fat12_set_cluster(unsigned short cluster, unsigned short value) {
+/* 写入一个 FAT 条目 (FAT12/16 自动) */
+static void fat_set_cluster(unsigned short cluster, unsigned int value) {
     unsigned char fat_buf[512];
+    unsigned int fat_sector, ent_offset;
+    if (fs_fat_bits == 16) {
+        unsigned int off = (unsigned int)cluster * 2;
+        fat_sector = fs_fat_lba + (off / 512);
+        ent_offset = off % 512;
+        read_sector_asm(fat_sector, fat_buf, current_drive_idx);
+        fat_buf[ent_offset] = value & 0xFF;
+        if (ent_offset == 511) {
+            unsigned char nb[512];
+            read_sector_asm(fat_sector + 1, nb, current_drive_idx);
+            nb[0] = (value >> 8) & 0xFF;
+            write_sector_asm(fat_sector, fat_buf, current_drive_idx);
+            write_sector_asm(fs_fat_lba + fs_sectors_per_fat + (fat_sector - fs_fat_lba),
+                             fat_buf, current_drive_idx);
+            write_sector_asm(fat_sector + 1, nb, current_drive_idx);
+            write_sector_asm(fs_fat_lba + fs_sectors_per_fat + (fat_sector + 1 - fs_fat_lba),
+                             nb, current_drive_idx);
+        } else {
+            fat_buf[ent_offset + 1] = (value >> 8) & 0xFF;
+            write_sector_asm(fat_sector, fat_buf, current_drive_idx);
+            write_sector_asm(fs_fat_lba + fs_sectors_per_fat + (fat_sector - fs_fat_lba),
+                             fat_buf, current_drive_idx);
+        }
+        return;
+    }
+    /* FAT12 */
     unsigned int fat_offset = cluster + (cluster / 2);
-    unsigned int fat_sector = fs_fat_lba + (fat_offset / 512);
-    unsigned int ent_offset = fat_offset % 512;
+    fat_sector = fs_fat_lba + (fat_offset / 512);
+    ent_offset = fat_offset % 512;
 
     read_sector_asm(fat_sector, fat_buf, current_drive_idx);
     unsigned short cur = fat_buf[ent_offset];
@@ -159,7 +209,7 @@ static void fat12_set_cluster(unsigned short cluster, unsigned short value) {
         cur |= (unsigned short)fat_buf[ent_offset + 1] << 8;
     }
     if (cluster & 1)
-        cur = (cur & 0x000F) | (value << 4);
+        cur = (cur & 0x000F) | ((value & 0x0FFF) << 4);
     else
         cur = (cur & 0xF000) | (value & 0x0FFF);
 
@@ -192,10 +242,10 @@ static void fat12_set_cluster(unsigned short cluster, unsigned short value) {
  */
 static unsigned short fat12_alloc_cluster() {
     int limit = fs_max_data_cluster;
-    if (limit <= 0 || limit > 0xFEF) limit = 0xFEF;  /* 未读到 BPB 时兜底 */
+    if (limit <= 0) limit = (fs_fat_bits == 12) ? 0xFEF : 0xFFEF;  /* 未读到 BPB 时兜底 */
     for (int c = 2; c <= limit; c++) {
         if (fat12_get_next_cluster((unsigned short)c) == 0) {
-            fat12_set_cluster((unsigned short)c, 0xFFF);
+            fat_set_cluster((unsigned short)c, fat_eoc_marker());
             return (unsigned short)c;
         }
     }
@@ -205,15 +255,20 @@ static unsigned short fat12_alloc_cluster() {
 /* ── 目录遍历辅助 ── */
 #define MAX_DIR_SECTORS 256  // 目录最大扇区数 (安全上限)
 
-/* 目录占用扇区数 (根目录固定, 子目录沿链到 EOF) */
+/* 簇 N 对应的数据区首扇区 LBA (v6.5.1: 乘每簇扇区数, FAT16 数据盘用) */
+unsigned int fs_cluster_lba(unsigned int c) {
+    return fs_data_lba + (c - 2) * fs_spc;
+}
+
+/* 目录占用扇区数 (根目录固定, 子目录沿链到 EOF; 每簇 fs_spc 扇) */
 int fs_dir_secs(int dc) {
     if (dc == 0) return (fs_root_entries * 32 + 511) / 512;
-    int n = 1;
+    int n = 0;
     unsigned short c = dc;
     while (n < MAX_DIR_SECTORS) {
-        unsigned short nx = fat12_get_next_cluster(c);
-        if (nx >= 0xFF8) break;
-        c = nx; n++;
+        if (fat_is_eoc(c)) break;
+        n += fs_spc;
+        c = fat12_get_next_cluster(c);
     }
     return n;
 }
@@ -225,11 +280,11 @@ int fs_dir_lba(int dc, int idx) {
         return (idx < max) ? fs_root_lba + idx : -1;
     }
     unsigned short c = dc;
-    for (int i = 0; i < idx; i++) {
+    for (int i = 0; i < idx / fs_spc; i++) {
         c = fat12_get_next_cluster(c);
-        if (c >= 0xFF8) return -1;
+        if (fat_is_eoc(c)) return -1;
     }
-    return fs_data_lba + (c - 2);
+    return fs_cluster_lba(c) + (idx % fs_spc);
 }
 
 /* 读取指定目录的扇区 */
@@ -269,21 +324,21 @@ int fs_find_entry_in_dir(int dir_cluster, char* name, FAT12Entry* out_entry) {
     return -1;
 }
 
-/* ── 路径解析 (v6.5): 支持 "USR\SRC\HELLO.C" / "\ROOT\FILE" / "FILE" ──
+/* ── 路径解析 (v6.5.1): 支持 "USR/SRC/HELLO.C" / "/ROOT/FILE" / "FILE" ──
  * 入参 path 原地改写为纯文件名, 返回所在目录簇; 目录不存在返回 -1。
- * 支持 .. (上一级) 与 / 或 \ 分隔符。 */
+ * 支持 .. (上一级); 分隔符严格只认 / (v6.5.1 决策)。 */
 int fs_resolve_path(char* path) {
     int dir = cwd_cluster;
     char *p = path;
     int from_root = 0;
-    if (p[0] == '\\' || p[0] == '/') { dir = 0; p++; from_root = 1; }
+    if (p[0] == '/') { dir = 0; p++; from_root = 1; }
     if (!*p) return -1;
 
     char *lastsep = 0;
     for (char *q = p; *q; q++)
-        if (*q == '\\' || *q == '/') lastsep = q;
+        if (*q == '/') lastsep = q;
     if (!lastsep) {
-        if (from_root) {               /* "\NAME.EXT": 根目录, 剥掉前导反斜杠 */
+        if (from_root) {               /* "/NAME.EXT": 根目录, 剥掉前导斜杠 */
             char *dst = path;
             while (*p) *dst++ = *p++;
             *dst = 0;
@@ -295,13 +350,13 @@ int fs_resolve_path(char* path) {
     char *seg = p;
     while (*seg) {
         char *sep = seg;
-        while (*sep && *sep != '\\' && *sep != '/') sep++;
+        while (*sep && *sep != '/') sep++;
         char save = *sep; if (*sep) *sep = 0;
         if (*seg) {
             if (seg[0] == '.' && seg[1] == '.' && !seg[2]) {   /* .. 上一级 */
                 if (dir != 0) {
                     unsigned char d[512];
-                    read_sector_asm(fs_data_lba + (dir - 2), d, current_drive_idx);
+                    read_sector_asm(fs_cluster_lba(dir), d, current_drive_idx);
                     dir = ((FAT12Entry*)d)[1].start_cluster;
                 }
             } else if (seg[0] == '.' && !seg[1]) {
@@ -323,18 +378,20 @@ int fs_resolve_path(char* path) {
     return dir;
 }
 
-/* ── 读取文件内容 ── */
+/* ── 读取文件内容 (v6.5.1: 每簇 fs_spc 扇都读, FAT16 数据盘用) ── */
 void fs_read_file(FAT12Entry* entry, char* buffer) {
     unsigned short cluster = entry->start_cluster;
     int bytes_read = 0;
     unsigned char sec[512];
-    while (cluster < 0xFF8 && cluster >= 2 && bytes_read < entry->size) {
-        unsigned int lba = fs_data_lba + (cluster - 2);
-        read_sector_asm(lba, sec, current_drive_idx);
-        int remain = entry->size - bytes_read;
-        int n = (remain > 512) ? 512 : remain;
-        for (int i = 0; i < n; i++) buffer[bytes_read + i] = sec[i];
-        bytes_read += n;
+    while (cluster >= 2 && !fat_is_eoc(cluster) && bytes_read < entry->size) {
+        unsigned int lba = fs_cluster_lba(cluster);
+        for (int s = 0; s < fs_spc && bytes_read < entry->size; s++) {
+            read_sector_asm(lba + s, sec, current_drive_idx);
+            int remain = entry->size - bytes_read;
+            int n = (remain > 512) ? 512 : remain;
+            for (int i = 0; i < n; i++) buffer[bytes_read + i] = sec[i];
+            bytes_read += n;
+        }
         cluster = fat12_get_next_cluster(cluster);
     }
     buffer[entry->size] = 0;
@@ -399,8 +456,9 @@ static int fs_create_file_in_dir_inner(int dir_cluster, char* name, char* data, 
     if (found < 0) { put_str("Directory full!\n"); return -1; }
     entry_idx = found;
 
-    // 需要的簇数
-    int need = (size + 511) / 512;
+    // 需要的簇数 (v6.5.1: FAT16 每簇 fs_spc 扇, 按簇容量 512*fs_spc 字节算)
+    int clus_bytes = 512 * fs_spc;
+    int need = (size + clus_bytes - 1) / clus_bytes;
     if (need == 0) need = 1;
     if (need > MAX_FILE_CLUSTERS) need = MAX_FILE_CLUSTERS;
 
@@ -411,22 +469,34 @@ static int fs_create_file_in_dir_inner(int dir_cluster, char* name, char* data, 
         if (clusters[i] == 0) { put_str("Disk full!\n"); return -1; }
     }
 
-    // 链接 FAT 链: 簇[i] → 簇[i+1], 最后一个 → 0xFFF (EOF)
+    // 链接 FAT 链: 簇[i] → 簇[i+1], 最后一个 → EOC (FAT16 为 0xFFFF)
     for (int i = 0; i < need; i++) {
-        unsigned short nx = (i < need - 1) ? clusters[i+1] : 0xFFF;
-        fat12_set_cluster(clusters[i], nx);
+        unsigned short nx = (i < need - 1) ? clusters[i+1] : (unsigned short)fat_eoc_marker();
+        fat_set_cluster(clusters[i], nx);
     }
 
-    // 写入文件数据 (跨簇)
+    // 写入文件数据 (跨簇; 每簇写满 fs_spc 扇, 尾部/剩余扇区清零)
     for (int i = 0; i < need; i++) {
-        int off = i * 512;
+        int off = i * clus_bytes;
         int remain = size - off;
-        if (remain > 512) remain = 512;
-        if (remain > 0)
-            write_sector_asm(fs_data_lba + (clusters[i] - 2), data + off, current_drive_idx);
-        else
-            { char zero[512]; for(int k=0;k<512;k++)zero[k]=0;
-              write_sector_asm(fs_data_lba + (clusters[i] - 2), zero, current_drive_idx); }
+        if (remain > clus_bytes) remain = clus_bytes;
+        unsigned int lba = fs_cluster_lba(clusters[i]);
+        for (int s = 0; s < fs_spc; s++) {
+            int n = remain - s * 512;
+            if (n >= 512) {
+                write_sector_asm(lba + s, data + off + s * 512, current_drive_idx);
+            } else if (n > 0) {
+                /* 最后一段: 部分扇区, 剩余字节清零 */
+                char tmp[512];
+                for (int k = 0; k < 512; k++) tmp[k] = 0;
+                for (int k = 0; k < n; k++) tmp[k] = data[off + s * 512 + k];
+                write_sector_asm(lba + s, tmp, current_drive_idx);
+            } else {
+                /* 簇内超出数据部分: 清零 */
+                char zero[512]; for (int k = 0; k < 512; k++) zero[k] = 0;
+                write_sector_asm(lba + s, zero, current_drive_idx);
+            }
+        }
     }
 
     // 填写目录条目
@@ -467,10 +537,11 @@ void fs_create_directory(char* dirname) {
     unsigned short clus = fat12_alloc_cluster();
     if (clus == 0) { put_str("Disk full!\n"); return; }
 
-    // 清空该簇
+    // 清空该簇 (FAT16 每簇 fs_spc 扇, 全清防陈旧目录项)
     char zero[512];
     for (int k = 0; k < 512; k++) zero[k] = 0;
-    write_sector_asm(fs_data_lba + (clus - 2), zero, current_drive_idx);
+    for (int s = 0; s < fs_spc; s++)
+        write_sector_asm(fs_cluster_lba(clus) + s, zero, current_drive_idx);
 
     // 填写父目录条目
     FAT12Entry dir_buf[16];
@@ -500,7 +571,7 @@ void fs_create_directory(char* dirname) {
     sub[1].attr = 0x10;
     sub[1].start_cluster = cwd_cluster;  // 父目录簇 (0=根)
 
-    write_sector_asm(fs_data_lba + (clus - 2), sub, current_drive_idx);
+    write_sector_asm(fs_cluster_lba(clus), sub, current_drive_idx);
     put_str("Directory created.\n");
 }
 
@@ -519,9 +590,9 @@ int fs_write_file_in_dir(int dir_cluster, char* name, char* data, int size) {
         write_sector_asm(sector_off, buf, current_drive_idx);
         /* 释放簇链 */
         unsigned short clus = e.start_cluster;
-        while (clus >= 2 && clus < 0xFF8) {
+        while (clus >= 2 && !fat_is_eoc(clus)) {
             unsigned short nx = fat12_get_next_cluster(clus);
-            fat12_set_cluster(clus, 0);
+            fat_set_cluster(clus, 0);
             clus = nx;
         }
     }
@@ -554,9 +625,9 @@ int fs_delete_file_in_dir(int dir_cluster, char* name) {
 
     // 释放簇链
     unsigned short clus = entry.start_cluster;
-    while (clus >= 2 && clus < 0xFF8) {
+    while (clus >= 2 && !fat_is_eoc(clus)) {
         unsigned short next = fat12_get_next_cluster(clus);
-        fat12_set_cluster(clus, 0);
+        fat_set_cluster(clus, 0);
         clus = next;
     }
     return 0;
@@ -603,9 +674,9 @@ void fs_delete_directory(char* dirname) {
 
     // 释放目录的簇
     unsigned short clus = entry.start_cluster;
-    while (clus >= 2 && clus < 0xFF8) {
+    while (clus >= 2 && !fat_is_eoc(clus)) {
         unsigned short nx = fat12_get_next_cluster(clus);
-        fat12_set_cluster(clus, 0);
+        fat_set_cluster(clus, 0);
         clus = nx;
     }
     put_str("Directory removed.\n");

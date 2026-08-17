@@ -129,7 +129,7 @@ for name, content in C_FILES.items():
 # ── 命令对照表 (v6.5.1): CMDS.BIN, 全盘搜索可用 ──
 CMDS_BIN = '''\
 ; AMUNOS 命令→ELF 对照表 (v6.5.1)
-EDIT \\EDIT.ELF
+EDIT /EDIT.ELF
 '''
 add_to(root, 'CMDS', 'BIN', CMDS_BIN)
 

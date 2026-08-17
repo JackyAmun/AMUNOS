@@ -1,24 +1,22 @@
 #!/usr/bin/env python3
-r"""C.img for AMUNOS v6.5.1 — 第三数据盘 (次通道 -hdc, 内核盘符 C:)
+r"""mkfat16.py — 生成 FAT16 数据盘镜像 (测试 AMUNOS 的 FAT16 兼容性)
 
-FAT16 (32MB, 8 扇区/簇): 验证内核 FAT12/16 自动识别 + 每簇扇区数寻址。
+几何: 32MB, 512B/扇区, 8 扇区/簇 (4KB), 2 份 FAT, 根目录 512 项。
+与真实 mkfs.fat -F 16 生成的布局一致 (仅根目录/文件内容不同)。
 
-Tree:
-  C:/
-  ├─ HELLO.ELF                    (根: 按名运行; 演示次通道可执行程序)
-  ├─ USR/SRC/DEMO.C
-  └─ CMDS.BIN                     (EDIT → /EDIT.ELF 相对映射, 全盘搜索命中)
+用法: python3 mkfat16.py out.img
+  默认在根放 USR\SRC\DEMO.C 与 CMDS.BIN, 供 AMUNOS 读取测试。
 """
 import struct, sys, os
 
-path = sys.argv[1] if len(sys.argv) > 1 else 'C.img'
+path = sys.argv[1] if len(sys.argv) > 1 else 'fat16.img'
 
 BPS = 512; SPC = 8; RES = 1; NFAT = 2; ROOT_ENTRIES = 512
 TOTAL_SEC = 65536                      # 32MB
-FAT_SEC = ((65536 - RES - 512 // BPS) // SPC + 2) * 2  # 粗估后精算
 ROOT_SEC = ROOT_ENTRIES * 32 // BPS    # 32
-DATA_SEC = TOTAL_SEC - RES - NFAT * FAT_SEC - ROOT_SEC
-NCLU = DATA_SEC // SPC
+DATA_SEC = TOTAL_SEC - RES - NFAT * 9 - ROOT_SEC   # 先估 FAT=9 扇再校正
+NCLU = (TOTAL_SEC - RES - ROOT_SEC) // (SPC + 0)   # 初估
+# 计算 FAT 扇区数: 每个条目 2 字节
 FAT_SEC = ((NCLU + 2) * 2 + BPS - 1) // BPS
 DATA_SEC = TOTAL_SEC - RES - NFAT * FAT_SEC - ROOT_SEC
 NCLU = DATA_SEC // SPC
@@ -30,7 +28,7 @@ FAT_SEC = ((NCLU + 2) * 2 + BPS - 1) // BPS
 FAT_LBA = RES
 ROOT_LBA = RES + NFAT * FAT_SEC
 DATA_LBA = ROOT_LBA + ROOT_SEC
-print(f'FAT16 C.img: total={TOTAL_SEC} spc={SPC} fat={FAT_SEC}sec '
+print(f'FAT16: total={TOTAL_SEC} spc={SPC} fat={FAT_SEC}sec '
       f'root@{ROOT_LBA} data@{DATA_LBA} clusters={NCLU}')
 
 d = bytearray(TOTAL_SEC * BPS)
@@ -71,22 +69,8 @@ def mk_entry(n8, e3, attr, start, size):
     struct.pack_into('<I', e, 28, size)
     return e
 
-class Dir:
-    def __init__(self, name8, cluster):
-        self.name = name8
-        self.cluster = cluster          # 0 = root
-        self.entries = []
-
-def mkdir(name8, parent):
-    c = alloc(1)
-    sub = Dir(name8, c)
-    sub.entries.append(mk_entry('.', '   ', 0x10, c, 0))
-    sub.entries.append(mk_entry('..', '   ', 0x10, parent.cluster, 0))
-    parent.entries.append(mk_entry(name8, '   ', 0x10, c, 0))
-    return sub
-
 def add_to(parent, name8, ext3, content, attr=0x20):
-    C = content if isinstance(content, (bytes, bytearray)) else content.encode()
+    C = content if isinstance(content, bytes) else content.encode()
     nc = (len(C) + SPC*BPS - 1) // (SPC*BPS)
     if nc == 0: nc = 1
     c = alloc(nc)
@@ -96,38 +80,35 @@ def add_to(parent, name8, ext3, content, attr=0x20):
     parent.entries.append(mk_entry(name8, ext3, attr, c, len(C)))
     return c
 
-def add_file(name8, ext3, path, attr=0x20):
-    with open(path, 'rb') as f:
-        return add_to(root, name8, ext3, f.read(), attr)
+class P:
+    def __init__(self, clus):
+        self.clus = clus
+        self.entries = []
 
-root = Dir('', 0)
-USR = mkdir('USR', root)
-USR_SRC = mkdir('SRC', USR)
+root = P(0)
+usr = P(alloc(1)); root.entries.append(mk_entry('USR', '   ', 0x10, usr.clus, 0))
+usr.entries.append(mk_entry('.', '   ', 0x10, usr.clus, 0))
+usr.entries.append(mk_entry('..', '   ', 0x10, 0, 0))
+src = P(alloc(1)); usr.entries.append(mk_entry('SRC', '   ', 0x10, src.clus, 0))
+src.entries.append(mk_entry('.', '   ', 0x10, src.clus, 0))
+src.entries.append(mk_entry('..', '   ', 0x10, usr.clus, 0))
 
-# ── 用户 ELF (根: 按名运行; 演示 FAT16 次通道 C: 可执行) ──
 if os.path.exists('hello.elf'):
-    add_file('HELLO', 'ELF', 'hello.elf')
+    add_to(root, 'HELLO', 'ELF', open('hello.elf','rb').read())
 else:
-    print('WARN: hello.elf not found (run: make hello.elf)')
+    print('WARN: hello.elf not found')
 
-# ── C 样例源码 (USR/SRC/) ──
-add_to(USR_SRC, 'DEMO', 'C  ',
+add_to(src, 'DEMO', 'C  ',
        'int main(){printf("DEMO OK from TCC\\n");return 0;}\n')
+CMDS = '; FAT16 C 盘命令表\nEDIT /EDIT.ELF\nHELLO /HELLO.ELF\n'
+add_to(root, 'CMDS', 'BIN', CMDS)
 
-# ── 命令对照表 (v6.5.1): 相对映射, cmd_custom 自动补 C: 盘符 ──
-CMDS_BIN = '''\
-; AMUNOS 命令→ELF 对照表 (v6.5.1) C 盘
-EDIT /EDIT.ELF
-HELLO /HELLO.ELF
-'''
-add_to(root, 'CMDS', 'BIN', CMDS_BIN)
-
-# ── 落盘: 根目录 + 各子目录 ──
+# 落盘: 根目录 + 各子目录
 for i, e in enumerate(root.entries):
     d[ROOT_LBA*BPS + i*32: ROOT_LBA*BPS + i*32 + 32] = e
-for sub in [USR, USR_SRC]:
-    off = (DATA_LBA + (sub.cluster - 2) * SPC) * BPS
-    for i, e in enumerate(sub.entries):
+for c, entries in [(usr.clus, usr.entries), (src.clus, src.entries)]:
+    off = (DATA_LBA + (c - 2) * SPC) * BPS
+    for i, e in enumerate(entries):
         d[off + i*32: off + i*32 + 32] = e
 # FAT2 = FAT1
 d[FAT_LBA*BPS + FAT_SEC*BPS : FAT_LBA*BPS + 2*FAT_SEC*BPS] = \
@@ -135,5 +116,4 @@ d[FAT_LBA*BPS + FAT_SEC*BPS : FAT_LBA*BPS + 2*FAT_SEC*BPS] = \
 
 with open(path, 'wb') as f:
     f.write(d)
-nfiles = sum(1 for sub in [root, USR, USR_SRC] for e in sub.entries if e[11] != 0x10)
-print(f'{path} ready ({nfiles} files, {clu - 2} clusters, 2 dirs)')
+print(f'{path} ready ({len(root.entries)}+{len(usr.entries)}+{len(src.entries)} entries, {clu-2} clusters)')

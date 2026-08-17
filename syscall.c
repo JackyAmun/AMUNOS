@@ -122,7 +122,7 @@ static int sys_open(char *path, int flags) {
 
     int has_sep = 0;
     for (i = 0; full[i]; i++)
-        if (full[i] == '\\' || full[i] == '/') { has_sep = 1; break; }
+        if (full[i] == '/') { has_sep = 1; break; }   /* v6.5.1: 严格只认 / */
 
     int dc = cwd_cluster;
     if (has_sep) {

@@ -20,13 +20,14 @@ AMUNOS 是一个运行在 **x86 32 位保护模式**下的迷你操作系统，�
 - **编译器**：内置 **TinyCC 0.9.27**（tcc.elf），可把 C 源码编译成 AMUNOS 能运行的静态 ELF。
 - **标准库**：minilibc（libc/）— `printf`/`snprintf`/`malloc`/`string`/文件 I/O 等，
   供 TCC 与用户程序链接。
-- **文件系统**：FAT12，**三盘** A:（系统盘）+ B:/C:（数据盘），**两级目录树已落地**：
-  A:\BOOT（引导/内核副本）、A:\BIN（TCC.ELF/EDIT.ELF）、A:\USR\LIB、A:\USR\INCLUDE、
-  A:\USR\SRC、B:\USR\SRC、C:\USR\SRC；支持子目录 + **路径遍历 + 盘符限定路径**
-  （`TYPE USR\SRC\HELLO.C`、`COPY C:\A.TXT B:\B.TXT`、`COPY A:\X B:`、`TYPE .\SRC\X.C`、
-  `DEL SUB\F.TXT`、`CD USR\SRC`、`A:`/`B:`/`C:` 切盘等，命令大小写不敏感）。
+- **文件系统**：**FAT12/16 自动识别**（fs_init 按簇数判定位宽，FAT16 数据盘每簇多扇也正确），
+  **三盘** A:（系统盘）+ B:/C:（数据盘），**两级目录树已落地**：
+  A:/BOOT（引导/内核副本）、A:/BIN（TCC.ELF/EDIT.ELF）、A:/USR/LIB、A:/USR/INCLUDE、
+  A:/USR/SRC、B:/USR/SRC、C:/USR/SRC；支持子目录 + **路径遍历 + 盘符限定路径**
+  （`TYPE USR/SRC/HELLO.C`、`COPY C:/A.TXT B:/B.TXT`、`COPY A:/X B:`、`TYPE ./SRC/X.C`、
+  `DEL SUB/F.TXT`、`CD USR/SRC`、`A:`/`B:`/`C:` 切盘等，命令大小写不敏感；分隔符**严格 `/`**）。
 - **Shell**：命令行 REPL，`DIR -P` 分页、`ELF`、`TCC`、行编辑（←→/Home/End/Del）、
-  任意命令加 `/?`（或 `-?`）显示用法。
+  任意命令加 `-?` 显示用法。
 - **TCC 计时**：`TCC file.c` 显示 `Compiling ...` 与 `TCC done (N.Ns)` 编译耗时。
 - **编辑器**：**用户态程序**（edit.c 交叉编译成 EDIT.ELF 放文件系统，内核不再内置）。
   FreeDOS EDIT 风格功能键——F1=帮助 F2=保存 F3=打开 F4=新建 F5=退出，支持路径，
@@ -75,7 +76,7 @@ OSDev/
 ├── head.asm         32 位入口 + 中断桩（键盘/系统调用/定时器/异常）
 ├── kernel.c         kmain + shell REPL + 演示任务
 ├── command.c        shell 命令（DIR -P / ELF / TCC ...）
-├── fs.c             FAT12 文件系统
+├── fs.c             FAT12/16 文件系统
 ├── disk_io.asm      磁盘 I/O
 ├── vga.c            VGA 文本输出（0xB8000）
 ├── kbd.c            PS/2 键盘（scancode → ASCII）
@@ -91,7 +92,7 @@ OSDev/
 ├── Makefile         构建入口
 ├── mka_img.py       A.img 镜像构建器（内置文件）
 ├── mkbimg.py        B.img 镜像构建器
-├── mkcimg.py        C.img 镜像构建器（次通道数据盘）
+├── mkcimg.py        C.img 镜像构建器（FAT16 次通道数据盘）
 ├── build-tcc.sh     交叉编译 TinyCC
 ├── build-libc.sh    构建 minilibc
 ├── libc/            用户态标准库（stdio/stdlib/string/malloc/...）
@@ -103,36 +104,37 @@ OSDev/
 ## 磁盘目录结构（v6.5.1 落地）
 
 ```
-A:\（系统盘，TCC 编译在 A: 下进行）
-├─ BOOT\             BOOT.BIN, KERNEL.BIN（副本）
-├─ BIN\              TCC.ELF, EDIT.ELF（系统可执行程序; INSTALL 装到这里）
-├─ USR\
-│  ├─ INCLUDE\       TCC 内置头 + libc 头（STDIO.H, STDLIB.H ...）
-│  ├─ LIB\           LIBC.A, LIBTCC1.A（TCC 链接库）
-│  └─ SRC\           HELLO.C, INP.C（示例源码）
-├─ CRT1.O CRTI.O CRTN.O   TCC crt 文件（crt_paths="A:\" 绝对前缀，任意 cwd 可解析）
-└─ CMDS.BIN          命令→ELF 对照表（EDIT → \BIN\EDIT.ELF；内核保护，可 EDIT/INSTALL 改写）
+A:/（系统盘，TCC 编译在 A: 下进行）
+├─ BOOT/             BOOT.BIN, KERNEL.BIN（副本）
+├─ BIN/              TCC.ELF, EDIT.ELF（系统可执行程序; INSTALL 装到这里）
+├─ USR/
+│  ├─ INCLUDE/       TCC 内置头 + libc 头（STDIO.H, STDLIB.H ...）
+│  ├─ LIB/           LIBC.A, LIBTCC1.A（TCC 链接库）
+│  └─ SRC/           HELLO.C, INP.C（示例源码）
+├─ CRT1.O CRTI.O CRTN.O   TCC crt 文件（crt_paths="A:/" 绝对前缀，任意 cwd 可解析）
+└─ CMDS.BIN          命令→ELF 对照表（EDIT → /BIN/EDIT.ELF；内核保护，可 EDIT/INSTALL 改写）
 
-B:\（数据盘，可写）
+B:/（数据盘，可写，FAT12）
 ├─ HELLO.ELF INP.ELF EDIT.ELF   用户 ELF（输入 XXX 自动试 XXX.ELF/.EXE/.COM/.BIN）
-├─ USR\SRC\          HW.C, RETVAL.C, COUNT5.C ...（C 测试源码）
+├─ USR/SRC/          HW.C, RETVAL.C, COUNT5.C ...（C 测试源码）
 └─ CMDS.BIN          命令→ELF 对照表
 
-C:\（次通道数据盘，-hdc）
+C:/（次通道数据盘，-hdc，**FAT16 32MB**）
 ├─ HELLO.ELF                     用户 ELF
-├─ USR\SRC\DEMO.C
+├─ USR/SRC/DEMO.C
 └─ CMDS.BIN          命令→ELF 对照表
 ```
 
-`TCC` 命令自动注入 **盘符限定绝对路径** `A:\BIN\TCC.ELF -I A:\USR\INCLUDE -L A:\USR\LIB
--B A:\USR\LIB`——在任何盘/目录下 `TCC B:\USR\SRC\HELLO.C -o HELLO.EXE` 都能编译链接。
+`TCC` 命令自动注入 **盘符限定绝对路径** `A:/BIN/TCC.ELF -I A:/USR/INCLUDE -L A:/USR/LIB
+-B A:/USR/LIB`——在任何盘/目录下 `TCC B:/USR/SRC/HELLO.C -o HELLO.EXE` 都能编译链接。
 （曾出现 "crt1.o / library 'c' not found"：TCC 的 `tcc_split_path` 把路径列表按 Unix
-分隔符 `:` 拆分，盘符 `A:\...` 被切成 `["A","\..."]`。已打补丁 `tcc_drive_colon`
-（makar/vendor/tinycc/libtcc.c）：段首的 `X:\`/`X:/` 冒号视为路径一部分，其余 `:` 仍是分隔符；
-`CONFIG_TCC_CRTPREFIX="A:\"` 于是固定指向 A 盘根，从任意盘/目录解析 crt1.o 等。）
+分隔符 `:` 拆分，盘符 `A:/...` 被切成 `["A","/..."]`。已打补丁 `tcc_drive_colon`
+（makar/vendor/tinycc/libtcc.c）：段首的 `X:/` 冒号视为路径一部分，其余 `:` 仍是分隔符。
+v6.5.1 起分隔符严格只认 `/`，`CONFIG_TCC_CRTPREFIX` 也由 `A:\` 改为 `A:/`——经 TCC 的
+`"%s/%s"` 拼接出 `A://crt1.o`，内核解析器跳过空段命中根目录，任意盘/目录都可解析 crt1.o 等。）
 
-文件操作支持跨盘与绝对路径：`COPY C:\USR\SRC\DEMO.C A:\USR\SRC\`、`COPY B:\HELLO.ELF A:\BIN\`、
-`COPY A:\USR\SRC\HELLO.C B:`（裸盘目标=该盘根）、`TYPE .\SRC\X.C`、`MOV`/`DEL`/`REN` 同理。
+文件操作支持跨盘与绝对路径：`COPY C:/USR/SRC/DEMO.C A:/USR/SRC/`、`COPY B:/HELLO.ELF A:/BIN/`、
+`COPY A:/USR/SRC/HELLO.C B:`（裸盘目标=该盘根）、`TYPE ./SRC/X.C`、`MOV`/`DEL`/`REN` 同理。
 
 ## 内存布局
 

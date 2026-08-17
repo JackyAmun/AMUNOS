@@ -17,7 +17,7 @@ char drive_letter(void){return (char)('A'+current_drive_idx);}
 void print_prompt(){
     cur_x=0;
     put_char(drive_letter(),0x0E);
-    put_str(":\\");if(*cwd_path)put_str(cwd_path);
+    put_str(":/");if(*cwd_path)put_str(cwd_path);
     put_str("> ");
     prompt_len=cur_x;   // "A:\PATH> " 的总宽度
     update_cursor();

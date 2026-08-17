@@ -51,6 +51,8 @@ extern char cwd_path[128];    // 当前路径字符串
 extern int fs_root_lba;
 extern int fs_root_entries;
 extern int fs_data_lba;
+extern int fs_spc;        // 每簇扇区数 (BPB off 13; v6.5.1 FAT16)
+extern int fs_fat_bits;   // FAT 位宽 12/16 (v6.5.1 自动识别)
 
 extern void put_num(unsigned int n);
 extern void update_cursor();
@@ -77,6 +79,7 @@ int fs_list_dir(int dir_cluster, FAT12Entry* out_buf, int max_entries);
 unsigned short fat12_get_next_cluster(unsigned short cluster);
 int fs_dir_secs(int dc);
 int fs_dir_lba(int dc, int idx);
+unsigned int fs_cluster_lba(unsigned int c);   // 簇 → 数据区首扇 LBA (FAT16 每簇多扇)
 void to_fat12_name(char* src, char* dest);
 
 // --- 5.1 盘符限定路径 (v6.5.1) ---
