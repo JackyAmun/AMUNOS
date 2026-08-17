@@ -109,6 +109,8 @@ void keyboard_handler() {
         case 0x53: key_pressed = 9;  return;  // DEL
         case 0x47: key_pressed = 10; return;  // HOME
         case 0x4F: key_pressed = 11; return;  // END
+        case 0x49: key_pressed = 18; return;  // PgUp
+        case 0x51: key_pressed = 19; return;  // PgDn
         default:   return;
         }
     }
@@ -199,14 +201,14 @@ void kbd_poll() {
  * 这样 shell / DIR 分页 / 编辑器 / 程序 stdin 都自动支持串口输入,
  * Ctrl+C (0x03) 在串口上也生效。
  * key_pressed: 1=字符 2=回车 3=退格 4-7=方向 8=ESC 9=DEL 10=HOME 11=END
- *              12=Ctrl+C 13-17=F1-F5 */
+ *              12=Ctrl+C 13-17=F1-F5 18=PgUp 19=PgDn */
 void input_poll(void) {
     kbd_poll();
     if (key_pressed) return;              /* 键盘事件优先 */
     int c = serial_getc();
     if (c < 0) return;
 
-    /* ── 串口 VT100 功能键 (F1-F5): ESC[11~..ESC[15~ 或 ESC O P..T ── */
+    /* ── 串口 VT100 功能键 (F1-F5/PgUp/PgDn): ESC[11~..ESC[15~、ESC[5~/ESC[6~ 或 ESC O P..T ── */
     static int sesc = 0, sdigit = 0;
     if (sesc == 1) {                      /* 已收 ESC, 等 [ 或 O */
         if (c == '[') { sesc = 2; sdigit = 0; return; }
@@ -218,7 +220,8 @@ void input_poll(void) {
         if (c == '~') {
             sesc = 0;
             int f = (sdigit == 11) ? 13 : (sdigit == 12) ? 14 : (sdigit == 13) ? 15
-                  : (sdigit == 14) ? 16 : (sdigit == 15) ? 17 : 0;
+                  : (sdigit == 14) ? 16 : (sdigit == 15) ? 17
+                  : (sdigit == 5) ? 18 : (sdigit == 6) ? 19 : 0;   /* PgUp PgDn */
             sdigit = 0;
             if (f) key_pressed = f;
             return;

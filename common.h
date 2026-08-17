@@ -43,7 +43,7 @@ extern int cmd_len, cmd_pos;
 extern char cmd_buf[128];
 
 // 文件系统全局状态
-extern int current_drive_idx; // 0=Master(A:), 1=Slave(B:)
+extern int current_drive_idx; // 0=A(主盘) 1=B(从盘) 2=C(次主盘) 3=D(次从盘)
 extern int cwd_cluster;       // 当前目录起始簇 (0=根目录)
 extern char cwd_path[128];    // 当前路径字符串
 
@@ -70,20 +70,30 @@ void fs_create_directory(char* dirname);
 void fs_delete_directory(char* dirname);
 int fs_create_file_in_dir(int dir_cluster, char* name, char* data, int size);
 void fs_delete_file(char* filename);
-void fs_delete_file_in_dir(int dir_cluster, char* name);
+int fs_delete_file_in_dir(int dir_cluster, char* name);
 int fs_resolve_path(char* path);
-void fs_write_file_in_dir(int dir_cluster, char* name, char* data, int size);
+int fs_write_file_in_dir(int dir_cluster, char* name, char* data, int size);
 int fs_list_dir(int dir_cluster, FAT12Entry* out_buf, int max_entries);
 unsigned short fat12_get_next_cluster(unsigned short cluster);
 int fs_dir_secs(int dc);
 int fs_dir_lba(int dc, int idx);
 void to_fat12_name(char* src, char* dest);
 
+// --- 5.1 盘符限定路径 (v6.5.1) ---
+typedef struct { int drive; int cwd; } drive_ctx_t;
+int parse_drive(char **pp);
+drive_ctx_t fs_drive_enter(int drive);
+void fs_drive_restore(drive_ctx_t c);
+int fs_drive_open(char *path, drive_ctx_t *ctx);
+int is_cmds_file(char *fat11);
+int fs_drive_present(int d);
+
 // --- 6. 其他模块声明 ---
 int strcmp(const char *s1, const char *s2);
 int strlen(const char *s);
 void strcpy(char *dst, const char *src);
 char to_upper(char c);  // 添加这一行
+char drive_letter(void);
 void cmd_ver();         // 添加这一行
 
 void put_char(char c, char color);

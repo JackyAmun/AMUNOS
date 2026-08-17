@@ -12,10 +12,11 @@ int strcmp(const char*a,const char*b){while(*a&&*a==*b){a++;b++;}return*(unsigne
 void strcpy(char*d,const char*s){while((*d++=*s++));}
 void put_num(unsigned n){if(!n){put_char('0',0x07);return;}char b[12];int i=0;while(n){b[i++]='0'+n%10;n/=10;}while(--i>=0)put_char(b[i],0x07);}
 char to_upper(char c){return(c>='a'&&c<='z')?c-32:c;}
+char drive_letter(void){return (char)('A'+current_drive_idx);}
 
 void print_prompt(){
     cur_x=0;
-    put_char(current_drive_idx==0?'A':'B',0x0E);
+    put_char(drive_letter(),0x0E);
     put_str(":\\");if(*cwd_path)put_str(cwd_path);
     put_str("> ");
     prompt_len=cur_x;   // "A:\PATH> " 的总宽度
@@ -52,8 +53,8 @@ static void demo_clock_task() {
 void kmain(){
     serial_init();
     cls();
-    put_str("AMUNOS Kernel v6.5 (ELF Exec)\n");
-    serial_puts("AMUNOS v6.5 serial ready\n");   /* 冒烟标记: serial_puts 把 \n 翻成 CRLF */
+    put_str("AMUNOS Kernel v6.5.1 (Multi-Drive)\n");
+    serial_puts("AMUNOS v6.5.1 serial ready\n");   /* 冒烟标记: serial_puts 把 \n 翻成 CRLF */
     init_idt();
     mem_init();
     timer_init();

@@ -1,6 +1,6 @@
 # AMUNOS — 一个 x86 32 位自举操作系统
 
-> 爱好项目 · 从零编写 · 内核版本 **v6.5（ELF Exec + 串口/并口）**
+> 爱好项目 · 从零编写 · 内核版本 **v6.5.1（跨盘文件操作 + 三盘启动 + 命令安装）**
 
 AMUNOS 是一个运行在 **x86 32 位保护模式**下的迷你操作系统，从一个 FAT12 引导扇区
 启动。它的独特之处在于**内置了 TinyCC 编译器与 minilibc**——你可以在 OS 的 shell 里
@@ -20,18 +20,24 @@ AMUNOS 是一个运行在 **x86 32 位保护模式**下的迷你操作系统，�
 - **编译器**：内置 **TinyCC 0.9.27**（tcc.elf），可把 C 源码编译成 AMUNOS 能运行的静态 ELF。
 - **标准库**：minilibc（libc/）— `printf`/`snprintf`/`malloc`/`string`/文件 I/O 等，
   供 TCC 与用户程序链接。
-- **文件系统**：FAT12，双盘 A:（系统盘）+ B:（数据盘），**两级目录树已落地**：
+- **文件系统**：FAT12，**三盘** A:（系统盘）+ B:/C:（数据盘），**两级目录树已落地**：
   A:\BOOT（引导/内核副本）、A:\BIN（TCC.ELF/EDIT.ELF）、A:\USR\LIB、A:\USR\INCLUDE、
-  A:\USR\SRC、B:\USR\SRC；支持子目录 + **路径遍历**
-  （`TYPE USR\SRC\HELLO.C`、`COPY S\A.TXT D\B.TXT`、`DEL SUB\F.TXT`、`CD USR\SRC` 等，命令大小写不敏感）。
+  A:\USR\SRC、B:\USR\SRC、C:\USR\SRC；支持子目录 + **路径遍历 + 盘符限定路径**
+  （`TYPE USR\SRC\HELLO.C`、`COPY C:\A.TXT B:\B.TXT`、`COPY A:\X B:`、`TYPE .\SRC\X.C`、
+  `DEL SUB\F.TXT`、`CD USR\SRC`、`A:`/`B:`/`C:` 切盘等，命令大小写不敏感）。
 - **Shell**：命令行 REPL，`DIR -P` 分页、`ELF`、`TCC`、行编辑（←→/Home/End/Del）、
   任意命令加 `/?`（或 `-?`）显示用法。
 - **TCC 计时**：`TCC file.c` 显示 `Compiling ...` 与 `TCC done (N.Ns)` 编译耗时。
 - **编辑器**：**用户态程序**（edit.c 交叉编译成 EDIT.ELF 放文件系统，内核不再内置）。
-  FreeDOS EDIT 风格功能键——F1=帮助 F2=保存 F3=打开 F4=新建 F5=退出，支持路径。
-- **按名运行**：当前目录下存在 `XXX.ELF` 时，直接输入 `XXX` 即可运行（自动补 `.ELF`）。
-- **命令对照表**：每盘根目录 `CMDS.TXT`，行格式 `命令名 目标ELF`，命令名映射到任意
-  可执行文件；**表优先于按名运行**。用 `EDIT CMDS.TXT` 改后即时生效，可自定义命令。
+  FreeDOS EDIT 风格功能键——F1=帮助 F2=保存 F3=打开 F4=新建 F5=退出，支持路径，
+  **PgUp/PgDn 翻页**（PS/2 与串口 `ESC[5~`/`ESC[6~`）。
+- **按名运行 / 扩展名补全**：输入 `XXX` 自动按序试 `XXX.ELF/.EXE/.COM/.BIN`
+  （先当前目录，再当前盘根）。
+- **命令对照表**：`CMDS.BIN`（每盘根目录），行格式 `命令名 目标ELF`，**全盘 A:-D: 搜索**；
+  用 `EDIT CMDS.BIN` 编辑或 **`INSTALL prog[.ext] [name]`** 命令注册——`INSTALL` 会把程序
+  复制到 `A:\BIN` 并在 CMDS.BIN 追加一行，任何盘/目录直接敲命令名即运行。
+- **CMDS.BIN 保护**：内核拒绝 `DEL`/`REN`/`COPY` 覆盖它（"CMDS.BIN is protected."），
+  但 `EDIT CMDS.BIN` 仍可编辑保存。
 - **强制终止**：全局 Ctrl+C，可中断死循环的前台程序回到提示符。
 - **异常处理**：IDT 异常桩 + `*** FAULT ***` 兜底显示。
 - **串口/并口**：COM1 UART + LPT1 轮询驱动（serial.c），`SER text`/`LPT text` 命令。
@@ -51,11 +57,11 @@ cd /mnt/c/Users/XU/Desktop/OSDev
 # 全量构建 A.img（boot + kernel + 内置文件）
 make all
 
-# 构建 B.img（数据盘 + 示例 ELF）
-make B.img
+# 构建 B.img、C.img（数据盘 + 示例 ELF）
+make B.img C.img
 
-# 双盘图形界面运行
-make run-dual-gui
+# 三盘图形界面运行（A: 引导 + B:/C: 数据，C: 走次通道 -hdc）
+make run-trio-gui
 ```
 
 > QEMU 只在 WSL 里可用（`/usr/bin/qemu-system-i386`）；Windows 侧的 `python3` 是
@@ -85,6 +91,7 @@ OSDev/
 ├── Makefile         构建入口
 ├── mka_img.py       A.img 镜像构建器（内置文件）
 ├── mkbimg.py        B.img 镜像构建器
+├── mkcimg.py        C.img 镜像构建器（次通道数据盘）
 ├── build-tcc.sh     交叉编译 TinyCC
 ├── build-libc.sh    构建 minilibc
 ├── libc/            用户态标准库（stdio/stdlib/string/malloc/...）
@@ -93,27 +100,39 @@ OSDev/
 └── README.md        本文件
 ```
 
-## 磁盘目录结构（v6.5 落地）
+## 磁盘目录结构（v6.5.1 落地）
 
 ```
 A:\（系统盘，TCC 编译在 A: 下进行）
 ├─ BOOT\             BOOT.BIN, KERNEL.BIN（副本）
-├─ BIN\              TCC.ELF, EDIT.ELF（系统可执行程序）
+├─ BIN\              TCC.ELF, EDIT.ELF（系统可执行程序; INSTALL 装到这里）
 ├─ USR\
 │  ├─ INCLUDE\       TCC 内置头 + libc 头（STDIO.H, STDLIB.H ...）
 │  ├─ LIB\           LIBC.A, LIBTCC1.A（TCC 链接库）
 │  └─ SRC\           HELLO.C, INP.C（示例源码）
-├─ CRT1.O CRTI.O CRTN.O   TCC crt 文件（TCC 只在当前目录找，故留根）
-└─ CMDS.TXT          命令→ELF 对照表（EDIT → \BIN\EDIT.ELF）
+├─ CRT1.O CRTI.O CRTN.O   TCC crt 文件（crt_paths="A:\" 绝对前缀，任意 cwd 可解析）
+└─ CMDS.BIN          命令→ELF 对照表（EDIT → \BIN\EDIT.ELF；内核保护，可 EDIT/INSTALL 改写）
 
 B:\（数据盘，可写）
-├─ HELLO.ELF INP.ELF EDIT.ELF   用户 ELF（当前目录下有 XXX.ELF，输入 XXX 即运行）
+├─ HELLO.ELF INP.ELF EDIT.ELF   用户 ELF（输入 XXX 自动试 XXX.ELF/.EXE/.COM/.BIN）
 ├─ USR\SRC\          HW.C, RETVAL.C, COUNT5.C ...（C 测试源码）
-└─ CMDS.TXT          命令→ELF 对照表
+└─ CMDS.BIN          命令→ELF 对照表
+
+C:\（次通道数据盘，-hdc）
+├─ HELLO.ELF                     用户 ELF
+├─ USR\SRC\DEMO.C
+└─ CMDS.BIN          命令→ELF 对照表
 ```
 
-`TCC` 命令自动注入 `-I USR\INCLUDE -L USR\LIB -B USR\LIB` 定位头/库，并把编译器
-指向 `BIN\TCC.ELF`；在 A: 根下 `TCC USR\SRC\HELLO.C -o HELLO.EXE` 即可编译。
+`TCC` 命令自动注入 **盘符限定绝对路径** `A:\BIN\TCC.ELF -I A:\USR\INCLUDE -L A:\USR\LIB
+-B A:\USR\LIB`——在任何盘/目录下 `TCC B:\USR\SRC\HELLO.C -o HELLO.EXE` 都能编译链接。
+（曾出现 "crt1.o / library 'c' not found"：TCC 的 `tcc_split_path` 把路径列表按 Unix
+分隔符 `:` 拆分，盘符 `A:\...` 被切成 `["A","\..."]`。已打补丁 `tcc_drive_colon`
+（makar/vendor/tinycc/libtcc.c）：段首的 `X:\`/`X:/` 冒号视为路径一部分，其余 `:` 仍是分隔符；
+`CONFIG_TCC_CRTPREFIX="A:\"` 于是固定指向 A 盘根，从任意盘/目录解析 crt1.o 等。）
+
+文件操作支持跨盘与绝对路径：`COPY C:\USR\SRC\DEMO.C A:\USR\SRC\`、`COPY B:\HELLO.ELF A:\BIN\`、
+`COPY A:\USR\SRC\HELLO.C B:`（裸盘目标=该盘根）、`TYPE .\SRC\X.C`、`MOV`/`DEL`/`REN` 同理。
 
 ## 内存布局
 
@@ -147,6 +166,6 @@ ABI：`eax=调用号, ebx=arg1, ecx=arg2, edx=arg3`，返回值在 EAX。
 | 12 | lseek   | 定位 |
 | 13 | exit    | 结束当前程序任务（返回码） |
 | 14 | brk     | 用户堆断点（0=查询） |
-| 15 | getkey  | 原始键码（无回显阻塞读；32-126 可打印、128-131 方向键、134-138 F1-F5） |
+| 15 | getkey  | 原始键码（无回显阻塞读；32-126 可打印、128-131 方向键、132/133 Home/End、134-138 F1-F5、139/140 PgUp/PgDn） |
 
 fd 表：`0=stdin 1=stdout 2=stderr`（控制台），`3+ = 文件`（内存缓冲 + 游标 + 脏标志）。

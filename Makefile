@@ -1,4 +1,4 @@
-# AMUNOS Makefile — FAT12 bootable dual-disk
+# AMUNOS Makefile — FAT12 bootable multi-disk (A: boot, B:/C: data, v6.5.1)
 
 ASM  = nasm
 CC   = gcc
@@ -15,11 +15,13 @@ BOOT_BIN   = boot.bin
 KERNEL_BIN = kernel.bin
 A_IMG      = A.img
 B_IMG      = B.img
+C_IMG      = C.img
 HELLO_ELF  = hello.elf
 INP_ELF    = inp.elf
 EDIT_ELF   = edit.elf
 
-.PHONY: all clean run run-gui run-dual run-dual-gui run-serial
+.PHONY: all clean run run-gui run-dual run-dual-gui run-serial \
+        run-trio run-trio-gui run-trio-serial
 
 all: $(A_IMG)
 
@@ -38,10 +40,15 @@ $(A_IMG): $(BOOT_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) mka_img.py
 	@echo "[IMG] Building A.img..."
 	python3 mka_img.py $@
 
-# ── B.img: FAT12 data disk ──
+# ── B.img: FAT12 data disk (secondary master) ──
 $(B_IMG): mkbimg.py $(HELLO_ELF) $(INP_ELF) $(EDIT_ELF)
 	@echo "[IMG] Building B.img..."
 	python3 mkbimg.py $@
+
+# ── C.img: FAT12 data disk (secondary channel, -hdc) ──
+$(C_IMG): mkcimg.py $(HELLO_ELF)
+	@echo "[IMG] Building C.img..."
+	python3 mkcimg.py $@
 
 # ── TinyCC 交叉编译 (vendor/tinycc -> tcc.elf + libtcc1.a + crt*) ──
 tcc.elf: build-tcc.sh
@@ -98,6 +105,19 @@ run-dual-gui: $(A_IMG) $(B_IMG)
 # ── 串口远程控制台运行 (v6.5): 交互式串口, 另开终端 ./serial-console.sh 连接 ──
 run-serial: $(A_IMG) $(B_IMG)
 	qemu-system-i386 -nographic -hda $(A_IMG) -hdb $(B_IMG) \
+	  -monitor telnet:127.0.0.1:45454,server,nowait \
+	  -serial tcp:127.0.0.1:5555,server,nowait \
+	  -parallel file:lpt.log
+
+# ── 三盘启动 (v6.5.1): A: 引导 (-hda) + B: (-hdb) + C: 次通道 (-hdc) ──
+run-trio: $(A_IMG) $(B_IMG) $(C_IMG)
+	qemu-system-i386 -rtc base=localtime -hda $(A_IMG) -hdb $(B_IMG) -hdc $(C_IMG) -nographic
+
+run-trio-gui: $(A_IMG) $(B_IMG) $(C_IMG)
+	qemu-system-i386 -rtc base=localtime -hda $(A_IMG) -hdb $(B_IMG) -hdc $(C_IMG)
+
+run-trio-serial: $(A_IMG) $(B_IMG) $(C_IMG)
+	qemu-system-i386 -nographic -rtc base=localtime -hda $(A_IMG) -hdb $(B_IMG) -hdc $(C_IMG) \
 	  -monitor telnet:127.0.0.1:45454,server,nowait \
 	  -serial tcp:127.0.0.1:5555,server,nowait \
 	  -parallel file:lpt.log

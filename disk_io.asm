@@ -1,4 +1,8 @@
 ; disk_io.asm — IDE PIO 磁盘读写 (含超时 + 返回值)
+;
+; v6.6: 支持 4 盘 — drive_idx bit1 选通道 (0=主 0x1F0, 1=次 0x170),
+;       bit0 选主/从 (0=Master 0xE0, 1=Slave 0xF0)。
+;       0=A(主盘) 1=B(从盘) 2=C(次主盘) 3=D(次从盘)。
 
 [BITS 32]
 section .text
@@ -18,23 +22,30 @@ read_sector_asm:
     mov ebp, esp
     pushad
 
-    ; 1. 选择驱动器
+    ; 0. 通道基址: drive_idx bit1 = 1 → 次通道 0x170, 否则主通道 0x1F0
+    mov ebx, 0x1F0
+    mov ecx, [ebp + 16]
+    test ecx, 2
+    jz .base_ok_r
+    mov ebx, 0x170
+.base_ok_r:
+
+    ; 1. 选择驱动器: dev reg = base+6, 主/从 = 0xE0/0xF0 (两通道相同)
     mov eax, [ebp + 8]
-    mov dx, 0x1F6
+    lea edx, [ebx + 6]
     shr eax, 24
     and al, 0x0F
-    mov ecx, [ebp + 16]
-    cmp ecx, 1
-    je .set_slave_r
-    or al, 0xE0
-    jmp .send_dev_r
-.set_slave_r:
+    test ecx, 1
+    jz .master_r
     or al, 0xF0
+    jmp .send_dev_r
+.master_r:
+    or al, 0xE0
 .send_dev_r:
     out dx, al
 
     ; 等待 BSY 清零
-    mov dx, 0x1F7
+    lea edx, [ebx + 7]
     mov ecx, DISK_TIMEOUT
 .wait_bsy_r:
     in al, dx
@@ -46,23 +57,23 @@ read_sector_asm:
 .bsy_ok_r:
 
     ; 2. 扇区数 = 1
-    mov dx, 0x1F2
+    lea edx, [ebx + 2]
     mov al, 1
     out dx, al
 
     ; 3. LBA
     mov eax, [ebp + 8]
-    mov dx, 0x1F3
+    lea edx, [ebx + 3]
     out dx, al
-    mov dx, 0x1F4
+    lea edx, [ebx + 4]
     shr eax, 8
     out dx, al
-    mov dx, 0x1F5
+    lea edx, [ebx + 5]
     shr eax, 8
     out dx, al
 
     ; 4. 读命令
-    mov dx, 0x1F7
+    lea edx, [ebx + 7]
     mov al, 0x20
     out dx, al
 
@@ -81,7 +92,7 @@ read_sector_asm:
 .do_read:
     mov edi, [ebp + 12]    ; buffer
     mov ecx, 256
-    mov dx, 0x1F0
+    lea edx, [ebx + 0]
     rep insw
     ; 成功 → 将返回值 EAX 设为 0
     mov dword [esp + 28], 0
@@ -103,23 +114,30 @@ write_sector_asm:
     mov ebp, esp
     pushad
 
+    ; 0. 通道基址
+    mov ebx, 0x1F0
+    mov ecx, [ebp + 16]
+    test ecx, 2
+    jz .base_ok_w
+    mov ebx, 0x170
+.base_ok_w:
+
     ; 1. 选择驱动器
     mov eax, [ebp + 8]
-    mov dx, 0x1F6
+    lea edx, [ebx + 6]
     shr eax, 24
     and al, 0x0F
-    mov ecx, [ebp + 16]
-    cmp ecx, 1
-    je .set_slave_w
-    or al, 0xE0
-    jmp .send_dev_w
-.set_slave_w:
+    test ecx, 1
+    jz .master_w
     or al, 0xF0
+    jmp .send_dev_w
+.master_w:
+    or al, 0xE0
 .send_dev_w:
     out dx, al
 
     ; 等待 BSY
-    mov dx, 0x1F7
+    lea edx, [ebx + 7]
     mov ecx, DISK_TIMEOUT
 .wait_bsy_w:
     in al, dx
@@ -131,21 +149,21 @@ write_sector_asm:
 .bsy_ok_w:
 
     ; 2. 参数
-    mov dx, 0x1F2
+    lea edx, [ebx + 2]
     mov al, 1
     out dx, al
     mov eax, [ebp + 8]
-    mov dx, 0x1F3
+    lea edx, [ebx + 3]
     out dx, al
-    mov dx, 0x1F4
+    lea edx, [ebx + 4]
     shr eax, 8
     out dx, al
-    mov dx, 0x1F5
+    lea edx, [ebx + 5]
     shr eax, 8
     out dx, al
 
     ; 3. 写命令
-    mov dx, 0x1F7
+    lea edx, [ebx + 7]
     mov al, 0x30
     out dx, al
 
@@ -164,11 +182,11 @@ write_sector_asm:
 .do_write:
     mov esi, [ebp + 12]
     mov ecx, 256
-    mov dx, 0x1F0
+    lea edx, [ebx + 0]
     rep outsw
 
     ; 等待写入完成
-    mov dx, 0x1F7
+    lea edx, [ebx + 7]
     mov ecx, DISK_TIMEOUT
 .wait_done_w:
     in al, dx

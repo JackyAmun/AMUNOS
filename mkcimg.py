@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-r"""B.img for AMUNOS v6.5.1 — data disk: user ELFs (run-by-name) + USR\SRC\ sources
+r"""C.img for AMUNOS v6.5.1 — 第三数据盘 (次通道 -hdc, 内核盘符 C:)
 
 Tree:
-  B:\
-  ├─ HELLO.ELF, INP.ELF, EDIT.ELF   (根: 按名运行 — 输入 HELLO 即运行)
-  ├─ USR\SRC\HW.C, RETVAL.C, COUNT5.C, LOOP99.C, CALC.C, IFDEMO.C, WHILE.C
-  └─ CMDS.BIN                       (EDIT → \\EDIT.ELF)
+  C:\
+  ├─ HELLO.ELF                    (根: 按名运行; 演示次通道可执行程序)
+  ├─ USR\SRC\DEMO.C
+  └─ CMDS.BIN                     (EDIT → \EDIT.ELF 相对映射, 全盘搜索命中)
 """
 import struct, sys, os
 
-path = sys.argv[1] if len(sys.argv) > 1 else 'B.img'
+path = sys.argv[1] if len(sys.argv) > 1 else 'C.img'
 d = bytearray(2880 * 512)
 
-# ── BPB (保留 1 扇区: 无内核) ──
+# ── BPB (保留 1 扇区: 无内核; 与 B.img 几何一致) ──
 d[0:3] = b'\xeb\x3c\x90'; d[3:11] = b'AMUNOS  '
 struct.pack_into('<H', d, 11, 512); d[13] = 1; struct.pack_into('<H', d, 14, 1)
 d[16] = 2; struct.pack_into('<H', d, 17, 224); struct.pack_into('<H', d, 19, 2880)
@@ -38,7 +38,6 @@ def set_fat(c, val):
         d[boff:boff + 2] = struct.pack('<H', (cur & 0xF000) | (val & 0x0FFF))
 
 def alloc_clusters(n):
-    """分配 n 个连续簇并链到 EOF, 返回首簇"""
     global clu
     c = clu; clu += n
     if c + n - 1 > 0xFE0:
@@ -94,42 +93,22 @@ root = Dir('', 0)
 USR_SRC = mkdir('USR', root, 16)
 USR_SRC = mkdir('SRC', USR_SRC, 16)
 
-# ── 用户 ELF (根: 按名运行) ──
+# ── 用户 ELF (根: 按名运行; 演示次通道 C: 可执行) ──
 if os.path.exists('hello.elf'):
     n = add_file('HELLO', 'ELF', 'hello.elf')
     print(f'hello.elf: {n} cluster(s)')
 else:
     print('WARN: hello.elf not found (run: make hello.elf)')
 
-if os.path.exists('inp.elf'):
-    n = add_file('INP', 'ELF', 'inp.elf')
-    print(f'inp.elf: {n} cluster(s)')
-else:
-    print('WARN: inp.elf not found (run: make inp.elf)')
+# ── C 样例源码 (USR\SRC\) ──
+add_to(USR_SRC, 'DEMO', 'C  ',
+       'int main(){printf(700);printf(800);printf(900);return 0;}\n')
 
-if os.path.exists('edit.elf'):
-    n = add_file('EDIT', 'ELF', 'edit.elf')
-    print(f'edit.elf: {n} cluster(s)')
-else:
-    print('WARN: edit.elf not found (run: make edit.elf)')
-
-# ── C 测试源码 (USR\SRC\) ──
-C_FILES = {
-    'HW':      'int main(){printf(42);printf(123);return 0;}\n',
-    'RETVAL':  'int main(){return 1;}\n',
-    'COUNT5':  'int main(){printf(1);printf(2);printf(3);printf(4);printf(5);return 0;}\n',
-    'LOOP99':  'int main(){while(1){printf(99);}return 0;}\n',
-    'CALC':    'int main(){\n  a = input();\n  b = input();\n  printf(a + b);\n  printf(a * b);\n  return a - b;\n}\n',
-    'IFDEMO':  'int main(){\n  a = input();\n  if (a > 10) { printf(1); }\n  if (a <= 10) { printf(0); }\n  return a;\n}\n',
-    'WHILE':   'int main(){\n  a = 0;\n  while (a < 3) { printf(a); a = a + 1; }\n  return a;\n}\n',
-}
-for name, content in C_FILES.items():
-    add_to(USR_SRC, name, 'C  ', content)
-
-# ── 命令对照表 (v6.5.1): CMDS.BIN, 全盘搜索可用 ──
+# ── 命令对照表 (v6.5.1): 相对映射, cmd_custom 自动补 C: 盘符 ──
 CMDS_BIN = '''\
-; AMUNOS 命令→ELF 对照表 (v6.5.1)
+; AMUNOS 命令→ELF 对照表 (v6.5.1) C 盘
 EDIT \\EDIT.ELF
+HELLO \\HELLO.ELF
 '''
 add_to(root, 'CMDS', 'BIN', CMDS_BIN)
 

@@ -42,6 +42,7 @@ typedef struct {
     int used;
     char name[13];          /* 8.3 文件名 (close 落盘用) */
     int dir;                /* 文件所在目录簇 (close 落盘用, 路径支持 v6.5) */
+    int drive;              /* 文件所在盘 (v6.5.1: close 落盘目标盘, 修复跨盘写回) */
     unsigned char *buf;     /* 内存缓冲 */
     int size;               /* 逻辑大小 */
     int capacity;           /* 分配容量 */
@@ -110,6 +111,15 @@ static int sys_open(char *path, int flags) {
     for (i = 0; path[i] && i < 62; i++) full[i] = path[i];
     full[i] = 0;
 
+    /* v6.5.1: 盘符限定路径 "A:\..." — 切盘解析, 记入 fd.drive, 退出还原 */
+    int saved_drive = current_drive_idx, saved_cwd = cwd_cluster;
+    int drive = -1;
+    { char *p = full; drive = parse_drive(&p);
+      if (drive >= 0) {
+          current_drive_idx = drive; fs_init();          /* 切盘 (cwd 清零 → X:path==X:\path) */
+          { char *d = full; while (*p) *d++ = *p++; *d = 0; }   /* 手工左移剥前缀 */
+      } }
+
     int has_sep = 0;
     for (i = 0; full[i]; i++)
         if (full[i] == '\\' || full[i] == '/') { has_sep = 1; break; }
@@ -117,7 +127,7 @@ static int sys_open(char *path, int flags) {
     int dc = cwd_cluster;
     if (has_sep) {
         dc = fs_resolve_path(full);   /* full 变为纯文件名, dc=目录簇; -1=目录不存在 */
-        if (dc < 0) return -1;
+        if (dc < 0) goto fail;
     }
 
     char name[13];
@@ -126,12 +136,13 @@ static int sys_open(char *path, int flags) {
 
     int fd = 3;
     while (fd < MAX_FD && fds[fd].used) fd++;
-    if (fd >= MAX_FD) return -1;
+    if (fd >= MAX_FD) goto fail;
 
     fd_t *f = &fds[fd];
     for (i = 0; i < 12 && name[i]; i++) f->name[i] = name[i];
     f->name[i] = 0;
     f->dir = dc;                        /* close 落盘目录 */
+    f->drive = (drive >= 0) ? drive : saved_drive;   /* close 落盘目标盘 */
     f->dirty = 0;
     f->pos = 0;
 
@@ -147,7 +158,7 @@ static int sys_open(char *path, int flags) {
             f->buf = (unsigned char*)mem_alloc(512);
             f->size = 0;
         } else {
-            return -1;                      /* 读不存在的文件 */
+            goto fail;                      /* 读不存在的文件 */
         }
     } else {
         int cap = (e.size + 511) & ~511;
@@ -159,6 +170,12 @@ static int sys_open(char *path, int flags) {
         if (writable && trunc) f->size = 0;
     }
     f->used = 1;
+    goto ok;
+fail:
+    if (drive >= 0) { current_drive_idx = saved_drive; fs_init(); cwd_cluster = saved_cwd; }
+    return -1;
+ok:
+    if (drive >= 0) { current_drive_idx = saved_drive; fs_init(); cwd_cluster = saved_cwd; }
     return fd;
 }
 
@@ -167,7 +184,12 @@ static int sys_close(int fd) {
     if (fd < 3 || fd >= MAX_FD) return -1;
     fd_t *f = &fds[fd];
     if (!f->used) return -1;
-    if (f->dirty) fs_write_file_in_dir(f->dir, f->name, (char*)f->buf, f->size);
+    if (f->dirty) {
+        int sd = current_drive_idx, sc = cwd_cluster;
+        current_drive_idx = f->drive; fs_init();         /* 写回目标盘 */
+        fs_write_file_in_dir(f->dir, f->name, (char*)f->buf, f->size);
+        current_drive_idx = sd; fs_init(); cwd_cluster = sc;
+    }
     mem_free(f->buf);
     f->used = 0;
     f->buf = 0;
@@ -243,7 +265,12 @@ static void close_all_fds(void) {
     for (int fd = 3; fd < MAX_FD; fd++) {
         fd_t *f = &fds[fd];
         if (!f->used) continue;
-        if (f->dirty) fs_write_file_in_dir(f->dir, f->name, (char*)f->buf, f->size);
+        if (f->dirty) {
+            int sd = current_drive_idx, sc = cwd_cluster;
+            current_drive_idx = f->drive; fs_init();         /* 写回目标盘 */
+            fs_write_file_in_dir(f->dir, f->name, (char*)f->buf, f->size);
+            current_drive_idx = sd; fs_init(); cwd_cluster = sc;
+        }
         mem_free(f->buf);
         f->used = 0;
         f->buf = 0;
@@ -317,6 +344,8 @@ static int sys_getkey(void) {
     case 15: return 136;                 /* F3 */
     case 16: return 137;                 /* F4 */
     case 17: return 138;                 /* F5 */
+    case 18: return 139;                 /* PgUp */
+    case 19: return 140;                 /* PgDn */
     }
     return 0;
 }

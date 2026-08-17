@@ -35,7 +35,7 @@ void cmd_dir(char* arg){
     int page=(f[0]=='p'||f[0]=='P');
     int max=fs_dir_secs(cwd_cluster);
     FAT12Entry b[16];int cnt=0,line=0;
-    put_str("\n ");put_char(current_drive_idx==0?'A':'B',0x0E);
+    put_str("\n ");put_char(drive_letter(),0x0E);
     put_str(":\\");if(*cwd_path)put_str(cwd_path);
     put_str("\n\n");
     for(int s=0;s<max;s++){
@@ -109,9 +109,15 @@ void cmd_cd(char* arg){
 void cmd_type(char* arg){
     upper(arg);
     if(!*arg){put_str("Usage: TYPE file\n");return;}
-    int dc=fs_resolve_path(arg);if(dc<0){put_str("Not found.\n");return;}
-    FAT12Entry e;if(fs_find_entry_in_dir(dc,arg,&e)<0){put_str("Not found.\n");return;}
-    char b[2048];fs_read_file(&e,b);put_str(b);put_char('\n',0x07);
+    drive_ctx_t octx; int od=fs_drive_open(arg,&octx);
+    int dc=fs_resolve_path(arg);if(dc<0){if(od>=0)fs_drive_restore(octx);put_str("Not found.\n");return;}
+    FAT12Entry e;if(fs_find_entry_in_dir(dc,arg,&e)<0){if(od>=0)fs_drive_restore(octx);put_str("Not found.\n");return;}
+    char *b=(char*)mem_alloc((unsigned)e.size+1);      /* fs_read_file 写 NUL → size+1 */
+    if(!b){if(od>=0)fs_drive_restore(octx);put_str("No memory.\n");return;}
+    fs_read_file(&e,b);
+    if(od>=0)fs_drive_restore(octx);
+    put_str(b);put_char('\n',0x07);
+    mem_free(b);
 }
 
 /* ── ECHO ── */
@@ -120,8 +126,10 @@ void cmd_echo(char* arg){
     char* g=arg;while(*g&&*g!='>')g++;
     if(*g=='>'){*g=0;g++;while(*g==' ')g++;upper(g);char*t=arg;int tl=strlen(t);while(tl>0&&t[tl-1]==' ')t[--tl]=0;
         if(!*g||!tl){put_str("Usage: ECHO text > file\n");return;}
-        int dc=fs_resolve_path(g);if(dc<0){put_str("Not found.\n");return;}
-        if(fs_create_file_in_dir(dc,g,t,tl)==0)put_str("Written.\n");}
+        drive_ctx_t octx; int od=fs_drive_open(g,&octx);
+        int dc=fs_resolve_path(g);if(dc<0){if(od>=0)fs_drive_restore(octx);put_str("Not found.\n");return;}
+        if(fs_create_file_in_dir(dc,g,t,tl)==0)put_str("Written.\n");
+        if(od>=0)fs_drive_restore(octx);}
     else{put_str(arg);put_char('\n',0x07);}
 }
 
@@ -135,11 +143,16 @@ void cmd_ren(char* arg){
     upper(arg);char* sp=arg;while(*sp&&*sp!=' ')sp++;
     if(!*sp||!*(sp+1)){put_str("Usage: REN old new\n");return;}
     *sp++=0;while(*sp==' ')sp++;
-    int dc=fs_resolve_path(arg);if(dc<0){put_str("Not found.\n");return;}
-    FAT12Entry e;int idx=fs_find_entry_in_dir(dc,arg,&e);if(idx<0){put_str("Not found.\n");return;}
+    drive_ctx_t octx; int od=fs_drive_open(arg,&octx);
+    int dc=fs_resolve_path(arg);if(dc<0){if(od>=0)fs_drive_restore(octx);put_str("Not found.\n");return;}
+    char oldnm[12],newnm[12];
+    to_fat12_name(arg,oldnm);to_fat12_name(sp,newnm);   /* arg 已被剥成裸名 */
+    if(is_cmds_file(oldnm)||is_cmds_file(newnm)){if(od>=0)fs_drive_restore(octx);put_str("CMDS.BIN is protected.\n");return;}
+    FAT12Entry e;int idx=fs_find_entry_in_dir(dc,arg,&e);if(idx<0){if(od>=0)fs_drive_restore(octx);put_str("Not found.\n");return;}
     int lba=(dc==0)?fs_root_lba+(idx/16):fs_data_lba+(dc-2)+(idx/16);
     FAT12Entry b[16];read_sector_asm(lba,b,current_drive_idx);
     to_fat12_name(sp,b[idx%16].name);write_sector_asm(lba,b,current_drive_idx);
+    if(od>=0)fs_drive_restore(octx);
     put_str("Renamed.\n");
 }
 
@@ -148,14 +161,26 @@ void cmd_copy(char* arg){
     upper(arg);char* sp=arg;while(*sp&&*sp!=' ')sp++;
     if(!*sp||!*(sp+1)){put_str("Usage: COPY src dst\n");return;}
     *sp++=0;while(*sp==' ')sp++;
-    int dc_src=fs_resolve_path(arg);if(dc_src<0){put_str("Src not found.\n");return;}
-    FAT12Entry e;if(fs_find_entry_in_dir(dc_src,arg,&e)<0){put_str("Src not found.\n");return;}
-    if(e.attr&0x10){put_str("Cannot copy dir.\n");return;}
-    char b[2048];int sz=e.size;if(sz>2048)sz=2048;fs_read_file(&e,b);
-    int dc_dst=cwd_cluster;
-    { char *sep=sp;int has=0;while(*sep){if(*sep=='\\'||*sep=='/'){has=1;break;}sep++;}
-      if(has){dc_dst=fs_resolve_path(sp);if(dc_dst<0){put_str("Dst not found.\n");return;}} }
-    if(fs_create_file_in_dir(dc_dst,sp,b,sz)==0)put_str("Copied.\n");
+
+    /* 源: 可带盘符/绝对路径; 堆缓冲读全 (fs_read_file 在 size 处写 NUL) */
+    drive_ctx_t sctx; int sd=fs_drive_open(arg,&sctx);
+    int dc_src=fs_resolve_path(arg);if(dc_src<0){if(sd>=0)fs_drive_restore(sctx);put_str("Src not found.\n");return;}
+    FAT12Entry e;if(fs_find_entry_in_dir(dc_src,arg,&e)<0){if(sd>=0)fs_drive_restore(sctx);put_str("Src not found.\n");return;}
+    if(e.attr&0x10){if(sd>=0)fs_drive_restore(sctx);put_str("Cannot copy dir.\n");return;}
+    char *b=(char*)mem_alloc((unsigned)e.size+1);if(!b){if(sd>=0)fs_drive_restore(sctx);put_str("No memory.\n");return;}
+    fs_read_file(&e,b);int sz=e.size;
+    if(sd>=0)fs_drive_restore(sctx);
+
+    /* 目标: 独立盘符; 裸盘 "B:" → 去前缀后空串 → 该盘根 + 源文件名 */
+    drive_ctx_t dctx; int dd=fs_drive_open(sp,&dctx);
+    int dc_dst=cwd_cluster;char *dstname=sp;
+    if(!*sp){dc_dst=0;dstname=arg;}
+    else{char *sep=sp;int has=0;while(*sep){if(*sep=='\\'||*sep=='/'){has=1;break;}sep++;}
+      if(has){dc_dst=fs_resolve_path(sp);if(dc_dst<0){mem_free(b);if(dd>=0)fs_drive_restore(dctx);put_str("Dst not found.\n");return;}}}
+    int r=fs_create_file_in_dir(dc_dst,dstname,b,sz);
+    if(dd>=0)fs_drive_restore(dctx);
+    mem_free(b);
+    if(r==0)put_str("Copied.\n");
 }
 
 /* ── MOV ── */
@@ -163,19 +188,33 @@ void cmd_mov(char* arg){
     upper(arg);char* sp=arg;while(*sp&&*sp!=' ')sp++;
     if(!*sp||!*(sp+1)){put_str("Usage: MOV src dst\n");return;}
     *sp++=0;while(*sp==' ')sp++;
-    int dc_src=fs_resolve_path(arg);if(dc_src<0){put_str("Src not found.\n");return;}
-    FAT12Entry e;if(fs_find_entry_in_dir(dc_src,arg,&e)<0){put_str("Src not found.\n");return;}
-    if(e.attr&0x10){put_str("Cannot move dir.\n");return;}
-    char b[2048];int sz=e.size;if(sz>2048)sz=2048;fs_read_file(&e,b);
-    int dc_dst=cwd_cluster;
-    { char *sep=sp;int has=0;while(*sep){if(*sep=='\\'||*sep=='/'){has=1;break;}sep++;}
-      if(has){dc_dst=fs_resolve_path(sp);if(dc_dst<0){put_str("Dst not found.\n");return;}} }
-    if(fs_create_file_in_dir(dc_dst,sp,b,sz)==0){fs_delete_file_in_dir(dc_src,arg);put_str("Moved.\n");}
+
+    drive_ctx_t sctx; int sd=fs_drive_open(arg,&sctx);
+    int dc_src=fs_resolve_path(arg);if(dc_src<0){if(sd>=0)fs_drive_restore(sctx);put_str("Src not found.\n");return;}
+    FAT12Entry e;if(fs_find_entry_in_dir(dc_src,arg,&e)<0){if(sd>=0)fs_drive_restore(sctx);put_str("Src not found.\n");return;}
+    if(e.attr&0x10){if(sd>=0)fs_drive_restore(sctx);put_str("Cannot move dir.\n");return;}
+    char *b=(char*)mem_alloc((unsigned)e.size+1);if(!b){if(sd>=0)fs_drive_restore(sctx);put_str("No memory.\n");return;}
+    fs_read_file(&e,b);int sz=e.size;
+    if(sd>=0)fs_drive_restore(sctx);
+
+    drive_ctx_t dctx; int dd=fs_drive_open(sp,&dctx);
+    int dc_dst=cwd_cluster;char *dstname=sp;
+    if(!*sp){dc_dst=0;dstname=arg;}
+    else{char *sep=sp;int has=0;while(*sep){if(*sep=='\\'||*sep=='/'){has=1;break;}sep++;}
+      if(has){dc_dst=fs_resolve_path(sp);if(dc_dst<0){mem_free(b);if(dd>=0)fs_drive_restore(dctx);put_str("Dst not found.\n");return;}}}
+    int r=fs_create_file_in_dir(dc_dst,dstname,b,sz);
+    if(dd>=0)fs_drive_restore(dctx);
+    if(r==0){
+        drive_ctx_t sc2=fs_drive_enter(sd>=0?sd:current_drive_idx);   /* 回源盘删源 */
+        if(fs_delete_file_in_dir(dc_src,arg)==0)put_str("Moved.\n");
+        fs_drive_restore(sc2);
+    }
+    mem_free(b);
 }
 
 /* ── CLS/VER/TIME ── */
 void cmd_cls(){cls();}
-void cmd_ver(){put_str("\nAMUN-DOS 6.5 (C)2026 AMUNOS Team\n\n");}
+void cmd_ver(){put_str("\nAMUN-DOS 6.5.1 (C)2026 AMUNOS Team\n\n");}
 static unsigned char r(unsigned char r){io_out8(0x70,r);return io_in8(0x71);}
 static void pb(unsigned char v){put_char('0'+((v>>4)&0x0F),0x07);put_char('0'+(v&0x0F),0x07);}
 void cmd_time(){pb(r(0x04));put_char(':',0x07);pb(r(0x02));put_char(':',0x07);pb(r(0x00));put_str(" ");pb(r(0x09));put_char('-',0x07);pb(r(0x08));put_char('-',0x07);pb(r(0x07));put_char('\n',0x07);}
@@ -183,6 +222,7 @@ void cmd_time(){pb(r(0x04));put_char(':',0x07);pb(r(0x02));put_char(':',0x07);pb
 /* ── HELP ── */
 void cmd_help(char* arg){
     char f[2];arg=fparse(arg,f);upper(arg);
+    int page=(f[0]=='p'||f[0]=='P');
     if(*arg){
         if(!strcmp(arg,"DIR"))put_str("DIR [-w] [-p] — list directory (p=paged)\n");
         else if(!strcmp(arg,"CD"))put_str("CD [dir|..|<|\\] — change dir\n");
@@ -198,35 +238,51 @@ void cmd_help(char* arg){
         else if(!strcmp(arg,"EDIT"))put_str("EDIT file — text editor\n");
         else if(!strcmp(arg,"ELF"))put_str("ELF file.elf — load & run ELF executable\n");
         else if(!strcmp(arg,"TCC"))put_str("TCC file.c [-o out] — compile C to ELF (run on A:, uses BIN\\TCC.ELF + USR\\INCLUDE/LIB)\n");
-        else if(!strcmp(arg,"HELP"))put_str("HELP [cmd] — show help\n");
+        else if(!strcmp(arg,"INSTALL"))put_str("INSTALL prog[.ext] [name] — copy to A:\\BIN + register in CMDS.BIN\n");
+        else if(!strcmp(arg,"HELP"))put_str("HELP [cmd] [-p] — show help (p=paged)\n");
         else put_str("No help for that command.\n");
         return;
     }
-    put_str("\n DIR [-w] [-p]    List directory (p=paged)\n");
-    put_str(" CD  dir\\dir\\dir  Change dir (multi-level)\n");
-    put_str(" TYPE file        Show file content\n");
-    put_str(" ECHO text > file Write file\n");
-    put_str(" SER text         Write text to COM1 (serial)\n");
-    put_str(" LPT text         Write text to LPT1 (parallel)\n");
-    put_str(" REN old new      Rename file\n");
-    put_str(" COPY src dst     Copy file\n");
-    put_str(" MOV src dst      Move file\n");
-    put_str(" DEL file         Delete file\n");
-    put_str(" MD  name         Create directory\n");
-    put_str(" RMDIR name       Delete empty directory\n");
-    put_str(" EDIT file        Text editor (F1-Help F2-Save F3-Open F4-New F5-Quit)\n");
-    put_str(" ELF  file.elf    Load & run ELF executable\n");
-    put_str(" TCC  file.c      Compile C to ELF (TinyCC, shows elapsed)\n");
-    put_str(" CLS              Clear screen\n");
-    put_str(" TIME             Show time\n");
-    put_str(" VER              Show version\n");
-    put_str(" HELP [cmd]       This help\n");
-    put_str(" CMD /?           Show any command's usage\n");
-    put_str(" A: / B:          Switch drive\n");
-    put_str(" (file args accept dirs: TYPE BIN\\X.ELF, COPY S\\A.TXT D\\B.TXT)\n");
-    put_str(" (type name: XXX runs XXX.ELF in current dir)\n");
-    put_str(" (tree: A:\\BOOT A:\\BIN A:\\USR\\INCLUDE A:\\USR\\LIB A:\\USR\\SRC B:\\USR\\SRC)\n");
-    put_str(" (custom cmds: EDIT CMDS.TXT, lines \"NAME TARGET\")\n\n");
+    static const char *h[] = {
+        " DIR [-w] [-p]    List directory (p=paged)",
+        " CD  dir\\dir\\dir  Change dir (multi-level)",
+        " TYPE file        Show file content",
+        " ECHO text > file Write file",
+        " SER text         Write text to COM1 (serial)",
+        " LPT text         Write text to LPT1 (parallel)",
+        " REN old new      Rename file",
+        " COPY src dst     Copy file (cross-drive: COPY C:\\A.TXT B:)",
+        " MOV src dst      Move file",
+        " DEL file         Delete file",
+        " MD  name         Create directory",
+        " RMDIR name       Delete empty directory",
+        " EDIT file        Text editor (F1-Help F2-Save F3-Open F4-New F5-Quit)",
+        " ELF  file.elf    Load & run ELF executable",
+        " TCC  file.c      Compile C to ELF (TinyCC, shows elapsed)",
+        " INSTALL prg      Copy to A:\\BIN + register in CMDS.BIN (any drive)",
+        " CLS              Clear screen",
+        " TIME             Show time",
+        " VER              Show version",
+        " HELP [cmd]       This help",
+        " CMD /?           Show any command's usage",
+        " A: - D:          Switch drive",
+        " (file args accept dirs & drives: TYPE A:\\BIN\\X.ELF, COPY C:\\A.TXT B:)",
+        " (type name: XXX runs XXX.ELF/.EXE/.COM/.BIN in cwd or any drive root)",
+        " (CMDS.BIN holds \"NAME TARGET\" lines, searchable on all drives)",
+        " (tree: A:\\BOOT A:\\BIN A:\\USR\\INCLUDE A:\\USR\\LIB A:\\USR\\SRC B:\\USR\\SRC)",
+    };
+    put_str("\n");
+    int nlines = (int)(sizeof(h)/sizeof(h[0]));
+    int lc = 0;
+    for (int i = 0; i < nlines; i++) {
+        put_str(h[i]);put_char('\n',0x07);lc++;
+        if (page && lc >= 20) {
+            put_str("-- Press any key to continue (Ctrl+C to stop) --\n");
+            if(!wait_key_or_abort()){put_str("\n");return;}
+            lc = 0;
+        }
+    }
+    put_char('\n',0x07);
 }
 
 /* ── ELF: 加载并运行静态 ELF 可执行文件 (v6.5) ── */
@@ -286,14 +342,17 @@ void cmd_elf(char* arg){
     upper(prog);
     char *args = arg + i;
 
+    /* 跨盘: 盘符限定路径 (如 A:\BIN\TCC.ELF) 切盘解析, 读毕还原 */
+    drive_ctx_t octx; int od=fs_drive_open(prog,&octx);
     FAT12Entry e;
-    int dc=fs_resolve_path(prog);if(dc<0){put_str("Not found.\n");return;}
-    if(fs_find_entry_in_dir(dc,prog,&e)<0){put_str("Not found.\n");return;}
+    int dc=fs_resolve_path(prog);if(dc<0){if(od>=0)fs_drive_restore(octx);put_str("Not found.\n");return;}
+    if(fs_find_entry_in_dir(dc,prog,&e)<0){if(od>=0)fs_drive_restore(octx);put_str("Not found.\n");return;}
 
     /* 从内核堆暂存 (去掉 32KB 限制, 支持 ~300KB 的 tcc.elf) */
     char *ebuf = (char*)mem_alloc((unsigned)e.size + 1);
-    if(!ebuf){put_str("No memory.\n");return;}
+    if(!ebuf){if(od>=0)fs_drive_restore(octx);put_str("No memory.\n");return;}
     fs_read_file(&e, ebuf);
+    if(od>=0)fs_drive_restore(octx);     /* 还原: 让程序跑在用户当前盘 */
 
     int entry = elf_load((unsigned char*)ebuf, e.size);
     mem_free(ebuf);
@@ -329,15 +388,15 @@ void cmd_elf(char* arg){
 }
 
 /* ── TCC: 编译 C 源码为 ELF (复用 cmd_elf 的加载/argv/任务运行) ──
- * v6.5 目录树: TCC.ELF 在 BIN\; 头/库在 USR\INCLUDE|LIB → 注入 -I/-L/-B
- * (crt1.o/crti.o/crtn.o 的 crt_paths="." 只在 cwd 找, 故留 A: 根)。 */
+ * v6.5.1 修复 "Not found": 前缀全改盘符限定绝对路径 (A: 根 → 任何盘/目录可用)。
+ * v6.5 目录树: TCC.ELF 在 A:\BIN\; 头/库在 A:\USR\INCLUDE|LIB → 注入 -I/-L/-B */
 void cmd_tcc(char* arg){
     if(!*arg){put_str("Usage: TCC file.c [-o out]\n");return;}
     unsigned t0 = task_ticks();
     put_str("Compiling ");put_str(arg);put_str(" ...\n");
     char full[128];
     int n = 0;
-    const char *pre = "BIN\\TCC.ELF -I USR\\INCLUDE -L USR\\LIB -B USR\\LIB ";
+    const char *pre = "A:\\BIN\\TCC.ELF -I A:\\USR\\INCLUDE -L A:\\USR\\LIB -B A:\\USR\\LIB ";
     while(*pre && n < 126) full[n++] = *pre++;
     while(*arg && n < 126) full[n++] = *arg++;
     full[n] = 0;
@@ -346,60 +405,149 @@ void cmd_tcc(char* arg){
     put_str("TCC done (");put_num(dt/100);put_char('.',0x07);put_num((dt/10)%10);put_str("s)\n");
 }
 
+/* ── INSTALL (v6.5.1): 复制程序到 A:\BIN + 注册到 A:\CMDS.BIN ──
+ * 用法: INSTALL prog[.ext] [cmdname]
+ *   cmdname 默认 = 去扩展的源文件名; 注册后任何盘/目录敲 cmdname 即运行。 */
+void cmd_install(char* arg){
+    upper(arg);
+    if(!*arg){put_str("Usage: INSTALL prog[.ext] [name]\n");return;}
+    char *sp=arg;while(*sp&&*sp!=' ')sp++;
+    char *name=0;
+    if(*sp){*sp++=0;while(*sp==' ')sp++;name=sp;}
+
+    /* 源: 可带盘符/绝对路径; 堆读全 (fs_read_file 在 size 处写 NUL) */
+    drive_ctx_t sctx; int sd=fs_drive_open(arg,&sctx);
+    int dc=fs_resolve_path(arg);if(dc<0){if(sd>=0)fs_drive_restore(sctx);put_str("Not found.\n");return;}
+    FAT12Entry e;if(fs_find_entry_in_dir(dc,arg,&e)<0){if(sd>=0)fs_drive_restore(sctx);put_str("Not found.\n");return;}
+    if(e.attr&0x10){if(sd>=0)fs_drive_restore(sctx);put_str("Cannot install dir.\n");return;}
+    char *b=(char*)mem_alloc((unsigned)e.size+1);if(!b){if(sd>=0)fs_drive_restore(sctx);put_str("No memory.\n");return;}
+    fs_read_file(&e,b);int sz=e.size;
+    if(sd>=0)fs_drive_restore(sctx);
+
+    /* base = 源文件名含扩展 (arg 已被 fs_resolve_path 剥成裸名) */
+    char base[13];int ci=0;
+    while(arg[ci]&&ci<11)base[ci]=arg[ci],ci++;base[ci]=0;
+    char defname[13];
+    if(!name){int di=0;while(base[di]&&base[di]!='.'&&di<11)defname[di]=base[di],di++;defname[di]=0;name=defname;}
+
+    /* 切 A: → 写 A:\BIN\<base> (覆盖旧) → 追加 A:\CMDS.BIN */
+    drive_ctx_t actx=fs_drive_enter(0);
+    int dbin=0;FAT12Entry be;
+    if(fs_find_entry_in_dir(0,"BIN",&be)>=0&&(be.attr&0x10))dbin=be.start_cluster;
+    fs_delete_file_in_dir(dbin,base);
+    if(fs_create_file_in_dir(dbin,base,b,sz)!=0){
+        fs_drive_restore(actx);mem_free(b);put_str("Install failed.\n");return;
+    }
+    char *cbuf;int csize=0;FAT12Entry ce;
+    if(fs_find_entry_in_dir(0,"CMDS.BIN",&ce)>=0){
+        cbuf=(char*)mem_alloc((unsigned)ce.size+1);
+        if(!cbuf){fs_drive_restore(actx);mem_free(b);put_str("No memory.\n");return;}
+        fs_read_file(&ce,cbuf);csize=ce.size;
+    }else{
+        cbuf=(char*)mem_alloc(1);
+        if(!cbuf){fs_drive_restore(actx);mem_free(b);put_str("No memory.\n");return;}
+        cbuf[0]=0;
+    }
+    char add[88];int an=0,j=0;
+    while(name[j]&&an<70)add[an++]=name[j++];
+    add[an++]=' ';add[an++]='A';add[an++]=':';add[an++]='\\';
+    add[an++]='B';add[an++]='I';add[an++]='N';add[an++]='\\';
+    j=0;while(base[j]&&an<82)add[an++]=base[j++];
+    add[an++]='\n';
+    char *nb=(char*)mem_alloc((unsigned)(csize+an+1));
+    if(!nb){fs_drive_restore(actx);mem_free(cbuf);mem_free(b);put_str("No memory.\n");return;}
+    for(int i=0;i<csize;i++)nb[i]=cbuf[i];
+    for(int i=0;i<an;i++)nb[csize+i]=add[i];
+    nb[csize+an]=0;
+    fs_write_file_in_dir(0,"CMDS.BIN",nb,csize+an);   /* 走 inner: INSTALL 需改写 CMDS.BIN */
+    mem_free(nb);mem_free(cbuf);mem_free(b);
+    fs_drive_restore(actx);
+    put_str("Installed: ");put_str(name);put_str(" -> A:\\BIN\\");put_str(base);put_char('\n',0x07);
+}
+
 /* ═══════════════ DISPATCH ═══════════════ */
 
-/* ── 自定义命令 (v6.5): 返回 1=已处理
- *   1) CMDS.TXT 命令→ELF 对照表 (当前盘根目录; 行格式 "NAME TARGET",
- *      可被 EDIT CMDS.TXT 编辑以添加自定义命令; ;/# 开头为注释)
- *   2) 当前目录存在 XXX.ELF → 输入 XXX 即运行该 ELF */
+/* ── 自定义命令 (v6.5.1): 返回 1=已处理
+ *   1) CMDS.BIN 命令→ELF 对照表 (全盘 A:-D: 搜索, 跳过缺盘; 行格式 "NAME TARGET",
+ *      可被 EDIT CMDS.BIN 编辑 / INSTALL 追加; ;/# 开头为注释)
+ *   2) 扩展名自动补全: cwd 下 / 当前盘根下 XXX.ELF/.EXE/.COM/.BIN → 输入 XXX 即运行 */
 static int cmd_custom(char* cmd, char* a1) {
     char line[112];
     int n = 0, j = 0;
 
-    FAT12Entry ce;
-    if (fs_find_entry_in_dir(0, "CMDS.TXT", &ce) >= 0) {
-        char cbuf[1024];
-        fs_read_file(&ce, cbuf);
-        char* p = cbuf;
-        while (*p) {
-            char* ln = p;
-            while (*p && *p != '\n') p++;
-            if (*p == '\n') { *p = 0; p++; }
-            char* q = ln;
-            while (*q == ' ' || *q == '\t') q++;
-            if (*q && *q != ';' && *q != '#') {
-                char cn[12]; int ci = 0;
-                while (*q && *q != ' ' && *q != '\t' && ci < 11) cn[ci++] = to_upper(*q++);
-                cn[ci] = 0;
-                if (!strcmp(cn, cmd)) {
+    /* 1) 全盘 CMDS.BIN */
+    for (int d = 0; d < 4; d++) {
+        if (d != current_drive_idx && !fs_drive_present(d)) continue;
+        drive_ctx_t octx = fs_drive_enter(d);
+        FAT12Entry ce;
+        if (fs_find_entry_in_dir(0, "CMDS.BIN", &ce) >= 0) {
+            char *cbuf = (char*)mem_alloc((unsigned)ce.size + 1);
+            if (cbuf) {
+                fs_read_file(&ce, cbuf);
+                char* p = cbuf;
+                while (*p) {
+                    char* ln = p;
+                    while (*p && *p != '\n') p++;
+                    if (*p == '\n') { *p = 0; p++; }
+                    char* q = ln;
                     while (*q == ' ' || *q == '\t') q++;
-                    n = 0;
-                    while (*q && *q != '\r' && *q != '\n' && n < 60) line[n++] = *q++;
-                    line[n++] = ' ';
-                    j = 0; while (a1[j] && n < 108) line[n++] = a1[j++];
-                    line[n] = 0;
-                    cmd_elf(line);
-                    return 1;
+                    if (*q && *q != ';' && *q != '#') {
+                        char cn[12]; int ci = 0;
+                        while (*q && *q != ' ' && *q != '\t' && ci < 11) cn[ci++] = to_upper(*q++);
+                        cn[ci] = 0;
+                        if (!strcmp(cn, cmd)) {
+                            while (*q == ' ' || *q == '\t') q++;
+                            char tgt[80]; int ti = 0;
+                            while (*q && *q != '\r' && *q != '\n' && ti < 78) tgt[ti++] = *q++;
+                            tgt[ti] = 0;
+                            n = 0;
+                            /* 目标已带盘符 (如 INSTALL 生成的 "A:\BIN\HW.EXE") → 原样用;
+                             * 否则补来源盘盘符; 补盘符后仍相对 → 再补 \ */
+                            int dq = (tgt[0]>='A'&&tgt[0]<='D'&&tgt[1]==':') ||
+                                     (tgt[0]>='a'&&tgt[0]<='d'&&tgt[1]==':');
+                            if (!dq) {
+                                line[n++] = (char)('A'+d), line[n++] = ':';
+                                if (tgt[0] != '\\' && tgt[0] != '/') line[n++] = '\\';
+                            }
+                            for (ti = 0; tgt[ti] && n < 60; ti++) line[n++] = tgt[ti];
+                            line[n++] = ' ';
+                            j = 0; while (a1[j] && n < 108) line[n++] = a1[j++];
+                            line[n] = 0;
+                            mem_free(cbuf);
+                            fs_drive_restore(octx);
+                            cmd_elf(line);
+                            return 1;
+                        }
+                    }
                 }
+                mem_free(cbuf);
             }
         }
+        fs_drive_restore(octx);
     }
 
-    /* 2) cwd 下 XXX.ELF */
-    char fn[13];
-    int ci = 0;
-    while (cmd[ci] && ci < 8) fn[ci] = cmd[ci], ci++;
-    fn[ci] = '.'; fn[ci + 1] = 'E'; fn[ci + 2] = 'L'; fn[ci + 3] = 'F'; fn[ci + 4] = 0;
-    FAT12Entry e2;
-    if (fs_find_entry_in_dir(cwd_cluster, fn, &e2) >= 0 && !(e2.attr & 0x10)) {
-        n = 0;
-        while (cmd[n] && n < 8) line[n++] = cmd[n];
-        const char* ext = ".ELF ";
-        while (*ext && n < 60) line[n++] = *ext++;
-        j = 0; while (a1[j] && n < 108) line[n++] = a1[j++];
-        line[n] = 0;
-        cmd_elf(line);
-        return 1;
+    /* 2) 扩展名自动补全: 先 cwd, 再当前盘根 */
+    static const char *exts[] = { ".ELF", ".EXE", ".COM", ".BIN" };
+    int tries[2] = { cwd_cluster, 0 };
+    for (int t = 0; t < 2; t++) {
+        for (int x = 0; x < 4; x++) {
+            char fn[13];
+            int ci = 0;
+            while (cmd[ci] && ci < 8) fn[ci] = cmd[ci], ci++;
+            for (int k = 0; k < 4; k++) fn[ci + k] = exts[x][k];
+            fn[ci + 4] = 0;
+            FAT12Entry e2;
+            if (fs_find_entry_in_dir(tries[t], fn, &e2) >= 0 && !(e2.attr & 0x10)) {
+                n = 0;
+                if (tries[t] == 0 && cwd_cluster != 0) line[n++] = '\\';   /* 根命中且非根 cwd → 补 \ */
+                j = 0; while (fn[j] && n < 60) line[n++] = fn[j];
+                line[n++] = ' ';
+                j = 0; while (a1[j] && n < 108) line[n++] = a1[j++];
+                line[n] = 0;
+                cmd_elf(line);
+                return 1;
+            }
+        }
     }
     return 0;
 }
@@ -409,7 +557,7 @@ void exec_cmd(char* line){
     while(line[i]==' ')i++;if(!line[i])return;
     if(line[i+1]==':'){
         char d=to_upper(line[i]);
-        if(d>='A'&&d<='B'){current_drive_idx=d-'A';cwd_path[0]=0;cwd_cluster=0;fs_init();}
+        if(d>='A'&&d<='D'){current_drive_idx=d-'A';cwd_path[0]=0;cwd_cluster=0;fs_init();}
         return;
     }
     while(line[i]&&line[i]!=' '&&j<15)cmd[j++]=to_upper(line[i++]);cmd[j]=0;
@@ -430,6 +578,7 @@ void exec_cmd(char* line){
     else if(!strcmp(cmd,"MOV"))cmd_mov(a1);
     else if(!strcmp(cmd,"ELF"))cmd_elf(a1);
     else if(!strcmp(cmd,"TCC"))cmd_tcc(a1);
+    else if(!strcmp(cmd,"INSTALL"))cmd_install(a1);
     else if(!strcmp(cmd,"MD")){if(*a1)fs_create_directory(a1);else put_str("Usage: MD name\n");}
     else if(!strcmp(cmd,"DEL")){if(*a1){upper(a1);fs_delete_file(a1);}else put_str("Usage: DEL file\n");}
     else if(!strcmp(cmd,"RMDIR")){if(*a1){upper(a1);fs_delete_directory(a1);}else put_str("Usage: RMDIR dir\n");}

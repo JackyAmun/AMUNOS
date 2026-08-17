@@ -60,6 +60,64 @@ void fs_init() {
     cwd_cluster = 0;  // 切盘后回到根目录
 }
 
+/* ── 盘符限定路径 (v6.5.1): "A:\..." / "B:..." / "./..." 统一入口 ──
+ * drive_ctx_t 类型见 common.h §5.1 (勿在此重复 typedef, 匿名结构会冲突) */
+
+/* 解析路径开头的盘符 "[A-D]:" (大小写均可): 命中则前移 *pp 并返回 0-3, 否则 -1 */
+int parse_drive(char **pp) {
+    char *p = *pp;
+    if ((p[0] >= 'A' && p[0] <= 'D' && p[1] == ':') ||
+        (p[0] >= 'a' && p[0] <= 'd' && p[1] == ':')) {
+        *pp = p + 2;
+        return (p[0] & ~0x20) - 'A';        /* 0..3 */
+    }
+    return -1;
+}
+
+/* 临时切到目标盘: 记住原盘与 cwd; fs_init() 重载该盘 BPB 几何
+ * (A: reserved=105, B:/C: =1, 不同!), 并把 cwd_cluster 清 0 → 天然得到 X:path==X:\path */
+drive_ctx_t fs_drive_enter(int drive) {
+    drive_ctx_t c = { current_drive_idx, cwd_cluster };
+    current_drive_idx = drive;
+    fs_init();
+    return c;
+}
+
+/* 还原: 先 fs_init() 重载原盘几何, 再设回 cwd (顺序不能反!) */
+void fs_drive_restore(drive_ctx_t c) {
+    current_drive_idx = c.drive;
+    fs_init();
+    cwd_cluster = c.cwd;
+}
+
+/* 路径带盘符则切盘并原地剥掉前缀 (内核无 memmove, 手工左移), 返回盘号; 否则 -1 */
+int fs_drive_open(char *path, drive_ctx_t *ctx) {
+    char *p = path;
+    int d = parse_drive(&p);
+    if (d < 0) return -1;
+    *ctx = fs_drive_enter(d);
+    { char *dst = path; while (*p) *dst++ = *p++; *dst = 0; }
+    return d;
+}
+
+/* 系统保护文件 CMDS.BIN (比较 to_fat12_name 的 11 字节填充形 "CMDS    BIN") */
+int is_cmds_file(char *fat11) {
+    static const char p[] = "CMDS    BIN";
+    for (int i = 0; i < 11; i++) if (fat11[i] != p[i]) return 0;
+    return 1;
+}
+
+/* 磁盘是否存在 (读扇区 0 验 0x55AA), 供 cmd_custom 跳过失盘, 避免 fs_init 报错刷屏 */
+int fs_drive_present(int d) {
+    unsigned char b[512];
+    int sv = current_drive_idx, sc = cwd_cluster;
+    current_drive_idx = d;
+    int ret = read_sector_asm(0, b, d);
+    current_drive_idx = sv;
+    cwd_cluster = sc;
+    return (ret == 0 && b[510] == 0x55 && b[511] == 0xAA);
+}
+
 /* ── FAT 表操作 ── */
 /* FAT12 条目只有 12 位, 两个条目挤占 3 字节; 一个条目可能横跨两个
  * FAT 扇区 (奇数簇落在扇区末字节时), 所以读/写都要处理边界。 */
@@ -326,7 +384,7 @@ static int name_exists(int dir_cluster, char* fat_name) {
 
 /* ── 创建文件 (在指定目录中, 支持多簇) ── */
 #define MAX_FILE_CLUSTERS 256  // 最大 256 簇 = 128KB
-int fs_create_file_in_dir(int dir_cluster, char* name, char* data, int size) {
+static int fs_create_file_in_dir_inner(int dir_cluster, char* name, char* data, int size) {
     char fat_name[11];
     to_fat12_name(name, fat_name);
     // 检查文件名是否已存在
@@ -385,6 +443,13 @@ int fs_create_file_in_dir(int dir_cluster, char* name, char* data, int size) {
     return 0;
 }
 
+/* 公开入口: 保护 CMDS.BIN 不被 DEL/REN/COPY 覆盖; EDIT/INSTALL 走 inner (见 fs_write_file_in_dir) */
+int fs_create_file_in_dir(int dir_cluster, char* name, char* data, int size) {
+    char fn[11]; to_fat12_name(name, fn);
+    if (is_cmds_file(fn)) { put_str("CMDS.BIN is protected.\n"); return -1; }
+    return fs_create_file_in_dir_inner(dir_cluster, name, data, size);
+}
+
 /* ── 创建目录 ── */
 void fs_create_directory(char* dirname) {
     char fat_name[11];
@@ -441,7 +506,7 @@ void fs_create_directory(char* dirname) {
 
 /* ── 覆盖写文件到指定目录 (已存在则先静默删除再创建) ──
  * 供 syscall 的 fd 层在 close 时落盘用 (v6.5 支持路径) */
-void fs_write_file_in_dir(int dir_cluster, char* name, char* data, int size) {
+int fs_write_file_in_dir(int dir_cluster, char* name, char* data, int size) {
     FAT12Entry e;
     int idx = fs_find_entry_in_dir(dir_cluster, name, &e);
     if (idx >= 0) {
@@ -460,7 +525,8 @@ void fs_write_file_in_dir(int dir_cluster, char* name, char* data, int size) {
             clus = nx;
         }
     }
-    fs_create_file_in_dir(dir_cluster, name, data, size);
+    /* 走 inner: EDIT/INSTALL 需能改写 CMDS.BIN; 千万别改回公开入口! */
+    return fs_create_file_in_dir_inner(dir_cluster, name, data, size);
 }
 
 /* ── 覆盖写文件 (cwd, 兼容旧调用) ── */
@@ -468,11 +534,14 @@ void fs_write_file(char* name, char* data, int size) {
     fs_write_file_in_dir(cwd_cluster, name, data, size);
 }
 
-/* ── 删除文件 (核心: 在指定目录中, 静默不打印, 供命令/编辑器复用) ── */
-void fs_delete_file_in_dir(int dir_cluster, char* name) {
+/* ── 删除文件 (核心: 在指定目录中, 静默不打印, 供命令/编辑器复用) ──
+ * 返回: 0=成功, -1=失败 (不存在 / CMDS.BIN 受保护) */
+int fs_delete_file_in_dir(int dir_cluster, char* name) {
+    char fn[11]; to_fat12_name(name, fn);
+    if (is_cmds_file(fn)) { put_str("CMDS.BIN is protected.\n"); return -1; }
     FAT12Entry entry;
     int idx = fs_find_entry_in_dir(dir_cluster, name, &entry);
-    if (idx == -1) return;
+    if (idx == -1) return -1;
 
     int sector_off, entry_off;
     sector_off = fs_dir_lba(dir_cluster, idx / 16);
@@ -490,14 +559,16 @@ void fs_delete_file_in_dir(int dir_cluster, char* name) {
         fat12_set_cluster(clus, 0);
         clus = next;
     }
+    return 0;
 }
 
-/* ── 删除文件 (路径感知: 支持 "SUB\FILE.EXT") ── */
+/* ── 删除文件 (路径感知: 支持 "SUB\FILE.EXT" / "A:\...") ── */
 void fs_delete_file(char* path) {
+    drive_ctx_t octx; int od = fs_drive_open(path, &octx);
     int dc = fs_resolve_path(path);
-    if (dc < 0) { put_str("Not found.\n"); return; }
-    fs_delete_file_in_dir(dc, path);
-    put_str("Deleted.\n");
+    if (dc < 0) { if (od >= 0) fs_drive_restore(octx); put_str("Not found.\n"); return; }
+    if (fs_delete_file_in_dir(dc, path) == 0) put_str("Deleted.\n");
+    if (od >= 0) fs_drive_restore(octx);
 }
 
 /* ── 删除目录 (仅空目录) ── */

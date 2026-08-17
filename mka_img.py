@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-r"""A.img for AMUNOS v6.5 — boot + kernel (sectors 0..104) + FAT12 system disk
+r"""A.img for AMUNOS v6.5.1 — boot + kernel (sectors 0..104) + FAT12 system disk
 with a two-level directory tree (BOOT\ BIN\ USR\LIB USR\INCLUDE USR\SRC).
 
 Geometry (matches boot.asm BPB: reserved=105 sectors for boot+kernel):
@@ -17,8 +17,8 @@ Tree:
   ├─ USR\LIB\LIBC.A, LIBTCC1.A      (TCC 链接库; -L/-B 注入)
   ├─ USR\INCLUDE\*.H                (TCC 头; -I 注入)
   ├─ USR\SRC\HELLO.C, INP.C
-  ├─ CRT1.O, CRTI.O, CRTN.O         (TCC crt_paths="." 需在 cwd, 故留根)
-  └─ CMDS.TXT                       (EDIT → \\BIN\\EDIT.ELF)
+  ├─ CRT1.O, CRTI.O, CRTN.O         (TCC crt_paths="A:\" 绝对前缀, 任意 cwd 可解析)
+  └─ CMDS.BIN                       (EDIT → \\BIN\\EDIT.ELF)
 """
 import struct, sys, os
 
@@ -169,19 +169,19 @@ int main(int argc, char **argv)
 add_to(USR_SRC, 'HELLO', 'C  ', HELLO_C)
 add_opt_to(USR_SRC, 'INP', 'C  ', 'inp.c')     # 输入测试源码 (可在 OS 内 TCC 编译)
 
-# ── TCC crt 文件留根 (TCC crt_paths="." 只在 cwd 找 crt1.o/crti.o/crtn.o) ──
+# ── TCC crt 文件留根 (TCC crt_paths="A:\" 绝对前缀, 任何盘/目录都能解析) ──
 add_opt_to(root, 'CRT1', 'O  ', 'libc/crt1.o')
 add_opt_to(root, 'CRTI', 'O  ', 'libc/crti.o')
 add_opt_to(root, 'CRTN', 'O  ', 'libc/crtn.o')
 
-# ── 命令→ELF 对照表 (v6.5) ──
-CMDS_TXT = '''\
-; AMUNOS 命令→ELF 对照表 (v6.5)
-; 格式: 命令名 目标ELF   (目标以 \\ 开头表示当前盘根目录)
-; 注释以 ; 或 # 开头; 用 EDIT CMDS.TXT 编辑即可添加自定义命令
+# ── 命令→ELF 对照表 (v6.5.1): CMDS.BIN, 内核保护 (DEL/REN/覆盖拒绝, EDIT/INSTALL 可写) ──
+CMDS_BIN = '''\
+; AMUNOS 命令→ELF 对照表 (v6.5.1)
+; 格式: 命令名 目标ELF   (相对路径自动补来源盘盘符; 全盘 A:-D: 搜索)
+; 注释以 ; 或 # 开头; 用 EDIT CMDS.BIN 编辑或 INSTALL 命令追加
 EDIT \\BIN\\EDIT.ELF
 '''
-add_to(root, 'CMDS', 'TXT', CMDS_TXT)
+add_to(root, 'CMDS', 'BIN', CMDS_BIN)
 
 # ── 布局落盘: 根目录 + 各子目录 + FAT2 ──
 for i, e in enumerate(root.entries):

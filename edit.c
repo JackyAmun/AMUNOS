@@ -36,6 +36,8 @@
 #define KEY_F3     136
 #define KEY_F4     137
 #define KEY_F5     138
+#define KEY_PGUP   139
+#define KEY_PGDN   140
 
 static char e_buf[EBUF];
 static int e_size, e_pos, e_top;
@@ -92,6 +94,14 @@ static int e_line_off(int n) {
     for (int l = 0; l < n && pos < e_size; pos++)
         if (e_buf[pos] == '\n') l++;
     return pos;
+}
+
+/* ── 总行数 (换行符个数; 末行为第 total_lines 行) ── */
+static int e_total_lines() {
+    int n = 0;
+    for (int i = 0; i < e_size; i++)
+        if (e_buf[i] == '\n') n++;
+    return n;
 }
 
 /* ── 光标所在行号 / 列号 ── */
@@ -333,6 +343,19 @@ int main(int argc, char** argv) {
         }
         else if (k == KEY_HOME) { int r = e_cur_row(); e_pos = e_line_off(r); }
         else if (k == KEY_END)  { int r = e_cur_row(); int ls = e_line_off(r); e_pos = ls + e_line_len(ls); }
+        else if (k == KEY_PGUP) {                   /* 上翻一页 (22 行) */
+            e_top -= 22;
+            if (e_top < 0) e_top = 0;
+            e_pos = e_line_off(e_top);
+            e_render();
+        }
+        else if (k == KEY_PGDN) {                   /* 下翻一页 (22 行) */
+            int tl = e_total_lines();
+            e_top += 22;
+            if (e_top > tl) e_top = tl;
+            e_pos = e_line_off(e_top);
+            e_render();
+        }
         else if (k == KEY_ESC || k == KEY_F5) {     /* 退出 (未保存则提示) */
             if (e_mod) e_msg("[unsaved! Press F2 to save]");
             else { running = 0; break; }
