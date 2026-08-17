@@ -200,40 +200,67 @@ void kbd_poll() {
  * 键盘事件优先; 无键盘事件时读 COM1 RX, 映射成同一套 key_pressed 编码。
  * 这样 shell / DIR 分页 / 编辑器 / 程序 stdin 都自动支持串口输入,
  * Ctrl+C (0x03) 在串口上也生效。
- * key_pressed: 1=字符 2=回车 3=退格 4-7=方向 8=ESC 9=DEL 10=HOME 11=END
- *              12=Ctrl+C 13-17=F1-F5 18=PgUp 19=PgDn */
+ * key_pressed: 1=字符 2=回车 3=退格 4-7=方向(←→↑↓) 8=ESC 9=DEL 10=HOME 11=END
+ *              12=Ctrl+C 13-17=F1-F5 18=PgUp 19=PgDn
+ * 串口 VT100: ESC[A-D=方向、ESC[H/F=Home/End、ESC[1~/7~/3~/4~/8~=Home/Del/End、ESC OP-T=F1-F5 */
 void input_poll(void) {
     kbd_poll();
     if (key_pressed) return;              /* 键盘事件优先 */
-    int c = serial_getc();
-    if (c < 0) return;
-
-    /* ── 串口 VT100 功能键 (F1-F5/PgUp/PgDn): ESC[11~..ESC[15~、ESC[5~/ESC[6~ 或 ESC O P..T ── */
+    /* ── 串口 VT100 功能键/方向键 (ESC 序列) ──
+     * sesc: 1=已收ESC 2=已收ESC[ 3=已收ESC O; sdigit: ESC[ <数字> 累积
+     * esc_ticks: 裸 ESC 超时基准 — ESC 后 0.2s (20 tick) 无后续字节即视为裸 ESC,
+     * 否则串口上单按 ESC (退出编辑器) 会永远等第二字节而挂住 */
     static int sesc = 0, sdigit = 0;
+    static unsigned esc_ticks = 0;
+    int c = serial_getc();
+    if (c < 0) {
+        if (sesc == 1 && (unsigned)(task_ticks() - esc_ticks) >= 20) {
+            sesc = 0; key_pressed = 8;    /* 裸 ESC */
+        }
+        return;
+    }
+
     if (sesc == 1) {                      /* 已收 ESC, 等 [ 或 O */
         if (c == '[') { sesc = 2; sdigit = 0; return; }
         if (c == 'O') { sesc = 3; return; }
-        sesc = 0; key_pressed = 8; return;/* 裸 ESC */
+        sesc = 0; key_pressed = 8; return;/* 裸 ESC 后跟普通字节 */
     }
-    if (sesc == 2) {                      /* ESC[ 等 <数字>~ */
+    if (sesc == 2) {                      /* ESC[ <数字>~ 或 ESC[<字母> */
         if (c >= '0' && c <= '9') { sdigit = sdigit * 10 + (c - '0'); return; }
         if (c == '~') {
             sesc = 0;
             int f = (sdigit == 11) ? 13 : (sdigit == 12) ? 14 : (sdigit == 13) ? 15
                   : (sdigit == 14) ? 16 : (sdigit == 15) ? 17
-                  : (sdigit == 5) ? 18 : (sdigit == 6) ? 19 : 0;   /* PgUp PgDn */
+                  : (sdigit == 5) ? 18 : (sdigit == 6) ? 19       /* PgUp PgDn */
+                  : (sdigit == 1 || sdigit == 7) ? 10             /* Home (1~/7~) */
+                  : (sdigit == 3) ? 9                             /* Del  (3~) */
+                  : (sdigit == 4 || sdigit == 8) ? 11             /* End  (4~/8~) */
+                  : 0;
             sdigit = 0;
             if (f) key_pressed = f;
             return;
         }
-        sesc = 0; sdigit = 0; return;     /* 非法序列丢弃 */
+        sesc = 0; sdigit = 0;
+        if (c == 'A') { key_pressed = 6;  return; }    /* ↑ */
+        if (c == 'B') { key_pressed = 7;  return; }    /* ↓ */
+        if (c == 'C') { key_pressed = 5;  return; }    /* → */
+        if (c == 'D') { key_pressed = 4;  return; }    /* ← */
+        if (c == 'H') { key_pressed = 10; return; }    /* Home */
+        if (c == 'F') { key_pressed = 11; return; }    /* End */
+        return;                                         /* 非法序列丢弃 */
     }
-    if (sesc == 3) {                      /* ESC O P/Q/R/S/T = F1..F5 */
+    if (sesc == 3) {                      /* ESC O <键>: F1-F5 或方向/Home/End */
         sesc = 0;
         if (c >= 'P' && c <= 'T') key_pressed = 13 + (c - 'P');
+        else if (c == 'A') key_pressed = 6;   /* ↑ */
+        else if (c == 'B') key_pressed = 7;   /* ↓ */
+        else if (c == 'C') key_pressed = 5;   /* → */
+        else if (c == 'D') key_pressed = 4;   /* ← */
+        else if (c == 'H') key_pressed = 10;  /* Home */
+        else if (c == 'F') key_pressed = 11;  /* End */
         return;
     }
-    if (c == 0x1B) { sesc = 1; return; }
+    if (c == 0x1B) { sesc = 1; esc_ticks = task_ticks(); return; }
 
     if (c == '\r' || c == '\n')      key_pressed = 2;                 /* 回车 */
     else if (c == '\b' || c == 0x7F) key_pressed = 3;                 /* 退格 */

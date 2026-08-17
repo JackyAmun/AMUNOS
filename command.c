@@ -63,14 +63,19 @@ void cmd_dir(char* arg){
 ed: put_str("\n ");put_num(cnt);put_str(" file(s)\n\n");
 }
 
-/* ── CD — 多级目录导航 ── */
+/* ── CD — 多级目录导航 (支持盘符限定绝对路径 "A:/xxx" v6.5.1) ── */
 void cmd_cd(char* arg){
     upper(arg);
     if(!*arg||(*arg=='/'&&!arg[1])){cwd_cluster=0;cwd_path[0]=0;return;}
 
     char path[64]; strcpy(path, arg);
+    char orig_path[128]; strcpy(orig_path, cwd_path);   /* 失败时还原路径显示 */
     char *p = path;
-    int cur = cwd_cluster;
+
+    /* 盘符限定路径: 切盘 (fs_drive_enter 把 cwd_cluster 清 0 = 目标盘根) 并剥前缀 */
+    drive_ctx_t octx; int od = fs_drive_open(path, &octx);
+    if (od >= 0) cwd_path[0] = 0;
+    int cur = (od >= 0) ? 0 : cwd_cluster;
 
     // 绝对路径 /a/b → 从根开始
     if (p[0]=='/') { cur=0; cwd_path[0]=0; p++; }
@@ -94,6 +99,8 @@ void cmd_cd(char* arg){
             } else {
                 FAT12Entry e;
                 if (fs_find_entry_in_dir(cur, p, &e) < 0 || !(e.attr&0x10)) {
+                    if (od >= 0) fs_drive_restore(octx);   /* 还原原盘与 cwd_cluster */
+                    strcpy(cwd_path, orig_path);           /* 还原原路径显示 */
                     put_str("Not found.\n"); return;
                 }
                 cur = e.start_cluster;
@@ -103,6 +110,7 @@ void cmd_cd(char* arg){
         if (save) { *sep = save; p = sep + 1; } else break;
     }
     cwd_cluster = cur;
+    /* 成功且切过盘: 保持目标盘 (不 restore), cwd_path 已是新目录 */
 }
 
 /* ── TYPE ── */
