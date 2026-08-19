@@ -65,13 +65,17 @@ void set_mouseposition(int x, int y)
 /* --------- display the mouse cursor -------- */
 void show_mousecursor(void)
 {
-    /* QEMU GUI 已渲染指针 */
+    /* 恢复内核叠加层鼠标指针 █ (与 hide 配对) */
+    sys_mouseshow();
 }
 
 /* --------- hide the mouse cursor ------- */
 void hide_mousecursor(void)
 {
-    /* QEMU GUI 已渲染指针 */
+    /* 抹掉内核叠加层鼠标指针 █: getvideo/storevideo 捕获背景期间必须藏,
+     * 否则定时器自愈 (100Hz) 把 █ 画进正被捕获的区域, 烤进 DFLAT 背景
+     * 缓冲 -> 窗口移动/关闭时残留 (v6.5.2 修复) */
+    sys_mousehide();
 }
 
 /* --- return true if a mouse button has been released --- */

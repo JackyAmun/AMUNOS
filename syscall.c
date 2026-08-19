@@ -482,6 +482,14 @@ void syscall_handler(unsigned *frame) {
         soft_cursor_show();
         result = 0;
         break;
+    case 23:     /* SYS_MOUSEHIDE: 隐藏鼠标叠加 (getvideo/storevideo 捕获期间) */
+        soft_mouse_hide();
+        result = 0;
+        break;
+    case 24:     /* SYS_MOUSESHOW: 恢复鼠标叠加 */
+        soft_mouse_show();
+        result = 0;
+        break;
     case 19: {   /* SYS_KEYHIT: 非阻塞按键查询 — 轮询一次键盘/串口,
                   * 有键待读返回 1, 无键返回 0 (不阻塞)。
                   * FreeDOS Edit 事件循环靠它区分"有键才 getkey()",

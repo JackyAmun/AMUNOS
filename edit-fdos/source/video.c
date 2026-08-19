@@ -17,12 +17,16 @@ void getvideo(RECT rc, void *bf)
     int ht = RectBottom(rc)-RectTop(rc)+1;
     int bytes_row = (RectRight(rc)-RectLeft(rc)+1) * 2;
     unsigned vadr = vad(RectLeft(rc), RectTop(rc));
+    /* 捕获期间藏掉两个内核叠加 (_ 和 █), 否则 100Hz 定时器自愈把它们
+     * 画进捕获区, 烤进背景缓冲 -> 残留 (v6.5.2) */
     hide_mousecursor();
+    hidecursor();
     while (ht--)    {
 		movefromscreen(bf, vadr, bytes_row);
         vadr += SCREENWIDTH*2;
         bf = (char *)bf + bytes_row;
     }
+    unhidecursor();
     show_mousecursor();
 }
 
@@ -33,11 +37,13 @@ void storevideo(RECT rc, void *bf)
     int bytes_row = (RectRight(rc)-RectLeft(rc)+1) * 2;
     unsigned vadr = vad(RectLeft(rc), RectTop(rc));
     hide_mousecursor();
+    hidecursor();
     while (ht--)    {
 		movetoscreen(bf, vadr, bytes_row);
         vadr += SCREENWIDTH*2;
         bf = (char *)bf + bytes_row;
     }
+    unhidecursor();
     show_mousecursor();
 }
 

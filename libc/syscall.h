@@ -36,6 +36,8 @@
 #define SYS_CURSOR   20
 #define SYS_CURHIDE  21
 #define SYS_CURSHOW  22
+#define SYS_MOUSEHIDE 23
+#define SYS_MOUSESHOW 24
 
 /* ── 内联汇编封装 ── */
 static inline long syscall0(long nr) {
@@ -173,6 +175,12 @@ static inline int  sys_curhide(void) {
 }
 static inline int  sys_curshow(void) {
     return (int)syscall0(SYS_CURSHOW);
+}
+static inline int  sys_mousehide(void) {
+    return (int)syscall0(SYS_MOUSEHIDE);
+}
+static inline int  sys_mouseshow(void) {
+    return (int)syscall0(SYS_MOUSESHOW);
 }
 
 /* ── 桩 (TCC 引用的 POSIX 表层, AMUNOS 暂未实现) ── */

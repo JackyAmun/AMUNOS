@@ -115,6 +115,8 @@ void vga_poke(int x, int y, unsigned char ch, unsigned char attr);
 void soft_cursor_at(int x, int y);
 void soft_cursor_hide(void);
 void soft_cursor_show(void);
+void soft_mouse_hide(void);           // 隐藏鼠标叠加 (getvideo 捕获背景期间)
+void soft_mouse_show(void);
 
 void init_idt();
 void keyboard_init();

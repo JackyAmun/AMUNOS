@@ -102,7 +102,12 @@ static int DlgFnOpen(WINDOW wnd,MESSAGE msg,PARAM p1,PARAM p2)
                             SendMessage(cwnd, SETFOCUS, TRUE, 0);
                             return TRUE;
                             }
-                        /* --- 具体文件名: 规范化到 BrowsePath 下 --- */
+                        /* --- 具体文件名: 规范化到 BrowsePath 下 ---
+                         * 仅当 fn 自带目录部分 ("DIR/FILE" / "A:DIR/FILE" /
+                         * "/FILE") 才调 CreatePath 把目录并入 BrowsePath;
+                         * 纯文件名 ("FILE.C") 不调 — CreatePath 在无目录
+                         * 部分时会重置 BrowsePath 到 X:/, 破坏之前浏览的
+                         * 子目录, 变成 "A:/FILE.C" 而不是 "A:/USR/SRC/FILE.C"。 */
                         {
                         char *base = fn;   /* 纯文件名 */
                         char *slash = strrchr(fn, '/');
@@ -110,7 +115,8 @@ static int DlgFnOpen(WINDOW wnd,MESSAGE msg,PARAM p1,PARAM p2)
                             base = slash + 1;
                         else if (fn[0] && fn[1] == ':')
                             base = (fn[2]) ? fn + 2 : "";
-                        CreatePath(NULL, fn, FALSE, TRUE);  /* 目录并入 BrowsePath */
+                        if (slash || (fn[0] && fn[1] == ':'))
+                            CreatePath(NULL, fn, FALSE, TRUE);
                         strcpy(FileName, BrowsePath);
                         if (base[0] && strcmp(base, "*"))
                             strcat(FileName, base);

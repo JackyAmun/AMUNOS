@@ -33,6 +33,7 @@ static int ic_px = 0, ic_py = 0;        /* 光标"应处"位置 (hide 后 show �
 static int ic_hidden = 0;               /* EDIT hidecursor 状态 */
 static int mc_x = -1, mc_y = -1;        /* 鼠标指针绘制位置 */
 static unsigned char mc_sc, mc_sa;
+static int mc_hidden = 0;               /* 用户程序隐藏鼠标 (getvideo 捕获期间) */
 
 static void cell_get(int x, int y, unsigned char *c, unsigned char *a) {
     int o = (y * VGA_COLS + x) * 2;
@@ -99,7 +100,7 @@ void vga_overlay_refresh(void) {
 void vga_overlay_selfheal(void) {
     ic_clear();
     mc_clear();
-    if (mouse_installed_k()) mc_draw_at(mouse_char_x(), mouse_char_y());
+    if (!mc_hidden && mouse_installed_k()) mc_draw_at(mouse_char_x(), mouse_char_y());
     if (!ic_hidden) ic_draw_at(ic_px, ic_py);
 }
 
@@ -112,7 +113,7 @@ void vga_mouse_redraw(void) {
     __asm__ volatile("pushfl; popl %0" : "=r"(flags));
     __asm__ volatile("cli");
     int x = -1, y = -1;
-    if (mouse_installed_k()) { x = mouse_char_x(); y = mouse_char_y(); }
+    if (!mc_hidden && mouse_installed_k()) { x = mouse_char_x(); y = mouse_char_y(); }
     mc_clear();
     if (x >= 0) mc_draw_at(x, y);
     __asm__ volatile("pushl %0; popfl" :: "r"(flags));
@@ -126,6 +127,11 @@ void soft_cursor_at(int x, int y) {
 }
 void soft_cursor_hide(void) { ic_hidden = 1; ic_clear(); }
 void soft_cursor_show(void) { ic_hidden = 0; ic_draw_at(ic_px, ic_py); }
+
+/* 隐藏/恢复鼠标指针叠加 (DFLAT getvideo/storevideo 捕获背景期间用,
+ * 否则定时器自愈把 █ 画进正在捕获的区域, 烤进背景缓冲 -> 残留) */
+void soft_mouse_hide(void) { mc_hidden = 1; mc_clear(); }
+void soft_mouse_show(void) { mc_hidden = 0; mc_draw_at(mouse_char_x(), mouse_char_y()); }
 
 /* 直写一个 VGA 单元 (绕过 put_char 流式推进; redraw() 尾部清格、
  * demo_clock 等用), 自动清掉该格上的叠加, 避免陈旧还原。 */
@@ -205,7 +211,17 @@ void put_char(char c, char color) {
         mc_clear();
         scroll_up();
         cur_y = VGA_ROWS - 1;
-        if (mouse_installed_k()) mc_draw_at(mouse_char_x(), mouse_char_y());
+        if (!mc_hidden && mouse_installed_k()) mc_draw_at(mouse_char_x(), mouse_char_y());
+        ic_draw_at(cur_x, cur_y);
+    }
+
+    /* 文本流推进 -> 软件输入光标跟随 cur_x/cur_y。
+     * 不跟随的话, C 程序 (不经 shell 的 redraw/update_cursor) 回显输入时,
+     * 定时器自愈一直把 '_' 画在过时位置 (提示符末尾) -> 残留 (v6.5.2)。
+     * EDIT 直写 0xB8000 不走 put_char, 其光标由 sys_cur 独立定位, 不受影响。 */
+    if (!ic_hidden) {
+        ic_px = cur_x;
+        ic_py = cur_y;
         ic_draw_at(cur_x, cur_y);
     }
 }
