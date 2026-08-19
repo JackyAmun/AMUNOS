@@ -27,6 +27,7 @@ static struct idt_gate idt[256];
 extern void asm_keyboard_handler();
 extern void asm_syscall_handler();
 extern void asm_timer_handler();
+extern void asm_mouse_handler();
 extern void asm_fault_ud(), asm_fault_df(), asm_fault_gp(), asm_fault_pf();
 
 /* 设置一个 IDT 门 */
@@ -56,9 +57,9 @@ static void pic_remap() {
     io_out8(0x21, 0x01);
     io_out8(0xA1, 0x01);
 
-    // 中断屏蔽：开启键盘 (IRQ1) + 定时器 (IRQ0)
-    io_out8(0x21, 0xFC);   // 主片: 1111 1100 (IRQ0+IRQ1 开放)
-    io_out8(0xA1, 0xFF);   // 从片: 1111 1111 (全部屏蔽)
+    // 中断屏蔽：定时器 (IRQ0) + 键盘 (IRQ1) + 级联 (IRQ2) 开放
+    io_out8(0x21, 0xF8);   // 主片: 1111 1000 (IRQ0+1+2 开放)
+    io_out8(0xA1, 0xEF);   // 从片: 1110 1111 (仅 IRQ12 鼠标开放)
 }
 
 /* 初始化 IDT — 由 kernel.c 的 kmain() 调用 */
@@ -73,13 +74,22 @@ void init_idt() {
     set_gate(14, (unsigned int)asm_fault_pf, 0x8F);   // 页故障
 
     // 3. 键盘中断 (IRQ1 → 向量 0x21)
-    set_gate(0x21, (unsigned int)asm_keyboard_handler, 0x8F);
+    //   0x8E = 中断门 (进入时关 IF) — 处理期间不被其它 IRQ 打断。
+    //   旧值 0x8F 陷阱门 (IF 不关) 导致 IRQ 相互嵌套: 定时器任务切换
+    //   序列 (mov esp,[ctx.esp] → iretd) 中间可被鼠标 IRQ 打断, 嵌套帧
+    //   写进新任务栈, 造成栈上 iret 帧错位 → CPU 跳到垃圾地址 (EIP≈0) →
+    //   "Vector #14 PF"(PG 关闭下实际是其它异常被错位传播)。v6.7 修复。
+    set_gate(0x21, (unsigned int)asm_keyboard_handler, 0x8E);
 
-    // 4. 系统调用 (int 0x30, 陷阱门 — 允许应用层调用)
+    // 4. 系统调用 (int 0x30, 陷阱门 — 允许应用层调用; IF 保持, 长 syscall 可被
+    //    定时器抢占, 多任务需要)
     set_gate(0x30, (unsigned int)asm_syscall_handler, 0xEF);
 
-    // 5. 定时器 (IRQ0 → 向量 0x20)
-    set_gate(0x20, (unsigned int)asm_timer_handler, 0x8F);
+    // 5. 定时器 (IRQ0 → 向量 0x20) — 中断门, 任务切换原子化
+    set_gate(0x20, (unsigned int)asm_timer_handler, 0x8E);
+
+    // 5.1 鼠标 (IRQ12 → 向量 0x2C) — 中断门
+    set_gate(0x2C, (unsigned int)asm_mouse_handler, 0x8E);
 
     // 6. 加载 IDT
     struct idt_ptr ptr;
@@ -88,6 +98,7 @@ void init_idt() {
 
     __asm__ volatile ("lidt %0" : : "m"(ptr));
 
-    // 7. 初始化键盘控制器
+    // 7. 初始化键盘控制器与 PS/2 鼠标
     keyboard_init();
+    mouse_init();
 }

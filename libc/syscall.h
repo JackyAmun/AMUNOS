@@ -29,6 +29,13 @@
 #define SYS_EXIT     13
 #define SYS_BRK      14
 #define SYS_GETKEY   15
+#define SYS_GETMODS  16
+#define SYS_READDIR  17
+#define SYS_MOUSE    18
+#define SYS_KEYHIT   19
+#define SYS_CURSOR   20
+#define SYS_CURHIDE  21
+#define SYS_CURSHOW  22
 
 /* ── 内联汇编封装 ── */
 static inline long syscall0(long nr) {
@@ -143,6 +150,30 @@ static inline long sys_lseek(int fd, int offset, int whence)  { return syscall3(
 static inline long sys_brk(void *addr)                        { return syscall1(SYS_BRK, (long)addr); }
 static inline void sys_exit(int status)                       { syscall1(SYS_EXIT, status); }
 static inline int  sys_getkey(void)                           { return (int)syscall0(SYS_GETKEY); }
+/* 修饰键状态: bit0=shift bit1=ctrl bit2=caps bit3=alt (编辑器块选用) */
+static inline int  sys_getmods(void)                          { return (int)syscall0(SYS_GETMODS); }
+/* 列目录第 idx 项 (0 起): 返回 1=文件 2=目录 0=列完 -1=错; name_out 填 "NAME.EXT" */
+static inline int  sys_readdir(const char *path, int idx, char *name_out) {
+    return (int)syscall3(SYS_READDIR, (long)path, idx, (long)name_out);
+}
+/* 读鼠标: out[0]=按钮位 (bit0 左 bit1 右) out[1]=字符列 0-79 out[2]=字符行 0-24 */
+static inline int  sys_mouse(int *out) {
+    return (int)syscall1(SYS_MOUSE, (long)out);
+}
+/* 非阻塞按键查询: 1=有键待读 (随后 sys_getkey 不阻塞) 0=无键 (事件循环继续轮询鼠标) */
+static inline int  sys_keyhit(void) {
+    return (int)syscall0(SYS_KEYHIT);
+}
+/* 软件输入光标 '|' (内核 0xB8000 叠加层, v6.7): 屏幕格坐标 0-79 / 0-24 */
+static inline int  sys_cur(int x, int y) {
+    return (int)syscall2(SYS_CURSOR, x, y);
+}
+static inline int  sys_curhide(void) {
+    return (int)syscall0(SYS_CURHIDE);
+}
+static inline int  sys_curshow(void) {
+    return (int)syscall0(SYS_CURSHOW);
+}
 
 /* ── 桩 (TCC 引用的 POSIX 表层, AMUNOS 暂未实现) ── */
 static inline int  sys_stat(const char *path, struct stat *st)      { (void)path; (void)st; return -1; }

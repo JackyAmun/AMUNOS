@@ -9,7 +9,7 @@ BOOTFLAGS   = -f bin
 CFLAGS      = -m32 -c -fno-builtin -ffreestanding -fno-pie -std=gnu99 -I.
 LDFLAGS     = -m elf_i386 -T linker.ld
 
-OBJS = head.o kernel.o command.o fault.o mem.o syscall.o task.o vga.o kbd.o idt.o fs.o disk_io.o elf.o serial.o
+OBJS = head.o kernel.o command.o fault.o mem.o syscall.o task.o vga.o kbd.o idt.o mouse.o fs.o disk_io.o elf.o serial.o
 
 BOOT_BIN   = boot.bin
 KERNEL_BIN = kernel.bin
@@ -71,14 +71,22 @@ $(INP_ELF): inp.c libc/libc.a libc/crt0.o
 	ld -m elf_i386 -no-pie -T libc/link.ld -nostdlib -static \
 	    libc/crt0.o inp.o libc/libc.a $$LIBGCC -o inp.elf
 
-# ── 编辑器 (用户态 ELF, v6.5): 从内核移除后独立成 EDIT.ELF, 放入 A:/B: 盘 ──
-$(EDIT_ELF): edit.c libc/libc.a libc/crt0.o
-	@echo "[ELF] Building edit.c -> edit.elf (libc-linked)"
-	gcc -m32 -ffreestanding -fno-builtin -fno-pie -fno-stack-protector \
-	    -fno-asynchronous-unwind-tables -fno-unwind-tables -nostdinc -I libc -c edit.c -o edit.o
+# ── 编辑器 (用户态 ELF, v6.6): FreeDOS Edit 0.7d 移植品, 放入 A:/B: 盘 ──
+EDIT_SRCS = $(wildcard edit-fdos/source/*.c)
+$(EDIT_ELF): $(EDIT_SRCS) libc/libc.a libc/crt0.o
+	@echo "[ELF] Building edit-fdos/source -> edit.elf (libc-linked)"
+	rm -rf .edit-obj && mkdir -p .edit-obj
+	for f in $(EDIT_SRCS); do \
+	  gcc -m32 -ffreestanding -fno-builtin -fno-pie -fno-stack-protector \
+	      -fno-asynchronous-unwind-tables -fno-unwind-tables -nostdinc \
+	      -I libc -I edit-fdos/source -funsigned-char -c $$f \
+	      -o .edit-obj/$$(basename $$f .c).o || exit 1; \
+	done
 	LIBGCC=$$(gcc -m32 -print-libgcc-file-name); \
 	ld -m elf_i386 -no-pie -T libc/link.ld -nostdlib -static \
-	    libc/crt0.o edit.o libc/libc.a $$LIBGCC -o edit.elf
+	    libc/crt0.o .edit-obj/*.o libc/libc.a $$LIBGCC -o edit.elf
+	rm -rf .edit-obj
+	@echo "[EDIT.ELF] size: $$(wc -c < edit.elf) bytes"
 
 # ── Compile rules ──
 %.o: %.c common.h
@@ -113,6 +121,7 @@ run-serial: $(A_IMG) $(B_IMG)
 run-trio: $(A_IMG) $(B_IMG) $(C_IMG)
 	qemu-system-i386 -rtc base=localtime -hda $(A_IMG) -hdb $(B_IMG) -hdc $(C_IMG) -nographic
 
+# v6.7: 去掉 -show-cursor — 鼠标指针由内核软件叠加 '█' 绘制
 run-trio-gui: $(A_IMG) $(B_IMG) $(C_IMG)
 	qemu-system-i386 -rtc base=localtime -hda $(A_IMG) -hdb $(B_IMG) -hdc $(C_IMG)
 

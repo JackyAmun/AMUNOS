@@ -7,13 +7,18 @@ static char *names[] = {
     "TS","NP","SS","GP","PF","RS","XF","AC","MC","XM"
 };
 
-void fault_handler(int vector, int eip, int errcode) {
-    (void)eip; (void)errcode;
-
+void fault_handler(int vector, int eip, int errcode, int eflags) {
+    unsigned int cr2 = 0;
+    __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
+    (void)errcode; (void)eflags;
     cls();
     put_str("*** FAULT ***  Vector #");
     put_num(vector);
     if (vector < 20) { put_str(" "); put_str(names[vector]); }
+    put_str(" EIP=");
+    put_num(eip);
+    put_str(" CR2=");
+    put_num(cr2);
     put_str("\n");
 
     if (vector == 13) put_str("General Protection Fault\n");

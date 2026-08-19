@@ -19,6 +19,12 @@
  *   13 = exit(status)           — 结束当前程序任务
  *   14 = brk(addr)              — 用户堆断点 (0=查询)
  *   15 = getkey()               — 读原始键码 (阻塞, 无回显, 全屏编辑器用)
+ *   16 = getmods()              — 读修饰键状态 (shift/ctrl/caps/alt)
+ *   17 = readdir(path,idx,buf)  — 列目录第 idx 项 (1=文件 2=目录 0=结束 -1=错)
+ *   18 = mouse(int out[3])      — 读鼠标: out[0]=按钮位 out[1]=字符列 out[2]=字符行
+ *   20 = cursor(x,y)            — 软件输入光标 '|' 画到 (x,y) (EDIT/全屏程序)
+ *   21 = curhide()              — 隐藏输入光标 (对话框弹出时)
+ *   22 = curshow()              — 恢复显示输入光标
  *
  * fd 表: 0=stdin 1=stdout 2=stderr (控制台), 3+ = 文件 (内存缓冲 + 游标)
  */
@@ -312,9 +318,74 @@ static int sys_brk(int addr) {
     return addr;
 }
 
+/* ── 17. readdir — 枚举目录 (v6.6, EDIT 文件对话框用) ──
+ * sys_readdir(path, idx, name_out)
+ *   path   : 目录路径 ("A:/USR" "/SRC" ""/"/"=根); 空串与 "/" 都列根
+ *   idx    : 有效条目序号 (0 起; fs_list_dir 已跳过 0xE5 删除项与 LFN)
+ *   返回   : 1 = 第 idx 项是普通文件 (name_out 填 "NAME.EXT")
+ *            2 = 第 idx 项是子目录
+ *            0 = 目录已列完 / idx 越界
+ *           -1 = 路径不存在 / 不是目录 */
+static int sys_readdir(char *path, int idx, char *name_out) {
+    char full[64];
+    int i;
+    if (!path || !*path) full[0] = 0;
+    else { for (i = 0; path[i] && i < 62; i++) full[i] = path[i]; full[i] = 0; }
+
+    int saved_drive = current_drive_idx, saved_cwd = cwd_cluster;
+    int drive = -1;
+    { char *p = full; drive = parse_drive(&p);
+      if (drive >= 0) {
+          current_drive_idx = drive; fs_init();     /* 切盘 (cwd 清零 → X:path==X:\path) */
+          { char *d = full; while (*p) *d++ = *p++; *d = 0; }
+      } }
+
+    int dc = cwd_cluster;
+    if (full[0] && !(full[0] == '/' && !full[1])) {
+        /* 非空 / 非 "/": 把最后一段解析成目录本身 */
+        int d = cwd_cluster;
+        int has_sep = 0;
+        for (i = 0; full[i]; i++)
+            if (full[i] == '/') { has_sep = 1; break; }
+        if (has_sep) {
+            d = fs_resolve_path(full);              /* full 原地变最后一段 */
+            if (d < 0) goto fail;
+        }
+        FAT12Entry e;
+        if (fs_find_entry_in_dir(d, full, &e) < 0 || !(e.attr & 0x10))
+            goto fail;                              /* 不存在或不是目录 */
+        dc = e.start_cluster;
+    }
+
+    /* 列出目录, 取第 idx 项 */
+    FAT12Entry ents[64];
+    int n = fs_list_dir(dc, ents, 64);
+    if (idx < 0 || idx >= n) goto done;             /* 0 = 已列完 */
+
+    /* 8.3 → "NAME.EXT": 名字/扩展去尾空格, 扩展非全空格才拼 '.' */
+    FAT12Entry *e = &ents[idx];
+    char *d = name_out;
+    for (i = 0; i < 8 && e->name[i] && e->name[i] != ' '; i++) *d++ = e->name[i];
+    if (e->ext[0] && e->ext[0] != ' ') {
+        *d++ = '.';
+        for (i = 0; i < 3 && e->ext[i] && e->ext[i] != ' '; i++) *d++ = e->ext[i];
+    }
+    *d = 0;
+
+    if (drive >= 0) { current_drive_idx = saved_drive; fs_init(); cwd_cluster = saved_cwd; }
+    return (e->attr & 0x10) ? 2 : 1;
+fail:
+    if (drive >= 0) { current_drive_idx = saved_drive; fs_init(); cwd_cluster = saved_cwd; }
+    return -1;
+done:
+    if (drive >= 0) { current_drive_idx = saved_drive; fs_init(); cwd_cluster = saved_cwd; }
+    return 0;
+}
+
 /* ── 15. getkey — 读原始键码 (阻塞, 无回显; 供编辑器等全屏程序) ──
  * 返回: 32..126 可打印字符; '\r' 回车; '\b' 退格; 27 ESC; 127 DEL;
- *       3 Ctrl+C; 128+ 方向/Home/End/F1-F5 (见 edit.c 的常量)。
+ *       1..26 Ctrl+A..Z 控制码 (Ctrl+字母); 3 Ctrl+C; 128+ 方向/Home/End/F1-F5;
+ *       141 INS。128+ 值见 edit.c 的常量。
  * 程序显式读 Ctrl+C: 该键由程序接管, 清掉 force_kill, 避免下一次
  * fopen/syscall 被强制终止逻辑误杀。 */
 static int sys_getkey(void) {
@@ -346,6 +417,7 @@ static int sys_getkey(void) {
     case 17: return 138;                 /* F5 */
     case 18: return 139;                 /* PgUp */
     case 19: return 140;                 /* PgDn */
+    case 20: return 141;                 /* INS (0.7 编辑器插入切换) */
     }
     return 0;
 }
@@ -383,6 +455,41 @@ void syscall_handler(unsigned *frame) {
     case 13: sys_exit(a1); result = 0; break;
     case 14: result = sys_brk(a1); break;
     case 15: result = sys_getkey(); break;
+    case 16: result = is_shift | (is_ctrl<<1) | (caps_lock<<2) | (is_alt<<3); break;  /* SYS_GETMODS */
+    case 17: result = sys_readdir((char*)a1, a2, (char*)a3); break;  /* SYS_READDIR */
+    case 18: {   /* SYS_MOUSE: 读鼠标状态到 int out[3] */
+        int *o = (int*)a1;
+        if (o) {
+            o[0] = mouse_buttons_state();
+            o[1] = mouse_char_x();
+            o[2] = mouse_char_y();
+        }
+        /* 每次轮询都重画鼠标指针 '█' — 用户程序重绘整屏后指针仍在 (v6.7) */
+        vga_mouse_redraw();
+        result = 0;
+        break;
+    }
+    case 20: {   /* SYS_CURSOR: 软件输入光标 '|' 定位 (x,y), 屏幕格坐标 */
+        soft_cursor_at(a1, a2);
+        result = 0;
+        break;
+    }
+    case 21:     /* SYS_CURHIDE: 隐藏输入光标 */
+        soft_cursor_hide();
+        result = 0;
+        break;
+    case 22:     /* SYS_CURSHOW: 恢复输入光标 */
+        soft_cursor_show();
+        result = 0;
+        break;
+    case 19: {   /* SYS_KEYHIT: 非阻塞按键查询 — 轮询一次键盘/串口,
+                  * 有键待读返回 1, 无键返回 0 (不阻塞)。
+                  * FreeDOS Edit 事件循环靠它区分"有键才 getkey()",
+                  * 空转时继续轮询鼠标 (v6.7 鼠标联调)。 */
+        input_poll();
+        result = (key_pressed != 0);
+        break;
+    }
     default: result = -1; break;
     }
 

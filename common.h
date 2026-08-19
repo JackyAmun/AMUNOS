@@ -35,6 +35,8 @@ typedef struct {
 // --- 3. 全局变量 ---
 extern volatile int is_shift;
 extern volatile int caps_lock;
+extern volatile int is_ctrl;
+extern volatile int is_alt;
 extern volatile int key_pressed;
 extern volatile char current_char;
 
@@ -103,6 +105,17 @@ void put_char(char c, char color);
 void put_str(char *s);
 void cls();
 
+// --- 6.1 软件叠加层 (vga.c, v6.7): 输入光标 | + 鼠标指针 █ ---
+// update_cursor() 隐藏硬件文本光标并重绘两个叠加。
+// 用户程序 (EDIT) 用 soft_cursor_at/hide/show 定位输入光标。
+void vga_overlay_refresh(void);
+void vga_overlay_selfheal(void);   // 定时器每 tick 重铺 (EDIT 重绘抹掉后自愈)
+void vga_mouse_redraw(void);
+void vga_poke(int x, int y, unsigned char ch, unsigned char attr);
+void soft_cursor_at(int x, int y);
+void soft_cursor_hide(void);
+void soft_cursor_show(void);
+
 void init_idt();
 void keyboard_init();
 void kbd_poll();
@@ -147,5 +160,12 @@ void serial_puts(char *s);
 int  serial_getc(void);
 void lpt_putc(char c);
 void lpt_puts(char *s);
+
+// --- 12.1 PS/2 鼠标 (mouse.c, IRQ12 → 0x2C) ---
+void mouse_init(void);
+int mouse_installed_k(void);   // 驱动是否就绪
+int mouse_buttons_state(void); // 按钮位 (bit0 左 bit1 右 bit2 中)
+int mouse_char_x(void);        // 字符格列 0-79
+int mouse_char_y(void);        // 字符格行 0-24
 
 #endif

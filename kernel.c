@@ -45,11 +45,11 @@ static void redraw(int pos){
     for(int i=pos;i<cmd_len;i++){
         put_char(cmd_buf[i],0x0F);
     }
-    /* 末尾清空格直接写 VRAM, 不镜像到串口 (否则回显变成 "s e r" 错乱) */
+    /* 末尾清空格直接写 VRAM, 不镜像到串口 (否则回显变成 "s e r" 错乱)。
+     * 经 vga_poke: 自动清掉该格上的输入光标 | / 鼠标 █ 叠加, 防陈旧还原 (v6.7) */
     int ec = prompt_len + cmd_len;
     if (ec < 80) {
-        char *v = (char*)0xB8000 + (cur_y * 80 + ec) * 2;
-        v[0] = ' '; v[1] = 0x07;
+        vga_poke(ec, cur_y, ' ', 0x07);
     }
     /* 串口: 覆盖行尾残留 (行变短时), 光标停在行尾 */
     int scol_end = ser_col_of(cmd_len);
@@ -58,16 +58,18 @@ static void redraw(int pos){
         for (int i = scol_end; i < old_ser; i++) serial_putc('\b');
     }
     ser_col = scol_end;
-    cur_x=prompt_len+pos;update_cursor();
+    /* 光标停在真实插入点 (prompt_len+cmd_pos), 不是最后重画的字符列。
+     * 旧硬件块光标盖在末字符上仍可读 (反显), 软件 | 叠加会直接盖掉它
+     * → 最后输入的字符显示不出来 (v6.7 修复)。 */
+    cur_x=prompt_len+cmd_pos;update_cursor();
 }
 
-/* 后台演示任务: 每 0.5 秒在屏幕右上角更新计数, 证明多任务运行 (GUI 可见) */
+/* 后台演示任务: 每 0.5 秒在屏幕右上角更新计数, 证明多任务运行 (GUI 可见)。
+ * 经 vga_poke 写, 清掉该格上的叠加 (右上角正好是鼠标初始位置附近) */
 static void demo_clock_task() {
     unsigned n = 0;
-    char *v = (char*)0xB8000 + 158;   /* 右上角 (row 0, col 79) */
     while (1) {
-        v[0] = '0' + (n % 10);
-        v[1] = 0x4A;                  /* 红底 */
+        vga_poke(79, 0, (unsigned char)('0' + (n % 10)), 0x4A);  /* 红底 */
         task_sleep(50);               /* 0.5 秒 */
         n++;
     }
@@ -76,8 +78,8 @@ static void demo_clock_task() {
 void kmain(){
     serial_init();
     cls();
-    put_str("AMUNOS Kernel v6.5.1 (Multi-Drive)\n");
-    serial_puts("AMUNOS v6.5.1 serial ready\n");   /* 冒烟标记: serial_puts 把 \n 翻成 CRLF */
+    put_str("AMUNOS Kernel v6.5.2 (Multi-Drive)\n");
+    serial_puts("AMUNOS v6.5.2 serial ready\n");   /* 冒烟标记: serial_puts 把 \n 翻成 CRLF */
     init_idt();
     mem_init();
     timer_init();

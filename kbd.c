@@ -23,10 +23,11 @@
 volatile int is_shift    = 0;
 volatile int caps_lock   = 0;
 volatile int key_pressed = 0;
+volatile int is_ctrl     = 0;      // Ctrl 按下 (sys_getmods 查询, 编辑块选用)
+volatile int is_alt      = 0;      // Alt 按下 (sys_getmods 查询)
 volatile char current_char = 0;
 unsigned char last_scancode = 0;
 static int ext_scancode = 0;       // 0xE0 前缀标记
-static int is_ctrl = 0;            // Ctrl 按下 (用于 Ctrl+C)
 
 // ── 键盘 LED 状态 (bit 0=Scroll, bit 1=Num, bit 2=Caps) ──
 static unsigned char kbd_leds = 0;
@@ -45,9 +46,11 @@ static void kbd_wait_in() {
 static void update_leds() {
     kbd_wait_out();
     io_out8(KBD_PORT, 0xED);       // 设置 LED 命令
+    kbd_wait_in(); (void)io_in8(KBD_PORT);   // ACK 0xFA (不读会残留顶住后续字节)
 
     kbd_wait_out();
     io_out8(KBD_PORT, kbd_leds);   // LED 状态字节
+    kbd_wait_in(); (void)io_in8(KBD_PORT);   // ACK 0xFA
 }
 
 // ── 普通键映射表 (scancode → ASCII) ──
@@ -85,6 +88,10 @@ void keyboard_init() {
 
 /* 键盘中断处理函数 — 由 head.asm 的 asm_keyboard_handler 调用 */
 void keyboard_handler() {
+    /* 输出缓冲若是 aux (鼠标) 数据则不动 — 归 IRQ12 处理。
+     * 关键: kbd_poll() 轮询 (bit0=输出缓冲满) 时也会走到这里,
+     * 若误把鼠标字节当扫描码读走, 鼠标包流会错位。 */
+    if (io_in8(0x64) & 0x20) return;
     unsigned char sc = io_in8(KBD_PORT);
     last_scancode = sc;
 
@@ -111,6 +118,7 @@ void keyboard_handler() {
         case 0x4F: key_pressed = 11; return;  // END
         case 0x49: key_pressed = 18; return;  // PgUp
         case 0x51: key_pressed = 19; return;  // PgDn
+        case 0x52: key_pressed = 20; return;  // INS (编辑器插入切换)
         default:   return;
         }
     }
@@ -121,6 +129,7 @@ void keyboard_handler() {
         sc &= 0x7F;  // 去掉 break 位
         if (sc == SHIFT_L || sc == SHIFT_R) is_shift = 0;
         if (sc == CTRL_L) is_ctrl = 0;
+        if (sc == ALT_L) is_alt = 0;
         return;
     }
 
@@ -143,7 +152,8 @@ void keyboard_handler() {
         return;
 
     case ALT_L:
-        return;  // 暂不处理
+        is_alt = 1;
+        return;
 
     case ENTER:
         key_pressed = 2;      // 回车
@@ -162,6 +172,17 @@ void keyboard_handler() {
             force_kill = 1;   // 全局强制终止标志
             key_pressed = 12; // 通知 REPL 清行 (程序运行时由 syscall 层消费)
             return;
+        }
+        /* Ctrl+字母 → 标准控制码 (Ctrl+A=1..Ctrl+Z=26; Ctrl+M=回车, Ctrl+I=Tab,
+         * Ctrl+H=退格, Ctrl+J=换行 与 DOS 语义一致)。FreeDOS Edit 的加速键
+         * (Ctrl+S/O/N/Z/X/C/V/F) 依赖此区别。 */
+        if (is_ctrl && sc < sizeof(kmap)) {
+            char lc = kmap[sc];
+            if (lc >= 'a' && lc <= 'z') {
+                current_char = lc - 'a' + 1;
+                key_pressed = 1;
+                return;
+            }
         }
         if (sc >= 0x3B && sc <= 0x3F) {  // F1-F5 功能键
             key_pressed = 13 + (sc - 0x3B);
@@ -189,11 +210,20 @@ void keyboard_handler() {
 }
 
 /* 轮询键盘 — 中断失效时的后备方案
- * 读取 8042 状态端口 0x64，若输出缓冲区有数据则调用中断处理 */
+ * 读取 8042 状态端口 0x64，若输出缓冲区有数据则调用中断处理。
+ * 注意: status 检查 + 0x60 读取必须原子 (cli)。否则轮询的两条 I/O 之间
+ * 插入的 IRQ1 会抢先消费掉键盘字节, 8042 随即把 obstsrc 翻到鼠标, 本函数
+ * 的 0x60 读取便拿到鼠标字节 → 被当扫描码解码 → 终端出现乱码数字。
+ * IRQ1 中断门本身 IF 已关, 原子; 只有这里 (IF=1 的 shell/EDIT 循环) 会泄漏。
+ * 用 eflags 保存/恢复而不是盲 sti, 避免嵌套关闭时误开 IF。v6.7 修复。 */
 void kbd_poll() {
+    unsigned int flags;
+    __asm__ volatile("pushfl; popl %0" : "=r"(flags));
+    __asm__ volatile("cli");
     if (io_in8(0x64) & 0x01) {  // bit 0 = output buffer full
-        keyboard_handler();
+        keyboard_handler();     // 内部 status 检查 + 0x60 读取, cli 下原子
     }
+    __asm__ volatile("pushl %0; popfl" :: "r"(flags));
 }
 
 /* 统一输入轮询: 键盘 + 串口 (远程控制台, v6.5)

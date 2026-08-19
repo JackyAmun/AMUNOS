@@ -116,6 +116,11 @@ void task_set_prog(struct task *t) { prog_task = t; }
 void *timer_schedule(unsigned *frame) {
     system_ticks++;
 
+    /* 软件叠加自愈 (v6.7): 每 tick 重铺输入光标 | 与鼠标指针 █。
+     * EDIT 等程序直写 0xB8000 会把叠加抹掉, 这里 10ms 内恢复, 不依赖
+     * 程序轮询鼠标。中断门内 IF=0, 与鼠标 IRQ 不交错 (自愈设计)。 */
+    vga_overlay_selfheal();
+
     /* Ctrl+C 强杀前台 CPU 密集程序: 当前运行的是前台程序任务时, 把其返回
      * EIP (iret 帧 [12]) 重定向到 force_terminate (标记 EXITED 并让出 CPU)。
      * 若当前跑的是后台任务 (如 demo_clock), 等下次轮到前台任务再杀。 */

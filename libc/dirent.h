@@ -1,7 +1,7 @@
 #ifndef _USERSPACE_DIRENT_H
 #define _USERSPACE_DIRENT_H
 
-/* POSIX dirent shape over the index-addressed SYS_READDIR(141).
+/* POSIX dirent shape over the index-addressed SYS_READDIR(17).
  * struct dirent + DT_* + DIRENT_NAME_MAX come from <syscall.h>. */
 #include "syscall.h"
 

@@ -6,8 +6,9 @@ global kernel_entry
 global asm_keyboard_handler
 global asm_syscall_handler
 global asm_timer_handler
+global asm_mouse_handler
 global asm_fault_ud, asm_fault_gp, asm_fault_pf, asm_fault_df
-extern kmain, keyboard_handler, syscall_handler, timer_handler, fault_handler
+extern kmain, keyboard_handler, syscall_handler, timer_handler, mouse_handler, fault_handler
 
 kernel_entry:
     mov ax, 0x10
@@ -34,6 +35,28 @@ asm_keyboard_handler:
     call keyboard_handler
     mov al, 0x20
     out 0x20, al
+    pop gs
+    pop fs
+    pop es
+    pop ds
+    popad
+    iretd
+
+; ── 鼠标中断 (IRQ12 → 向量 0x2C) ──
+; 从片 IRQ, 需同时向从片 (0xA0) 和主片 (0x20) 发 EOI
+asm_mouse_handler:
+    pushad
+    push ds
+    push es
+    push fs
+    push gs
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    call mouse_handler
+    mov al, 0x20
+    out 0xA0, al          ; EOI 从片
+    out 0x20, al          ; EOI 主片 (级联)
     pop gs
     pop fs
     pop es
@@ -131,7 +154,7 @@ asm_fault_gp: push 13; jmp fault_ec
 asm_fault_pf: push 14; jmp fault_ec
 
 ; 有错误码 (栈: vector@esp, errcode, eip, cs, eflags)
-; pushad 32B + seg*4 16B = 48B, 所以 vector@esp+48, errcode@52, eip@56
+; pushad 32B + seg*4 16B = 48B, 所以 vector@esp+48, errcode@52, eip@56, cs@60, eflags@64
 fault_ec:
     pushad
     push ds
@@ -144,16 +167,18 @@ fault_ec:
     mov eax, [esp+48]    ; vector
     mov ebx, [esp+56]    ; eip
     mov ecx, [esp+52]    ; errcode
+    mov edx, [esp+64]    ; eflags
+    push edx
     push ecx
     push ebx
     push eax
     call fault_handler
-    add esp, 12
+    add esp, 16
     cli
     hlt
 
 ; 无错误码 (栈: vector@esp, eip, cs, eflags)
-; vector@esp+48, eip@esp+52
+; vector@esp+48, eip@esp+52, eflags@esp+60
 fault_noec:
     pushad
     push ds
@@ -165,10 +190,12 @@ fault_noec:
     mov es, ax
     mov eax, [esp+48]    ; vector
     mov ebx, [esp+52]    ; eip
-    push 0
+    mov edx, [esp+60]    ; eflags
+    push edx
+    push 0               ; errcode
     push ebx
     push eax
     call fault_handler
-    add esp, 12
+    add esp, 16
     cli
     hlt

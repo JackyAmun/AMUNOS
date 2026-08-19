@@ -26,3 +26,13 @@ __pycache__/
 # ── 串口/并口日志 (run-serial 产物) ──
 serial.log
 lpt.log
+
+# ── QEMU 验证产物 (vga dump / 串口日志) ──
+vga.*.bin
+*.serial
+
+# ── VMware 虚拟机文件 (vmx/vmdk/日志, 机器相关) ──
+VMware/
+
+# ── 上游 FreeDOS Edit 参考源码 (未修改, 仅对照) ──
+edit-master/
