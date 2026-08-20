@@ -166,6 +166,7 @@ void vga_overlay_refresh(void) {
  * 程序是否轮询鼠标。输入光标画在 ic_px/ic_py (shell 经 update_cursor 设,
  * EDIT 经 sys_cur 设)。 */
 void vga_overlay_selfheal(void) {
+    if (gui_active) return;          /* GUI 窗口服务器自绘图层, 文本叠加停用 */
     ic_clear();
     mc_clear();
     if (!mc_hidden && mouse_installed_k()) mc_draw_at(mouse_char_x(), mouse_char_y());
@@ -177,6 +178,7 @@ void vga_overlay_selfheal(void) {
  * 轮询与鼠标 IRQ 会交错 — 轮询读到旧位置、IRQ 已画新位置, 轮询再把旧位置
  * 画回去, 而旧格的影子已被新画覆盖 → 出现无人清除的残留 █ (v6.7 修复)。 */
 void vga_mouse_redraw(void) {
+    if (gui_active) return;          /* GUI 模式: 自绘鼠标指针, 不进 softbuf */
     unsigned int flags;
     __asm__ volatile("pushfl; popl %0" : "=r"(flags));
     __asm__ volatile("cli");

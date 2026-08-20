@@ -42,6 +42,41 @@
 #define SYS_UTF8TOGB  26    /* Unicode 码点 → GB2312 码 (U2GB 表; 0=不在字库) */
 #define SYS_CJKWCHAR  27    /* 绝对格 (x,y) 放汉字: packed=gb|(attr<<16) */
 
+/* ── GUI 窗口服务器 (v6.9, 内核 gui.c) ── */
+#define SYS_GUI_ENTER     28   /* 置 gui_active, 接管屏幕 */
+#define SYS_GUI_LEAVE     29   /* 关闭所有窗, 回文本渲染 */
+#define SYS_GUI_WIN       30   /* 建窗(x,y,w,h,title) → id */
+#define SYS_GUI_WIN_CLOSE 31   /* 关窗(id) */
+#define SYS_GUI_WIN_RAISE 32   /* 置顶(id) */
+#define SYS_GUI_WND_TEXT  33   /* 设控件文本(win,ctl,str) */
+#define SYS_GUI_BTN       34   /* 建按钮(win,cx,cy,label) → ctl */
+#define SYS_GUI_LBL       35   /* 建标签(win,x,y,text) → ctl */
+#define SYS_GUI_EDIT      36   /* 建输入框(win,cx,cy,width_px) → ctl */
+#define SYS_GUI_LIST      37   /* 建列表(win,x,y,w,h) → ctl */
+#define SYS_GUI_LIST_SET  38   /* 追加/清空列表项(win,ctl,str) */
+#define SYS_GUI_FILL      39   /* 填色(win|color<<16, pack(x,y), pack(w,h)) */
+#define SYS_GUI_TEXT      40   /* 像素文本(win,pack(x,y),str) */
+#define SYS_GUI_DIALOG    41   /* 弹窗(parent,w,h,title) → 新窗 id */
+#define SYS_GUI_EDITCHAR  42   /* 输入框编辑(win,ctl,ch): 打印字符光标处插入 / '\b'退格
+                                   128← 129→ 132HOME 133END 127DEL → 新长 */
+#define SYS_GUI_EVENTS    43   /* 取一批 gui_ev_t{type,win,ctl,ch} → 个数 */
+#define SYS_GUI_TAREA     44   /* 多行文本区(win,pack(x,y),pack(w,h)) → ctl */
+#define SYS_GUI_TAREA_SET 45   /* 设文本区内容(win|ctl<<8, buf, len) */
+#define SYS_GUI_TAREA_GET 46   /* 读回文本区内容(win|ctl<<8, buf, max) → 字节数 */
+
+/* 事件类型 (gui_ev_t.type) */
+#define GEV_CLICK 1
+#define GEV_KEY   2
+#define GEV_ENTER 3
+#define GEV_CLOSE 4   /* 标题栏 ✕ 关闭: 内核已关窗, 程序可据此清理/决定退出 */
+
+typedef struct {
+    int type;   /* GEV_CLICK / GEV_KEY / GEV_ENTER / GEV_CLOSE */
+    int win;    /* 窗口 id */
+    int ctl;    /* 控件 id (列表点击: ch 为选中项索引) */
+    int ch;     /* GEV_KEY: 键入字符; GEV_CLICK 列表: 项索引 */
+} gui_ev_t;
+
 /* ── 内联汇编封装 ── */
 static inline long syscall0(long nr) {
     long ret;
@@ -155,6 +190,7 @@ static inline long sys_lseek(int fd, int offset, int whence)  { return syscall3(
 static inline long sys_brk(void *addr)                        { return syscall1(SYS_BRK, (long)addr); }
 static inline void sys_exit(int status)                       { syscall1(SYS_EXIT, status); }
 static inline int  sys_getkey(void)                           { return (int)syscall0(SYS_GETKEY); }
+static inline void sys_sleep(int ticks)                       { syscall1(SYS_SLEEP, ticks); }
 /* 修饰键状态: bit0=shift bit1=ctrl bit2=caps bit3=alt (编辑器块选用) */
 static inline int  sys_getmods(void)                          { return (int)syscall0(SYS_GETMODS); }
 /* 列目录第 idx 项 (0 起): 返回 1=文件 2=目录 0=列完 -1=错; name_out 填 "NAME.EXT" */
@@ -195,6 +231,65 @@ static inline void sys_cjkwchar(int x, int y, unsigned gb, int fg, int bg) {
     /* 绝对格 (x,y) 放汉字占两格; fg/bg = VGA 前景/背景 (0-15/0-7) */
     unsigned attr = (unsigned)((fg & 0x0F) | ((bg & 0x07) << 4));
     syscall3(SYS_CJKWCHAR, x, y, (long)(gb | (attr << 16)));
+}
+
+/* ── GUI 窗口服务器包装 (v6.9) ── */
+static inline int sys_gui_enter(void)      { return (int)syscall0(SYS_GUI_ENTER); }
+static inline int sys_gui_leave(void)      { return (int)syscall0(SYS_GUI_LEAVE); }
+static inline int sys_gui_win(int x, int y, int w, int h, const char *title) {
+    return (int)syscall3(SYS_GUI_WIN, (long)((x & 0xFFFF) | ((unsigned)y << 16)),
+                         (long)((w & 0xFFFF) | ((unsigned)h << 16)), (long)title);
+}
+static inline int sys_gui_win_close(int id)  { return (int)syscall1(SYS_GUI_WIN_CLOSE, id); }
+static inline int sys_gui_win_raise(int id)  { return (int)syscall1(SYS_GUI_WIN_RAISE, id); }
+static inline int sys_gui_wnd_text(int win, int ctl, const char *str) {
+    return (int)syscall3(SYS_GUI_WND_TEXT, win, ctl, (long)str);
+}
+static inline int sys_gui_btn(int win, int cx, int cy, const char *label) {
+    return (int)syscall3(SYS_GUI_BTN, win, (long)((cx & 0xFFFF) | ((unsigned)cy << 16)), (long)label);
+}
+static inline int sys_gui_lbl(int win, int x, int y, const char *str) {
+    return (int)syscall3(SYS_GUI_LBL, win, (long)((x & 0xFFFF) | ((unsigned)y << 16)), (long)str);
+}
+static inline int sys_gui_edit(int win, int cx, int cy, int w) {
+    return (int)syscall3(SYS_GUI_EDIT, win, (long)((cx & 0xFFFF) | ((unsigned)cy << 16)), w);
+}
+static inline int sys_gui_list(int win, int x, int y, int w, int h) {
+    return (int)syscall3(SYS_GUI_LIST, win, (long)((x & 0xFFFF) | ((unsigned)y << 16)),
+                         (long)((w & 0xFFFF) | ((unsigned)h << 16)));
+}
+static inline int sys_gui_list_set(int win, int ctl, const char *str) {
+    return (int)syscall3(SYS_GUI_LIST_SET, win, ctl, (long)str);
+}
+static inline int sys_gui_fill(int win, int x, int y, int w, int h, unsigned short color) {
+    return (int)syscall3(SYS_GUI_FILL, (long)((win & 0xFFFF) | ((unsigned)color << 16)),
+                         (long)((x & 0xFFFF) | ((unsigned)y << 16)),
+                         (long)((w & 0xFFFF) | ((unsigned)h << 16)));
+}
+static inline int sys_gui_text(int win, int x, int y, const char *str) {
+    return (int)syscall3(SYS_GUI_TEXT, win, (long)((x & 0xFFFF) | ((unsigned)y << 16)), (long)str);
+}
+static inline int sys_gui_dialog(int parent, int w, int h, const char *title) {
+    return (int)syscall3(SYS_GUI_DIALOG, parent, (long)((w & 0xFFFF) | ((unsigned)h << 16)), (long)title);
+}
+static inline int sys_gui_editchar(int win, int ctl, int ch) {
+    return (int)syscall3(SYS_GUI_EDITCHAR, win, ctl, ch);
+}
+static inline int sys_gui_events(gui_ev_t *ev, int max) {
+    return (int)syscall2(SYS_GUI_EVENTS, (long)ev, max);
+}
+static inline int sys_gui_tarea(int win, int x, int y, int w, int h) {
+    return (int)syscall3(SYS_GUI_TAREA, win,
+                         (long)((x & 0xFFFF) | ((unsigned)y << 16)),
+                         (long)((w & 0xFFFF) | ((unsigned)h << 16)));
+}
+static inline int sys_gui_tarea_set(int win, int ctl, const char *str, int len) {
+    return (int)syscall3(SYS_GUI_TAREA_SET, (long)((win & 0xFF) | ((unsigned)ctl << 8)),
+                         (long)str, len);
+}
+static inline int sys_gui_tarea_get(int win, int ctl, char *buf, int max) {
+    return (int)syscall3(SYS_GUI_TAREA_GET, (long)((win & 0xFF) | ((unsigned)ctl << 8)),
+                         (long)buf, max);
 }
 
 /* ── 桩 (TCC 引用的 POSIX 表层, AMUNOS 暂未实现) ── */

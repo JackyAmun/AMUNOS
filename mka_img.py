@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-r"""A.img for AMUNOS v6.5.1 — boot + kernel (sectors 0..104) + FAT12 system disk
+r"""A.img for AMUNOS v6.6 — boot + kernel (sectors 0..128) + FAT12 system disk
 with a two-level directory tree (BOOT\ BIN\ USR\LIB USR\INCLUDE USR\SRC).
 
-Geometry (matches boot.asm BPB: reserved=105 sectors for boot+kernel):
+Geometry (matches boot.asm BPB: reserved=129 sectors for boot+kernel):
   sector 0       boot.bin
-  sector 1..104  kernel.bin (must stay < 104 sectors = 53248 bytes)
-  sector 105..113  FAT1 (9 sectors)
-  sector 114..122  FAT2 (9 sectors)
-  sector 123..136  root dir (224 entries = 14 sectors)
-  sector 137..     data area (root files + subdirectories)
+  sector 1..128  kernel.bin (must stay < 128 sectors = 65536 bytes)
+  sector 129..137  FAT1 (9 sectors)
+  sector 138..146  FAT2 (9 sectors)
+  sector 147..160  root dir (224 entries = 14 sectors)
+  sector 161..     data area (root files + subdirectories)
 
 Tree:
   A:\
@@ -25,13 +25,13 @@ import struct, sys, os
 path = sys.argv[1] if len(sys.argv) > 1 else 'A.img'
 d = bytearray(2880 * 512)
 
-RESV   = 105              # reserved sectors (boot + kernel)
+RESV   = 193              # reserved sectors (1 boot + 192 kernel, kernel<=96KB)
 FATSEC = 9                # sectors per FAT
 ROOTENT= 224              # root directory entries
 FAT1   = RESV * 512       # offset of FAT1
 FAT2   = FAT1 + FATSEC * 512
-ROOT   = FAT2 + FATSEC * 512              # = sector 118
-DATA   = ROOT + (ROOTENT * 32)            # = sector 132
+ROOT   = FAT2 + FATSEC * 512              # = sector 147
+DATA   = ROOT + (ROOTENT * 32)            # = sector 161
 
 # ── boot + kernel preamble ──
 with open('boot.bin', 'rb') as f:
@@ -139,6 +139,7 @@ add_opt_to(BOOT, 'KERNEL', 'BIN', 'kernel.bin')
 # ── BIN\ : 系统可执行程序 (CMDS.TXT 表指向这里; TCC 走命令前缀) ──
 add_opt_to(BIN, 'TCC',  'ELF', 'tcc.elf')
 add_opt_to(BIN, 'EDIT', 'ELF', 'edit.elf')
+add_opt_to(BIN, 'GUI',  'ELF', 'gui-demo.elf')   # GUI 控件演示 (v6.9)
 
 # ── USR\LIB\ : TCC 链接库 (cmd_tcc 注入 -L/-B) ──
 add_opt_to(USR_LIB, 'LIBC',    'A  ', 'libc/libc.a')
@@ -190,6 +191,7 @@ CMDS_BIN = '''\
 ; 格式: 命令名 目标ELF   (相对路径自动补来源盘盘符; 全盘 A:-D: 搜索)
 ; 注释以 ; 或 # 开头; 用 EDIT CMDS.BIN 编辑或 INSTALL 命令追加
 EDIT /BIN/EDIT.ELF
+GUI /BIN/GUI.ELF
 '''
 add_to(root, 'CMDS', 'BIN', CMDS_BIN)
 

@@ -53,6 +53,13 @@ static const unsigned short vga_rgb565[16] = {
 
 int fb_active(void) { return fb_on; }
 
+/* ── GUI 访问器 (gui.c 直接写帧缓冲 / 取字库指针) ── */
+unsigned fb_vbe_base(void) { return fb_base; }
+int fb_vbe_bpl(void)       { return fb_bpl; }
+int fb_vbe_w(void)         { return fb_w; }
+int fb_vbe_h(void)         { return fb_h; }
+unsigned char *fb_hzk16(void) { return hzk16; }
+
 static inline void fb_put_px(int x, int y, unsigned short c) {
     unsigned char *p = (unsigned char *)(fb_base + (unsigned)y * (unsigned)fb_bpl
                                          + (unsigned)x * (unsigned)(fb_bpp / 8));
@@ -155,6 +162,7 @@ static void fb_draw_boxglyph(int px, int py, unsigned char g,
 void fb_render(void) {
     static unsigned tick = 0;
     if (!fb_on) return;
+    if (gui_active) return;          /* GUI 窗口服务器接管屏幕, 文本渲染停用 */
     if ((++tick % 3) != 0) return;
     const unsigned char *vram = vga_textbuf();   /* 软件文本缓冲 (图形模式) */
     for (int row = 0; row < ROWS; row++) {

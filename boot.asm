@@ -8,11 +8,11 @@
 ;
 ; 磁盘布局 (A.img, 2880 扇区, 1.44MB):
 ;   扇区 0:       引导扇区
-;   扇区 1-104:   内核 (保留区, 105 保留扇区)
-;   扇区 105-113: FAT1 (9 扇区)
-;   扇区 114-122: FAT2 (9 扇区)
-;   扇区 123-136: 根目录 (14 扇区 × 224 条目)
-;   扇区 137+:    数据簇
+;   扇区 1-192:   内核 (保留区, 193 保留扇区 = 98KB)
+;   扇区 193-201: FAT1 (9 扇区)
+;   扇区 202-210: FAT2 (9 扇区)
+;   扇区 211-224: 根目录 (14 扇区 × 224 条目)
+;   扇区 225+:    数据簇
 
 [BITS 16]
 org 0x7C00
@@ -25,7 +25,7 @@ org 0x7C00
 bpb_oem:            db "AMUNOS  "  ; OEM 名称 (8 字节)
 bpb_bytes_per_sec:  dw 512         ; 每扇区字节数
 bpb_sec_per_cluster: db 1          ; 每簇扇区数
-bpb_rsvd_sec:       dw 105          ; 保留扇区数 (1引导+104内核)
+bpb_rsvd_sec:       dw 193          ; 保留扇区数 (1引导+192内核, kernel<=96KB)
 bpb_num_fats:       db 2           ; FAT 表份数
 bpb_root_entries:   dw 224         ; 根目录条目数
 bpb_total_sec:      dw 2880        ; 总扇区数 (1.44MB)
@@ -57,22 +57,35 @@ boot_code:
     mov si, msg_boot
     call print
 
-    ; 3. CHS 读取内核 (35 扇区 → 0x8000)
-    ;    LBA 1 → CHS: cylinder=0, head=0, sector=2
-    ;    S=18, H=2 — 标准 1.44MB 软盘几何
-    mov ax, 0x0800        ; 内核加载段 ES=0x0800
+    ; 3. 读内核到物理 0x8000, 分两段 (SeaBIOS AH=02h 单次 192 扇区实测报 Disk Error,
+    ;    128+64 两段可靠, 总计 192 扇区 = 96KB 上限)。
+    ;    第 1 段 AH=02h (已验证): ES=0x0800, 读 LBA1-128 → 0x08000..0x18000。
+    ;    第 2 段 AH=42h (LBA 扩展读, 无 CHS 几何依赖): 读 LBA129-192 → 0x18000..0x20000。
+    mov ax, 0x0800
     mov es, ax
-    xor bx, bx            ; 偏移 = 0
-
-    mov cl, 2             ; 起始扇区 (LBA1 → sector 2)
-    mov ch, 0             ; 柱面 0
-    mov dh, 0             ; 磁头 0
+    xor bx, bx
+    mov cl, 2             ; LBA1 → cyl0 head0 sector2 (已验证起点)
+    mov ch, 0
+    mov dh, 0
     mov dl, 0x80          ; 第一硬盘
-    mov al, 104           ; 读 104 扇区 (kernel<=52KB)
+    mov al, 128           ; 第 1 段: 128 扇区
     mov ah, 0x02
     int 0x13
-    jnc .load_ok
-
+    jc .err
+    ; 第 2 段: AH=42h, DAP@0x7E00 (16 字节: size/count/offset/segment/LBA)
+    mov si, 0x7E00
+    mov byte [si], 0x10
+    mov byte [si+1], 0
+    mov word [si+2], 64   ; 读 64 扇区 (LBA129-192)
+    mov word [si+4], 0
+    mov word [si+6], 0x1800   ; 段 0x1800 (0x18000)
+    mov dword [si+8], 129     ; LBA 低
+    mov dword [si+12], 0      ; LBA 高
+    mov ah, 0x42
+    int 0x13
+    jc .err
+    jmp .load_ok
+.err:
     mov si, msg_err
     call print
     hlt

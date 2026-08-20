@@ -238,7 +238,7 @@ void cmd_mov(char* arg){
 
 /* ── CLS/VER/TIME ── */
 void cmd_cls(){cls();}
-void cmd_ver(){put_str("\nAMUN-DOS 6.5.2 (C)2026 AMUNOS Team\n\n");}
+void cmd_ver(){put_str("\nAMUN-DOS 6.5.3 (C)2026 AMUNOS Team\n\n");}
 
 /* ── ZH (v6.8 中文演示): 把一段 GB2312 汉字经 cjk_cell 渲染到可见 80×25 区 ──
  * "你好，AMUNOS。中文支持" (GB2312 双字节)。走 put_cjk_str → cjk_cell 汉字格
@@ -279,7 +279,6 @@ void cmd_help(char* arg){
         else if(!strcmp(arg,"EDIT"))put_str("EDIT file — text editor\n");
         else if(!strcmp(arg,"ELF"))put_str("ELF file.elf — load & run ELF executable\n");
         else if(!strcmp(arg,"TCC"))put_str("TCC file.c [-o out] — compile C to ELF (run on A:, uses BIN/TCC.ELF + USR/INCLUDE/LIB)\n");
-        else if(!strcmp(arg,"INSTALL"))put_str("INSTALL prog[.ext] [name] — copy to A:/BIN + register in CMDS.BIN\n");
         else if(!strcmp(arg,"HELP"))put_str("HELP [cmd] [-p] — show help (p=paged)\n");
         else put_str("No help for that command.\n");
         return;
@@ -300,7 +299,6 @@ void cmd_help(char* arg){
         " EDIT file        Text editor (F1-Help F2-Save F3-Open F4-New F5-Quit)",
         " ELF  file.elf    Load & run ELF executable",
         " TCC  file.c      Compile C to ELF (TinyCC, shows elapsed)",
-        " INSTALL prg      Copy to A:/BIN + register in CMDS.BIN (any drive)",
         " CLS              Clear screen",
         " TIME             Show time",
         " VER              Show version",
@@ -447,66 +445,6 @@ void cmd_tcc(char* arg){
     put_str("TCC done (");put_num(dt/100);put_char('.',0x07);put_num((dt/10)%10);put_str("s)\n");
 }
 
-/* ── INSTALL (v6.5.1): 复制程序到 A:\BIN + 注册到 A:\CMDS.BIN ──
- * 用法: INSTALL prog[.ext] [cmdname]
- *   cmdname 默认 = 去扩展的源文件名; 注册后任何盘/目录敲 cmdname 即运行。 */
-void cmd_install(char* arg){
-    upper(arg);
-    if(!*arg){put_str("Usage: INSTALL prog[.ext] [name]\n");return;}
-    char *sp=arg;while(*sp&&*sp!=' ')sp++;
-    char *name=0;
-    if(*sp){*sp++=0;while(*sp==' ')sp++;name=sp;}
-
-    /* 源: 可带盘符/绝对路径; 堆读全 (fs_read_file 在 size 处写 NUL) */
-    drive_ctx_t sctx; int sd=fs_drive_open(arg,&sctx);
-    int dc=fs_resolve_path(arg);if(dc<0){if(sd>=0)fs_drive_restore(sctx);put_str("Not found.\n");return;}
-    FAT12Entry e;if(fs_find_entry_in_dir(dc,arg,&e)<0){if(sd>=0)fs_drive_restore(sctx);put_str("Not found.\n");return;}
-    if(e.attr&0x10){if(sd>=0)fs_drive_restore(sctx);put_str("Cannot install dir.\n");return;}
-    char *b=(char*)mem_alloc((unsigned)e.size+1);if(!b){if(sd>=0)fs_drive_restore(sctx);put_str("No memory.\n");return;}
-    fs_read_file(&e,b);int sz=e.size;
-    if(sd>=0)fs_drive_restore(sctx);
-
-    /* base = 源文件名含扩展 (arg 已被 fs_resolve_path 剥成裸名) */
-    char base[13];int ci=0;
-    while(arg[ci]&&ci<11)base[ci]=arg[ci],ci++;base[ci]=0;
-    char defname[13];
-    if(!name){int di=0;while(base[di]&&base[di]!='.'&&di<11)defname[di]=base[di],di++;defname[di]=0;name=defname;}
-
-    /* 切 A: → 写 A:\BIN\<base> (覆盖旧) → 追加 A:\CMDS.BIN */
-    drive_ctx_t actx=fs_drive_enter(0);
-    int dbin=0;FAT12Entry be;
-    if(fs_find_entry_in_dir(0,"BIN",&be)>=0&&(be.attr&0x10))dbin=be.start_cluster;
-    fs_delete_file_in_dir(dbin,base);
-    if(fs_create_file_in_dir(dbin,base,b,sz)!=0){
-        fs_drive_restore(actx);mem_free(b);put_str("Install failed.\n");return;
-    }
-    char *cbuf;int csize=0;FAT12Entry ce;
-    if(fs_find_entry_in_dir(0,"CMDS.BIN",&ce)>=0){
-        cbuf=(char*)mem_alloc((unsigned)ce.size+1);
-        if(!cbuf){fs_drive_restore(actx);mem_free(b);put_str("No memory.\n");return;}
-        fs_read_file(&ce,cbuf);csize=ce.size;
-    }else{
-        cbuf=(char*)mem_alloc(1);
-        if(!cbuf){fs_drive_restore(actx);mem_free(b);put_str("No memory.\n");return;}
-        cbuf[0]=0;
-    }
-    char add[88];int an=0,j=0;
-    while(name[j]&&an<70)add[an++]=name[j++];
-    add[an++]=' ';add[an++]='A';add[an++]=':';add[an++]='/';
-    add[an++]='B';add[an++]='I';add[an++]='N';add[an++]='/';
-    j=0;while(base[j]&&an<82)add[an++]=base[j++];
-    add[an++]='\n';
-    char *nb=(char*)mem_alloc((unsigned)(csize+an+1));
-    if(!nb){fs_drive_restore(actx);mem_free(cbuf);mem_free(b);put_str("No memory.\n");return;}
-    for(int i=0;i<csize;i++)nb[i]=cbuf[i];
-    for(int i=0;i<an;i++)nb[csize+i]=add[i];
-    nb[csize+an]=0;
-    fs_write_file_in_dir(0,"CMDS.BIN",nb,csize+an);   /* 走 inner: INSTALL 需改写 CMDS.BIN */
-    mem_free(nb);mem_free(cbuf);mem_free(b);
-    fs_drive_restore(actx);
-    put_str("Installed: ");put_str(name);put_str(" -> A:/BIN/");put_str(base);put_char('\n',0x07);
-}
-
 /* ═══════════════ DISPATCH ═══════════════ */
 
 /* ── 自定义命令 (v6.5.1): 返回 1=已处理
@@ -621,7 +559,6 @@ void exec_cmd(char* line){
     else if(!strcmp(cmd,"MOV"))cmd_mov(a1);
     else if(!strcmp(cmd,"ELF"))cmd_elf(a1);
     else if(!strcmp(cmd,"TCC"))cmd_tcc(a1);
-    else if(!strcmp(cmd,"INSTALL"))cmd_install(a1);
     else if(!strcmp(cmd,"MD")){if(*a1)fs_create_directory(a1);else put_str("Usage: MD name\n");}
     else if(!strcmp(cmd,"DEL")){if(*a1){upper(a1);fs_delete_file(a1);}else put_str("Usage: DEL file\n");}
     else if(!strcmp(cmd,"RMDIR")){if(*a1){upper(a1);fs_delete_directory(a1);}else put_str("Usage: RMDIR dir\n");}

@@ -288,6 +288,7 @@ static void close_all_fds(void) {
 static void prog_cleanup(void) {
     close_all_fds();
     user_break = USER_BRK_BASE;
+    if (gui_active) gui_leave();          /* GUI 演示退出/被强杀 → 回 shell 文本渲染 */
 }
 
 /* ── 13. exit ── */
@@ -509,6 +510,39 @@ void syscall_handler(unsigned *frame) {
                   * EDIT 等把 UTF-8 字符转成 HZK16 可渲染的 GB 码。 */
         result = (int)fb_uni_to_gb((unsigned)a1);
         break;
+    case 28: result = gui_enter(); break;
+    case 29: gui_leave(); result = 0; break;
+    case 30: result = gui_win(a1 & 0xFFFF, (a1 >> 16) & 0xFFFF,
+                              a2 & 0xFFFF, (a2 >> 16) & 0xFFFF, (const char*)a3); break;
+    case 31: result = gui_win_close(a1); break;
+    case 32: result = gui_win_raise(a1); break;
+    case 33: result = gui_wnd_text(a1, a2, (const char*)a3); break;
+    case 34: result = gui_btn(a1, a2 & 0xFFFF, (a2 >> 16) & 0xFFFF, (const char*)a3); break;
+    case 35: result = gui_lbl(a1, a2 & 0xFFFF, (a2 >> 16) & 0xFFFF, (const char*)a3); break;
+    case 36: result = gui_edit(a1, a2 & 0xFFFF, (a2 >> 16) & 0xFFFF, a3 & 0xFFFF); break;
+    case 37: result = gui_list(a1, a2 & 0xFFFF, (a2 >> 16) & 0xFFFF,
+                               a3 & 0xFFFF, (a3 >> 16) & 0xFFFF); break;
+    case 38: result = gui_list_set(a1, a2, (const char*)a3); break;
+    case 39: {   /* FILL: a1 低16=win, 高16=RGB565 色; a2=pack(x,y); a3=pack(w,h) */
+        result = gui_fill(a1 & 0xFFFF, a2 & 0xFFFF, (a2 >> 16) & 0xFFFF,
+                          a3 & 0xFFFF, (a3 >> 16) & 0xFFFF,
+                          (unsigned short)((a1 >> 16) & 0xFFFF));
+        break;
+    }
+    case 40: result = gui_text(a1 & 0xFFFF, a2 & 0xFFFF, (a2 >> 16) & 0xFFFF,
+                               (const char*)a3); break;
+    case 41: result = gui_dialog(a1 & 0xFFFF, a2 & 0xFFFF, (a2 >> 16) & 0xFFFF,
+                                 (const char*)a3); break;
+    case 42: result = gui_edit_char(a1 & 0xFFFF, a2, a3); break;
+    case 43: result = gui_events((void*)a1, a2); break;
+    /* 多行文本区 + 内容读回 (v6.10):
+     * 44 TAREA(win, pack(x,y), pack(w,h)) → ctl
+     * 45 TAREA_SET(win|ctl<<8, buf, len)   设内容
+     * 46 TAREA_GET(win|ctl<<8, buf, max)   读回 → 字节数 */
+    case 44: result = gui_tarea(a1 & 0xFFFF, a2 & 0xFFFF, (a2 >> 16) & 0xFFFF,
+                                a3 & 0xFFFF, (a3 >> 16) & 0xFFFF); break;
+    case 45: result = gui_tarea_set(a1 & 0xFF, (a1 >> 8) & 0xFF, (const char*)a2, a3); break;
+    case 46: result = gui_tarea_get(a1 & 0xFF, (a1 >> 8) & 0xFF, (char*)a2, a3); break;
     case 27: {   /* SYS_CJKWCHAR: 在绝对格 (x,y) 放一个汉字 (占两格).
                   * a1=x a2=y; packed 低16=GB 码 (0=替换框□), 高位=attr.
                   * EDIT 文本行渲染用它把中文字节画成真实汉字。 */

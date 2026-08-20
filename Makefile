@@ -1,4 +1,4 @@
-# AMUNOS Makefile — FAT12 bootable multi-disk (A: boot, B:/C: data, v6.5.2)
+# AMUNOS Makefile — FAT12 bootable multi-disk (A: boot, B:/C: data, v6.5.3)
 
 ASM  = nasm
 CC   = gcc
@@ -9,7 +9,7 @@ BOOTFLAGS   = -f bin
 CFLAGS      = -m32 -c -fno-builtin -ffreestanding -fno-pie -std=gnu99 -I.
 LDFLAGS     = -m elf_i386 -T linker.ld
 
-OBJS = head.o kernel.o command.o fault.o mem.o syscall.o task.o vga.o kbd.o idt.o mouse.o fs.o disk_io.o elf.o serial.o fb.o
+OBJS = head.o kernel.o command.o fault.o mem.o syscall.o task.o vga.o kbd.o idt.o mouse.o fs.o disk_io.o elf.o serial.o fb.o gui.o
 
 BOOT_BIN   = boot.bin
 KERNEL_BIN = kernel.bin
@@ -19,6 +19,7 @@ C_IMG      = C.img
 HELLO_ELF  = hello.elf
 INP_ELF    = inp.elf
 EDIT_ELF   = edit.elf
+GUI_ELF    = gui-demo.elf
 
 .PHONY: all clean run run-gui run-dual run-dual-gui run-serial \
         run-trio run-trio-gui run-trio-serial
@@ -40,7 +41,7 @@ $(KERNEL_BIN): $(OBJS) linker.ld
 # 避免内核 fb_font_init 加载不到 U2GB → UTF-8 汉字全画成 □。
 u2gb.bin: gen_u2gb.py
 	python3 gen_u2gb.py
-$(A_IMG): $(BOOT_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) mka_img.py u2gb.bin
+$(A_IMG): $(BOOT_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) $(GUI_ELF) mka_img.py u2gb.bin
 	@echo "[IMG] Building A.img..."
 	python3 mka_img.py $@
 
@@ -91,6 +92,19 @@ $(EDIT_ELF): $(EDIT_SRCS) libc/libc.a libc/crt0.o
 	    libc/crt0.o .edit-obj/*.o libc/libc.a $$LIBGCC -o edit.elf
 	rm -rf .edit-obj
 	@echo "[EDIT.ELF] size: $$(wc -c < edit.elf) bytes"
+
+# ── GUI 控件库演示 (v6.9, 用户态, 内核图形 syscall 28-43) ──
+$(GUI_ELF): gui/gui-demo.c libc/libc.a libc/crt0.o
+	@echo "[ELF] Building gui/gui-demo.c -> gui-demo.elf (libc-linked)"
+	rm -rf .gui-obj && mkdir -p .gui-obj
+	gcc -m32 -ffreestanding -fno-builtin -fno-pie -fno-stack-protector \
+	    -fno-asynchronous-unwind-tables -fno-unwind-tables -nostdinc \
+	    -I libc -c gui/gui-demo.c -o .gui-obj/gui-demo.o
+	LIBGCC=$$(gcc -m32 -print-libgcc-file-name); \
+	ld -m elf_i386 -no-pie -T libc/link.ld -nostdlib -static \
+	    libc/crt0.o .gui-obj/gui-demo.o libc/libc.a $$LIBGCC -o gui-demo.elf
+	rm -rf .gui-obj
+	@echo "[GUI.ELF] size: $$(wc -c < gui-demo.elf) bytes"
 
 # ── Compile rules ──
 %.o: %.c common.h

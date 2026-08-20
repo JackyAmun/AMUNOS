@@ -182,6 +182,12 @@ void fb_put_str_cjk(int cellx, int celly,
                     const unsigned char *s, int fg, int bg);  // GB2312 演示
 unsigned fb_uni_to_gb(unsigned uni);   // Unicode→GB2312 二分查找 (v6.8 UTF-8)
 int fb_is_boxcode(unsigned char b);    // 框线/滑块/箭头字节? (v6.8.1, CJK 判定前短路用)
+/* GUI 窗口服务器访问器 (gui.c 直接写帧缓冲/取字库) */
+unsigned fb_vbe_base(void);
+int fb_vbe_bpl(void);
+int fb_vbe_w(void);
+int fb_vbe_h(void);
+unsigned char *fb_hzk16(void);
 
 // --- 12.1 PS/2 鼠标 (mouse.c, IRQ12 → 0x2C) ---
 void mouse_init(void);
@@ -189,5 +195,31 @@ int mouse_installed_k(void);   // 驱动是否就绪
 int mouse_buttons_state(void); // 按钮位 (bit0 左 bit1 右 bit2 中)
 int mouse_char_x(void);        // 字符格列 0-79
 int mouse_char_y(void);        // 字符格行 0-24
+int mouse_px_x(void);          // 原始像素 X (GUI 命中测试)
+int mouse_px_y(void);          // 原始像素 Y (GUI 命中测试)
+int mouse_lbutton(void);       // 左键按下? (GUI 点击投递)
+
+// --- 13.0 GUI 窗口服务器 (gui.c, v6.9) ---
+extern int gui_active;         // 1 = GUI 接管屏幕 (fb_render/叠加层停用)
+int gui_enter(void);
+void gui_leave(void);
+int gui_win(int x, int y, int w, int h, const char *title);
+int gui_win_close(int id);
+int gui_win_raise(int id);
+int gui_btn(int win, int cx, int cy, const char *label);
+int gui_lbl(int win, int x, int y, const char *text);
+int gui_edit(int win, int cx, int cy, int w);
+int gui_list(int win, int x, int y, int w, int h);
+int gui_list_set(int win, int ctl, const char *str);   // 追加/替换项, 空串清空
+int gui_wnd_text(int win, int ctl, const char *str);   // 设控件文本 (按钮/标签/输入框)
+int gui_tarea(int win, int x, int y, int w, int h);    // 建多行文本区 → ctl
+int gui_tarea_set(int win, int ctl, const char *str, int len); // 设文本区内容 (len 字节)
+int gui_tarea_get(int win, int ctl, char *buf, int max);       // 读回文本区内容 → 字节数
+int gui_edit_char(int win, int ctl, int ch);           // 输入框编辑: 打印字符在光标处插入;
+                                                       //   '\b'退格 128← 129→ 132HOME 133END 127DEL
+int gui_fill(int win, int x, int y, int w, int h, unsigned short color);
+int gui_text(int win, int x, int y, const char *str);
+int gui_dialog(int parent, int w, int h, const char *title); // 弹窗 → 新窗 id
+int gui_events(void *buf, int max);  // 取一批事件, 返回个数
 
 #endif

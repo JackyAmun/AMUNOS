@@ -119,10 +119,15 @@ void mouse_handler(void) {
             if (pkt[0] & 0x20) dy -= 256;      /* y 符号位 → 负 */
             mx_px += dx;
             my_px -= dy;                       /* dy 正值 = 鼠标向上 */
+            /* y 上限: 文本模式=MOUSE_PX_H(400, 25×16 可见区); GUI=帧缓冲高(480),
+             * 否则 GUI 像素命中到 y>400 处会被钳到 399, 与帧缓冲 480 高不同平面
+             * → 后续点击全部偏上 (v6.9 修复)。x 恒为帧缓冲宽 640。 */
+            int ylim = MOUSE_PX_H;
+            if (gui_active) { int fbh = fb_vbe_h(); if (fbh > 0) ylim = fbh; }
             if (mx_px < 0) mx_px = 0;
             if (mx_px >= MOUSE_PX_W) mx_px = MOUSE_PX_W - 1;
             if (my_px < 0) my_px = 0;
-            if (my_px >= MOUSE_PX_H) my_px = MOUSE_PX_H - 1;
+            if (my_px >= ylim) my_px = ylim - 1;
         }
     }
     /* 每包更新后重画鼠标指针 '█' (v6.7 软件叠加层) — 直接写 0xB8000,
@@ -135,3 +140,7 @@ int mouse_installed_k(void)  { return mouse_present; }
 int mouse_buttons_state(void){ return mbuttons; }
 int mouse_char_x(void)       { return mx_px * 80 / MOUSE_PX_W; }
 int mouse_char_y(void)       { return my_px * 25 / MOUSE_PX_H; }
+/* GUI 窗口服务器像素命中测试 (原始像素坐标, 与帧缓冲同平面) */
+int mouse_px_x(void)         { return mx_px; }
+int mouse_px_y(void)         { return my_px; }
+int mouse_lbutton(void)      { return mbuttons & 0x01; }
