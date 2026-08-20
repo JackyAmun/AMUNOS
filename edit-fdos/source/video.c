@@ -125,6 +125,13 @@ void wputch(WINDOW wnd, int c, int x, int y)
 }
 
 /* ------- write a string to a window ---------- */
+/* ── v6.8.1 框线字形: DFLAT 窗框原用 CP437 单字节 (┌┐└┘│─ 等 0xB3-0xDA), 这些
+ *   字节落在 GB2312 高位区 (0xA1-0xF7) → 会在此 CJK 判定被当成双字节汉字成对
+ *   误判 → 画成汉字。解决办法已改到 dflat.h: 把框线码挪到**非 GB2312 高位的
+ *   0x80-0x91 专用带**, 于是本函数天然按单格 ASCII 走、不会误组 (无需任何特殊
+ *   处理, 也不做字节级短路 — 那会误伤同在 0xA1-0xF7 的真中文 lead, 如 0xC4 既是
+ *   '─' 又是"你"的 lead)。形状由内核 fb_render 的 fb_draw_boxglyph 按像素重建。 ── */
+
 void wputs(WINDOW wnd, void *s, int x, int y)
 {
     int x1=GetLeft(wnd)+x;

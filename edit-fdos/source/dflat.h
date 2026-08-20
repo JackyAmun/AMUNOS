@@ -266,29 +266,36 @@ extern BOOL ClipString;
 extern int CurrentMenuSelection;
 /* --------- space between menubar labels --------- */
 #define MSPACE 2
-/* --------------- border characters ------------- */
-#define FOCUS_NW      (unsigned char) '\xda'     /* \xc9 */
-#define FOCUS_NE      (unsigned char) '\xbf'     /* \xbb */
-#define FOCUS_SE      (unsigned char) '\xd9'     /* \xbc */
-#define FOCUS_SW      (unsigned char) '\xc0'     /* \xc8 */
-#define FOCUS_SIDE    (unsigned char) '\xb3'     /* \xba */
-#define FOCUS_LINE    (unsigned char) '\xc4'     /* \xcd */
-#define NW            (unsigned char) '\xda'
-#define NE            (unsigned char) '\xbf'
-#define SE            (unsigned char) '\xd9'
-#define SW            (unsigned char) '\xc0'
-#define SIDE          (unsigned char) '\xb3'
-#define LINE          (unsigned char) '\xc4'
+/* --------------- border characters -------------
+ * AMUNOS v6.8.1: 窗框/滑块/箭头从上 CP437 码 (0xB3-0xDA 等, 落在 GB2312 高位区
+ *   0xA1-0xF7) 改到**专用带 0x80-0x91**。否则 TopLine/分隔线等把 LINE 重复 n 次
+ *   的字节串过 wputs 时, 连续 0xC4 会被当成 GB2312 双字节汉字成对误判 → 画成中文。
+ *   0x80-0x91 永不在 GB lead 区/ASCII 区, 天然按单格走; 由内核 fb_render 的
+ *   fb_draw_boxglyph 按像素重建 8×16 框线形状 (与 fb.c fb_is_boxcode 同集)。
+ *   LEDGE/REDGE/CONTROLBOXCHAR 保留旧码: 它们经 wputch 单格直写或与 ASCII 配对,
+ *   不进 CJK 分组, 且 latin_font 已含对应 VGA 字形。 */
+#define FOCUS_NW      (unsigned char) '\x86'
+#define FOCUS_NE      (unsigned char) '\x87'
+#define FOCUS_SE      (unsigned char) '\x89'
+#define FOCUS_SW      (unsigned char) '\x88'
+#define FOCUS_SIDE    (unsigned char) '\x8a'
+#define FOCUS_LINE    (unsigned char) '\x8b'
+#define NW            (unsigned char) '\x80'
+#define NE            (unsigned char) '\x81'
+#define SE            (unsigned char) '\x83'
+#define SW            (unsigned char) '\x82'
+#define SIDE          (unsigned char) '\x84'
+#define LINE          (unsigned char) '\x85'
 #define LEDGE         (unsigned char) '\xc3'
 #define REDGE         (unsigned char) '\xb4'
 #define SIZETOKEN     (unsigned char) '\x04'
 /* ------------- scroll bar characters ------------ */
-#define UPSCROLLBOX    (unsigned char) '\x1e'
-#define DOWNSCROLLBOX  (unsigned char) '\x1f'
-#define LEFTSCROLLBOX  (unsigned char) '\x11'
-#define RIGHTSCROLLBOX (unsigned char) '\x10'
-#define SCROLLBARCHAR  (unsigned char) 176 
-#define SCROLLBOXCHAR  (unsigned char) 178
+#define UPSCROLLBOX    (unsigned char) '\x8c'
+#define DOWNSCROLLBOX  (unsigned char) '\x8d'
+#define LEFTSCROLLBOX  (unsigned char) '\x8e'
+#define RIGHTSCROLLBOX (unsigned char) '\x8f'
+#define SCROLLBARCHAR  (unsigned char) '\x90'
+#define SCROLLBOXCHAR  (unsigned char) '\x91'
 /* ------------------ menu characters --------------------- */
 #define CHECKMARK      (unsigned char) (SCREENHEIGHT==25?251:4)
 #define CASCADEPOINTER (unsigned char) '\x10'

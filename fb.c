@@ -94,6 +94,61 @@ static void fb_draw_box(int px, int py, unsigned short fg, unsigned short bg) {
                       (r == 0 || r == 15 || c == 0 || c == 15) ? fg : bg);
 }
 
+/* ── v6.8.1 框线字形 (DOS 伪图形): 修 EDIT 等窗口边框被误判成汉字/字母的乱码 ──
+ * 根因: DFLAT 窗框用 CP437 框线码 (┌┐└┘│─ = 0xB3-0xDA), 全部落在 GB2312 高位区
+ *   (0xA1-0xF7) → 被 wputs/put_cjk_str 当成双字节汉字成对误判 → 画成真汉字。
+ *   因为同一字节 (如 0xC4) 既是 '─' 又是 "你"(0xC4E3) 的 lead, 字节级白名单必误伤
+ *   真中文 → 不能用"短路识别旧码"。
+ * 根本解法 (edit-fdos/dflat.h): 把 DFLAT 窗框码**改到非 GB2312 高位的专用带**
+ *   0x80-0x91 (GB2312 只占 0xA1-0xF7; ASCII 只占 0x20-0x7E)。于是框线码是单字节、
+ *   永不进 CJK 分组, 天然单格; 由下面按像素重建 8×16 框线形状。 */
+#define BOX_VLN   0x18    /* 竖线: 中 2 列 (col3-4) */
+#define BOX_HLN   0xFF    /* 横线: 中 2 行 (row7-8) */
+
+/* 框线字节白名单: 非 0 表示 b 是 (已改到专用带的) 框线/滑块/箭头, 按像素画。
+ * 与 edit-fdos/dflat.h 的 NW/NE/SW/SE/SIDE/LINE 及 FOCUS_ 系列、SCROLL 系列、
+ * BARCHAR/BOXCHAR 对应。 */
+int fb_is_boxcode(unsigned char b) {
+    if (b >= 0x80 && b <= 0x91) return 1;
+    return 0;
+}
+
+/* 在 (px,py) 画一个 8×16 框线字形 (像素位图由形状几何生成) */
+static void fb_draw_boxglyph(int px, int py, unsigned char g,
+                             unsigned short fg, unsigned short bg) {
+    int i, c;
+    unsigned char row[16];
+    int is_line   = (g == 0x85 || g == 0x8B);            /* LINE / FOCUS_LINE     ─ */
+    int is_side   = (g == 0x84 || g == 0x8A);            /* SIDE / FOCUS_SIDE     │ */
+    int is_corner = ((g >= 0x80 && g <= 0x83) || (g >= 0x86 && g <= 0x89));  /* ┌┐┘└ */
+    for (i = 0; i < 16; i++) row[i] = 0;
+    if (is_corner) {                                      /* 角 = 竖(全高)+横(行7-8) */
+        for (i = 0; i < 16; i++) row[i] = BOX_VLN;
+        row[7] |= BOX_HLN; row[8] |= BOX_HLN;
+    } else if (is_line) {
+        row[7] = row[8] = BOX_HLN;
+    } else if (is_side) {
+        for (i = 0; i < 16; i++) row[i] = BOX_VLN;
+    } else if (g == 0x8C) {                               /* UPSCROLL ▲ */
+        for (i = 0; i < 8; i++) { int w = (2 * i + 1 < 8) ? (2 * i + 1) : 8; int l = (8 - w) >> 1;
+            for (c = 0; c < w; c++) row[4 + i] |= (0x80 >> (l + c)); }
+    } else if (g == 0x8D) {                               /* DOWNSCROLL ▼ */
+        for (i = 0; i < 8; i++) { int w = (2 * i + 1 < 8) ? (2 * i + 1) : 8; int l = (8 - w) >> 1;
+            for (c = 0; c < w; c++) row[11 - i] |= (0x80 >> (l + c)); }
+    } else if (g == 0x8E) {                               /* RIGHTSCROLL ► */
+        for (i = 0; i < 16; i++) row[i] = 0xF0;
+    } else if (g == 0x8F) {                               /* LEFTSCROLL ◄ */
+        for (i = 0; i < 16; i++) row[i] = 0x0F;
+    } else if (g == 0x90) {                               /* SCROLLBARCHAR ░ */
+        for (i = 0; i < 16; i++) row[i] = (i & 1) ? 0x00 : 0xA4;
+    } else if (g == 0x91) {                               /* SCROLLBOXCHAR ▒ */
+        for (i = 0; i < 16; i++) row[i] = (i & 1) ? 0x55 : 0xAA;
+    }
+    for (i = 0; i < 16; i++)
+        for (c = 0; c < 8; c++)
+            fb_put_px(px + c, py + i, (row[i] & (0x80 >> c)) ? fg : bg);
+}
+
 /* 全屏渲染: 读 0xB8000 80×25 网格 → 画到帧缓冲顶部。
  * 挂到定时器 (task.c timer_schedule), 每 3 tick (~30Hz) 重绘一次。
  * 软件叠加 '_'/'█' 就在 0xB8000 里, 随网格一起渲染, 天然可见。 */
@@ -118,7 +173,10 @@ void fb_render(void) {
                             (unsigned char)(ck & 0xFF), fg, bg);
                 continue;
             }
-            fb_draw_glyph(col * 8, row * 16, cell[0], fg, bg);
+            if (fb_is_boxcode(cell[0]))              /* 框线/滑块/箭头: 像素形状 */
+                fb_draw_boxglyph(col * 8, row * 16, cell[0], fg, bg);
+            else
+                fb_draw_glyph(col * 8, row * 16, cell[0], fg, bg);
         }
     }
 }

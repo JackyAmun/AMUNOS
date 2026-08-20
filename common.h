@@ -181,6 +181,7 @@ void fb_render(void);                             // 0xB8000 → 帧缓冲 (定�
 void fb_put_str_cjk(int cellx, int celly,
                     const unsigned char *s, int fg, int bg);  // GB2312 演示
 unsigned fb_uni_to_gb(unsigned uni);   // Unicode→GB2312 二分查找 (v6.8 UTF-8)
+int fb_is_boxcode(unsigned char b);    // 框线/滑块/箭头字节? (v6.8.1, CJK 判定前短路用)
 
 // --- 12.1 PS/2 鼠标 (mouse.c, IRQ12 → 0x2C) ---
 void mouse_init(void);
