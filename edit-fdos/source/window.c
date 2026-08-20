@@ -1,6 +1,7 @@
 /* ---------- window.c ------------- */
 
 #include "dflat.h"
+#include "syscall.h"      /* sys_utf8togb / sys_cjkwchar — v6.8.1 中文显示 */
 
 WINDOW inFocus = NULL;
 

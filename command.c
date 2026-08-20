@@ -28,6 +28,23 @@ static int wait_key_or_abort(void){
     return 1;
 }
 
+/* ── 打印 FAT 8.3 字段文件名 (v6.8.1 支持 GB2312 中文名) ──
+ * 去尾空格、首字节 0x05→0xE5、拼 '.'+扩展, 原始字节交给 put_cjk_str
+ * (自动按双字节画 2 格汉字). */
+static void put_fatname(const char *n8, const char *e3){
+    char buf[16]; int k = 0;
+    for(int i=0;i<8 && n8[i] && n8[i]!=' ';i++){
+        unsigned char b = (unsigned char)n8[i];
+        buf[k++] = (b==0x05) ? (char)0xE5 : (char)b;
+    }
+    if(e3[0] && e3[0] != ' '){
+        buf[k++] = '.';
+        for(int i=0;i<3 && e3[i] && e3[i]!=' ';i++) buf[k++] = e3[i];
+    }
+    buf[k] = 0;
+    put_cjk_str((const unsigned char*)buf, 0x07);
+}
+
 /* ── DIR ── */
 void cmd_dir(char* arg){
     char f[2];arg=fparse(arg,f);
@@ -47,9 +64,7 @@ void cmd_dir(char* arg){
             if((unsigned char)b[i].name[0]==0xE5)continue;
             if(b[i].attr==0x0F)continue;
             if(b[i].name[0]=='.'&&(b[i].attr&0x10)){put_str(b[i].name[1]==' '?".  <DIR>\n":".. <DIR>\n");cnt++;line++;continue;}
-            for(int j=0;j<8;j++)put_char(b[i].name[j]!=' '?b[i].name[j]:' ',0x07);
-            put_char('.',0x07);
-            for(int j=0;j<3;j++)put_char(b[i].ext[j]!=' '?b[i].ext[j]:' ',0x07);
+            put_fatname(b[i].name, b[i].ext);
             if(!wide){put_str("  ");if(b[i].attr&0x10)put_str("<DIR>         ");else{put_str("      ");put_num(b[i].size);put_str(" B");}}
             put_char('\n',0x07);cnt++;line++;
 
@@ -124,7 +139,8 @@ void cmd_type(char* arg){
     if(!b){if(od>=0)fs_drive_restore(octx);put_str("No memory.\n");return;}
     fs_read_file(&e,b);
     if(od>=0)fs_drive_restore(octx);
-    put_str(b);put_char('\n',0x07);
+    put_cjk_str((const unsigned char*)b,0x07);   /* GB2312 感知: 中文文件也能显示 (v6.8) */
+    put_char('\n',0x07);
     mem_free(b);
 }
 
@@ -222,7 +238,24 @@ void cmd_mov(char* arg){
 
 /* ── CLS/VER/TIME ── */
 void cmd_cls(){cls();}
-void cmd_ver(){put_str("\nAMUN-DOS 6.5.1 (C)2026 AMUNOS Team\n\n");}
+void cmd_ver(){put_str("\nAMUN-DOS 6.5.2 (C)2026 AMUNOS Team\n\n");}
+
+/* ── ZH (v6.8 中文演示): 把一段 GB2312 汉字经 cjk_cell 渲染到可见 80×25 区 ──
+ * "你好，AMUNOS。中文支持" (GB2312 双字节)。走 put_cjk_str → cjk_cell 汉字格
+ * 映射 → fb_render 用 HZK16 画 16×16, 直接显示在可见文本行 (v6.8)。 */
+void cmd_zh(){
+    static const unsigned char s[] =
+        "\xC4\xE3\xBA\xC3\xA3\xAC"          /* 你好， */
+        "AMUNOS"
+        "\xA1\xA3\xD6\xD0\xCE\xC4\xD6\xA7\xB3\xD6";  /* 。中文支持 */
+    if (fb_active()) {
+        put_cjk_str(s, 0x0F);               /* 白字黑底, 画到当前光标行 (可见区) */
+        put_char('\n', 0x07);
+        put_str("zh: CJK rendered\n");
+    } else {
+        put_str("zh: no graphics (fb inactive)\n");
+    }
+}
 static unsigned char r(unsigned char r){io_out8(0x70,r);return io_in8(0x71);}
 static void pb(unsigned char v){put_char('0'+((v>>4)&0x0F),0x07);put_char('0'+(v&0x0F),0x07);}
 void cmd_time(){pb(r(0x04));put_char(':',0x07);pb(r(0x02));put_char(':',0x07);pb(r(0x00));put_str(" ");pb(r(0x09));put_char('-',0x07);pb(r(0x08));put_char('-',0x07);pb(r(0x07));put_char('\n',0x07);}
@@ -372,6 +405,7 @@ void cmd_elf(char* arg){
 
     /* argv 块 (0x1F0000) + 程序作为独立调度任务运行 */
     build_argv(prog, args);
+    vga_cjk_clear_all();       /* 程序将重绘整屏, 清 shell 残留汉字标记防鬼影 (v6.8) */
     prog_active = 1;
     prog_killed = 0;
     prog_exit_status = 0;
@@ -582,6 +616,7 @@ void exec_cmd(char* line){
     else if(!strcmp(cmd,"HELP"))cmd_help(a1);else if(!strcmp(cmd,"ECHO"))cmd_echo(a1);
     else if(!strcmp(cmd,"SER"))cmd_ser(a1);else if(!strcmp(cmd,"LPT"))cmd_lpt(a1);
     else if(!strcmp(cmd,"TIME"))cmd_time();else if(!strcmp(cmd,"TYPE"))cmd_type(a1);
+    else if(!strcmp(cmd,"ZH"))cmd_zh();
     else if(!strcmp(cmd,"REN"))cmd_ren(a1);else if(!strcmp(cmd,"COPY"))cmd_copy(a1);
     else if(!strcmp(cmd,"MOV"))cmd_mov(a1);
     else if(!strcmp(cmd,"ELF"))cmd_elf(a1);

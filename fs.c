@@ -4,6 +4,9 @@
 #include "common.h"
 
 #define FAT_CACHE_ADDR    0x70000
+#define FAT_CACHE_CAP    0x18000    /* 缓存容量上限 96KB (192 扇). 盘均为 1.44MB, FAT 远小于此 */
+static unsigned char *fat_cache = (unsigned char *)FAT_CACHE_ADDR; /* FAT 镜像 (RAM 缓存) */
+static int fat_cached = 0;          /* fat_cache 是否已装载当前盘 FAT */
 
 // 全局变量
 int fs_root_lba = 0;
@@ -18,7 +21,9 @@ static int fs_fat_lba = 0;
 static int fs_sectors_per_fat = 0;
 static int fs_max_data_cluster = 0;   // 最后一个有效数据簇 (由 BPB 总扇区数算出)
 
-/* ── 8.3 文件名转换 ── */
+/* ── 8.3 文件名转换 ──
+ * v6.8.1: GB2312 中文字节 (0xA1-0xFE) 原样透传 (凑 8 字节名 = 最多 ~4 汉字);
+ * 若首字节==0xE5 (FAT "已删条目" 标记) 则存 0x05, 显示/比较时再还原. */
 void to_fat12_name(char* src, char* dest) {
     for (int i = 0; i < 11; i++) dest[i] = ' ';
     int i = 0, j = 0;
@@ -33,7 +38,10 @@ void to_fat12_name(char* src, char* dest) {
             i++;
         }
     }
+    if ((unsigned char)dest[0] == 0xE5) dest[0] = 0x05;
 }
+
+static void load_fat_cache(void);   /* 定义见下; fs_init 须先声明 (fs.c 内部) */
 
 /* ── 初始化: 读取 BPB ── */
 void fs_init() {
@@ -66,6 +74,7 @@ void fs_init() {
         fs_max_data_cluster = (int)clusters + 1;
     }
     cwd_cluster = 0;  // 切盘后回到根目录
+    load_fat_cache();            // v6.8.1: FAT 读入 0x70000 缓存, 快读少读盘
 }
 
 /* ── 盘符限定路径 (v6.5.1): "A:\..." / "B:..." / "./..." 统一入口 ──
@@ -126,110 +135,76 @@ int fs_drive_present(int d) {
     return (ret == 0 && b[510] == 0x55 && b[511] == 0xAA);
 }
 
-/* ── FAT 表操作 (v6.5.1: FAT12/16 自动识别) ──
+/* 把整张 FAT 读入 0x70000 缓存. 写透/读都基于缓存 (少读盘).
+ * 缓存跳过 0x00 是合法空簇, 0xE5/0x0F 是条目标记, 与扇区数据一致. */
+static void load_fat_cache(void) {
+    int n = fs_sectors_per_fat;
+    if (n <= 0) { fat_cached = 0; return; }
+    if (n * 512 > FAT_CACHE_CAP) n = FAT_CACHE_CAP / 512;   /* 超限只缓前段兜底 */
+    for (int i = 0; i < n; i++)
+        read_sector_asm(fs_fat_lba + i, fat_cache + i * 512, current_drive_idx);
+    fat_cached = 1;
+}
+
+/* ── FAT 表操作 (v6.5.1: FAT12/16 自动识别; v6.8.1 走 RAM 缓存写透) ──
  * FAT12 条目 12 位, 两个条目挤占 3 字节; 一个条目可能横跨两个
  * FAT 扇区 (奇数簇落在扇区末字节时), 所以读/写都要处理边界。
- * FAT16 条目 16 位 LE (offset=cluster*2), 奇数字节偏移 511 时同样跨扇区。 */
+ * FAT16 条目 16 位 LE (offset=cluster*2), 奇数字节偏移 511 时同样跨扇区。
+ * 读全部命中 fat_cache (缓存连续, 无跨扇区分割问题); 写更新缓存并把
+ * 涉及的 FAT 扇区写透到 副本 1 + 副本 2 (见 flush_fat_sector). */
 static int fat_is_eoc(unsigned int c) { return c >= ((fs_fat_bits == 12) ? 0xFF8u : 0xFFF8u); }
 static unsigned int fat_eoc_marker(void) { return (fs_fat_bits == 12) ? 0xFFF : 0xFFFF; }
 
-unsigned short fat12_get_next_cluster(unsigned short cluster) {
-    if (cluster < 2 || fat_is_eoc(cluster)) return (unsigned short)fat_eoc_marker();
-    unsigned char fat_buf[512];
-    unsigned int fat_sector, ent_offset;
-    if (fs_fat_bits == 16) {
-        unsigned int off = (unsigned int)cluster * 2;
-        fat_sector = fs_fat_lba + (off / 512);
-        ent_offset = off % 512;
-        read_sector_asm(fat_sector, fat_buf, current_drive_idx);
-        unsigned char lo = fat_buf[ent_offset];
-        unsigned char hi;
-        if (ent_offset == 511) { read_sector_asm(fat_sector + 1, fat_buf, current_drive_idx); hi = fat_buf[0]; }
-        else hi = fat_buf[ent_offset + 1];
-        return (unsigned short)(lo | ((unsigned short)hi << 8));
-    }
-    unsigned int fat_offset = cluster + (cluster / 2);
-    fat_sector = fs_fat_lba + (fat_offset / 512);
-    ent_offset = fat_offset % 512;
-
-    read_sector_asm(fat_sector, fat_buf, current_drive_idx);
-    unsigned char lo = fat_buf[ent_offset];
-    unsigned char hi;
-    if (ent_offset == 511) {
-        /* 条目低字节在本扇区末, 高字节在下一扇区首字节 */
-        read_sector_asm(fat_sector + 1, fat_buf, current_drive_idx);
-        hi = fat_buf[0];
-    } else {
-        hi = fat_buf[ent_offset + 1];
-    }
-    unsigned short val = lo | ((unsigned short)hi << 8);
-    return (cluster & 1) ? (val >> 4) : (val & 0x0FFF);
+/* 写透 FAT 扇区 s 到两张 FAT 副本 */
+static void flush_fat_sector(unsigned int s) {
+    write_sector_asm(fs_fat_lba + s, fat_cache + s * 512, current_drive_idx);
+    write_sector_asm(fs_fat_lba + fs_sectors_per_fat + s, fat_cache + s * 512, current_drive_idx);
 }
 
-/* 写入一个 FAT 条目 (FAT12/16 自动) */
-static void fat_set_cluster(unsigned short cluster, unsigned int value) {
-    unsigned char fat_buf[512];
-    unsigned int fat_sector, ent_offset;
+/* 读取簇 c 的 FAT 条目值 (FAT12/16), 基于缓存 */
+static unsigned fat_get_entry(unsigned int c) {
+    unsigned char lo, hi;
     if (fs_fat_bits == 16) {
-        unsigned int off = (unsigned int)cluster * 2;
-        fat_sector = fs_fat_lba + (off / 512);
-        ent_offset = off % 512;
-        read_sector_asm(fat_sector, fat_buf, current_drive_idx);
-        fat_buf[ent_offset] = value & 0xFF;
-        if (ent_offset == 511) {
-            unsigned char nb[512];
-            read_sector_asm(fat_sector + 1, nb, current_drive_idx);
-            nb[0] = (value >> 8) & 0xFF;
-            write_sector_asm(fat_sector, fat_buf, current_drive_idx);
-            write_sector_asm(fs_fat_lba + fs_sectors_per_fat + (fat_sector - fs_fat_lba),
-                             fat_buf, current_drive_idx);
-            write_sector_asm(fat_sector + 1, nb, current_drive_idx);
-            write_sector_asm(fs_fat_lba + fs_sectors_per_fat + (fat_sector + 1 - fs_fat_lba),
-                             nb, current_drive_idx);
-        } else {
-            fat_buf[ent_offset + 1] = (value >> 8) & 0xFF;
-            write_sector_asm(fat_sector, fat_buf, current_drive_idx);
-            write_sector_asm(fs_fat_lba + fs_sectors_per_fat + (fat_sector - fs_fat_lba),
-                             fat_buf, current_drive_idx);
-        }
+        unsigned int off = (unsigned int)c * 2;
+        lo = fat_cache[off]; hi = fat_cache[off + 1];
+        return lo | ((unsigned)hi << 8);
+    }
+    unsigned int off = c + (c / 2);
+    unsigned short w = fat_cache[off] | ((unsigned short)fat_cache[off + 1] << 8);
+    return (c & 1) ? (w >> 4) : (w & 0x0FFF);
+}
+
+/* 写入簇 c 的 FAT 条目值, 更新缓存 + 写透两张 FAT */
+static void fat_set_entry(unsigned int c, unsigned int value) {
+    if (fs_fat_bits == 16) {
+        unsigned int off = (unsigned int)c * 2;
+        fat_cache[off] = value & 0xFF;
+        fat_cache[off + 1] = (value >> 8) & 0xFF;
+        flush_fat_sector(off / 512);
+        if (off % 512 == 511) flush_fat_sector(off / 512 + 1);   /* 跨扇区高字节 */
         return;
     }
-    /* FAT12 */
-    unsigned int fat_offset = cluster + (cluster / 2);
-    fat_sector = fs_fat_lba + (fat_offset / 512);
-    ent_offset = fat_offset % 512;
-
-    read_sector_asm(fat_sector, fat_buf, current_drive_idx);
-    unsigned short cur = fat_buf[ent_offset];
-    if (ent_offset == 511) {
-        unsigned char nb[512];
-        read_sector_asm(fat_sector + 1, nb, current_drive_idx);
-        cur |= (unsigned short)nb[0] << 8;
-    } else {
-        cur |= (unsigned short)fat_buf[ent_offset + 1] << 8;
-    }
-    if (cluster & 1)
+    /* FAT12: 覆盖该条目所在的 2 字节 (可能跨扇区末字节), 随后刷涉及的扇区 */
+    unsigned int off = c + (c / 2);
+    unsigned short cur = fat_cache[off] | ((unsigned short)fat_cache[off + 1] << 8);
+    if (c & 1)
         cur = (cur & 0x000F) | ((value & 0x0FFF) << 4);
     else
         cur = (cur & 0xF000) | (value & 0x0FFF);
+    fat_cache[off] = cur & 0xFF;
+    fat_cache[off + 1] = (cur >> 8) & 0xFF;
+    flush_fat_sector(off / 512);
+    if (off % 512 == 511) flush_fat_sector(off / 512 + 1);
+}
 
-    fat_buf[ent_offset] = cur & 0xFF;
-    if (ent_offset == 511) {
-        unsigned char nb[512];
-        read_sector_asm(fat_sector + 1, nb, current_drive_idx);
-        nb[0] = (cur >> 8) & 0xFF;
-        write_sector_asm(fat_sector, fat_buf, current_drive_idx);
-        write_sector_asm(fs_fat_lba + fs_sectors_per_fat + (fat_sector - fs_fat_lba),
-                         fat_buf, current_drive_idx);
-        write_sector_asm(fat_sector + 1, nb, current_drive_idx);
-        write_sector_asm(fs_fat_lba + fs_sectors_per_fat + (fat_sector + 1 - fs_fat_lba),
-                         nb, current_drive_idx);
-    } else {
-        fat_buf[ent_offset + 1] = (cur >> 8) & 0xFF;
-        write_sector_asm(fat_sector, fat_buf, current_drive_idx);
-        write_sector_asm(fs_fat_lba + fs_sectors_per_fat + (fat_sector - fs_fat_lba),
-                         fat_buf, current_drive_idx);
-    }
+unsigned short fat12_get_next_cluster(unsigned short cluster) {
+    if (cluster < 2 || fat_is_eoc(cluster)) return (unsigned short)fat_eoc_marker();
+    return (unsigned short)fat_get_entry(cluster);
+}
+
+/* 写入一个 FAT 条目 (FAT12/16 自动; 更新缓存 + 写透两张 FAT) */
+static void fat_set_cluster(unsigned short cluster, unsigned int value) {
+    fat_set_entry(cluster, value);
 }
 
 /* 分配一个空闲簇
@@ -701,10 +676,11 @@ int fs_list_dir(int dir_cluster, FAT12Entry* out_buf, int max_entries) {
     return count;
 }
 
-/* ── 同步 ── */
+/* ── 同步 (v6.8.1): 从 RAM 缓存刷两张 FAT.
+ * 此前 fs_sync 从不被调用, 且 0x70000 从未被填充 —— 一旦调用会把陈旧内存
+ * 写进 FAT2 镜像毁盘. 现在 FAT 常驻缓存 (load_fat_cache), 这里等价幂等刷新. */
 void fs_sync() {
-    void* fat_cache = (void*)FAT_CACHE_ADDR;
-    for (int i = 0; i < fs_sectors_per_fat; i++) {
+    for (int i = 0; i < fs_sectors_per_fat && i < FAT_CACHE_CAP / 512; i++) {
         write_sector_asm(fs_fat_lba + i, fat_cache + (i * 512), current_drive_idx);
         write_sector_asm(fs_fat_lba + fs_sectors_per_fat + i,
                          fat_cache + (i * 512), current_drive_idx);

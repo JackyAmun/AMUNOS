@@ -748,10 +748,26 @@ void WriteTextLine(WINDOW wnd, RECT *rcc, int y, BOOL reverse)
     }
     /* ------ build the line to display -------- */
     if (!trunc)    {
-        if (lnlen < wnd->wleft)
+        if (lnlen < wnd->wleft)    {
             lnlen = 0;
-        else
-            lp += wnd->wleft;
+            lp = svlp + strlen((char *)svlp);
+        }
+        else    {
+            /* v6.8.1: 按"列"前移 wleft, 跳过色码令牌/整多字节字, 防滚动
+               拆开一个汉字 (GB2312=2B=2 列, UTF-8=3B=2 列, ASCII=1B=1 列)。
+               纯 ASCII 时与旧的 lp += wleft 逐字节完全一致。 */
+            int ct = wnd->wleft;
+            while (ct > 0 && *lp)    {
+                if (*(unsigned char *)lp == CHANGECOLOR)    { lp += 3; continue; }
+                else if (*(unsigned char *)lp == RESETCOLOR) { lp++;  continue; }
+                if (*lp >= 0xE0 && *lp <= 0xEF && lp[1]     /* UTF-8 3 字节 */
+                    && lp[2])    { lp += 3; ct -= 2; continue; }
+                if (*lp >= 0xA1 && *lp <= 0xF7 && lp[1]     /* GB2312 双字节 */
+                    && (lp[1] & 0x80))    { lp += 2; ct -= 2; continue; }
+                lp++; ct--;
+            }
+            lnlen = LineLength(lp);
+        }
         if (lnlen > RectLeft(rc))    {
             /* ---- the line exceeds the rectangle ---- */
             int ct = RectLeft(rc);

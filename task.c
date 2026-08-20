@@ -121,6 +121,10 @@ void *timer_schedule(unsigned *frame) {
      * 程序轮询鼠标。中断门内 IF=0, 与鼠标 IRQ 不交错 (自愈设计)。 */
     vga_overlay_selfheal();
 
+    /* 软件文本渲染器 (v6.8): 每 tick 把 0xB8000 网格画到 VBE 帧缓冲。
+     * 内部 3-tick 节流 (~30Hz)。图形模式下这行让整屏可见; 文本模式 no-op。 */
+    fb_render();
+
     /* Ctrl+C 强杀前台 CPU 密集程序: 当前运行的是前台程序任务时, 把其返回
      * EIP (iret 帧 [12]) 重定向到 force_terminate (标记 EXITED 并让出 CPU)。
      * 若当前跑的是后台任务 (如 demo_clock), 等下次轮到前台任务再杀。 */

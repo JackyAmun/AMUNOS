@@ -496,10 +496,22 @@ static int DoScrolling(WINDOW wnd, int c, PARAM p2)
     return TRUE;
 }
 /* -------------- Del key ---------------- */
+/* -- v6.8.1: p 指向的多字节字符字节数 (2=GB2312, 3=UTF-8), ASCII=1。
+     只认"完整"多字节 (续字节都在 0x80-0xBF), 孤立高字节按 ASCII。 -- */
+static int mb_len(const unsigned char *p)
+{
+    if (*p >= 0xE0 && *p <= 0xEF && (p[1] & 0x80) && (p[2] & 0x80))
+        return 3;
+    if (*p >= 0xA1 && *p <= 0xF7 && (p[1] & 0x80))
+        return 2;
+    return 1;
+}
+
 static void DelKey(WINDOW wnd)
 {
     char *currchar = CurrChar;
     int repaint = *currchar == '\n';
+    int ml = mb_len((const unsigned char *)currchar);   /* v6.8.1: 整字删 */
     if (TextBlockMarked(wnd))    {
         SendMessage(wnd, COMMAND, ID_DELETETEXT, 0);
         SendMessage(wnd, PAINT, 0, 0);
@@ -507,6 +519,14 @@ static void DelKey(WINDOW wnd)
     }
     if (isMultiLine(wnd) && *currchar == '\n' && *(currchar+1) == '\0')
         return;
+    if (ml > 1)    {    /* 删整字: 整体移除, 光标停在字符起点 */
+        memmove(currchar, currchar+ml, strlen(currchar+ml)+1);
+        ModTextPointers(wnd, wnd->CurrLine+1, -ml);
+        BuildTextPointers(wnd);
+        WriteTextLine(wnd, NULL, wnd->WndRow+wnd->wtop, FALSE);
+        wnd->TextChanged = TRUE;
+        return;
+    }
     strcpy(currchar, currchar+1);
     if (repaint)    {
         BuildTextPointers(wnd);
@@ -1248,6 +1268,7 @@ static void SaveDeletedText(WINDOW wnd, char *bbl, unsigned int len)
 static void Forward(WINDOW wnd)
 {
     char *cc = CurrChar+1;
+    int ml = mb_len((const unsigned char *)CurrChar);  /* v6.8.1: 整字跳 */
     if (*cc == '\0')
         return;
     if (*CurrChar == '\n')    {
@@ -1255,7 +1276,7 @@ static void Forward(WINDOW wnd)
         Downward(wnd);
     }
     else    {
-        wnd->CurrCol++;
+        wnd->CurrCol += ml;
         if (WndCol == ClientWidth(wnd))
             SendMessage(wnd, HORIZSCROLL, TRUE, 0);
     }
@@ -1307,7 +1328,16 @@ static void Upward(WINDOW wnd)
 static void Backward(WINDOW wnd)
 {
     if (wnd->CurrCol)    {
-        --wnd->CurrCol;
+        /* v6.8.1: 从行首按整字推进, 回退到当前光标前一个字符的起点。
+            光标若恰好落在汉字中间 (其它路径引入), 也会被吸回该字起点。 */
+        unsigned char *line = (unsigned char *)TextLine(wnd, wnd->CurrLine);
+        int col = wnd->CurrCol;
+        int i = 0, prev = 0;
+        while (i < col)    {
+            prev = i;
+            i += mb_len(line + i);
+        }
+        wnd->CurrCol = prev;
         if (wnd->CurrCol < wnd->wleft)
             SendMessage(wnd, HORIZSCROLL, FALSE, 0);
     }

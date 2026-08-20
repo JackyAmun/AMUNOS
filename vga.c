@@ -7,7 +7,75 @@
 #define VGA_ROWS    25
 #define VGA_BYTES   (VGA_COLS * VGA_ROWS * 2)
 
-static char *const vram = (char *)VGA_BASE;
+/* vram: 逻辑文本缓冲 (v6.8)。文本模式默认指向硬件 0xB8000;
+ * VBE 图形模式下 0xB8000 是显卡图形内存窗口 (非文本缓冲, 读写会进图形平面),
+ * 故 fb_init 切到软件缓冲 vga_softbuf, 由 fb.c 渲染器画到帧缓冲。 */
+static char *vram = (char *)VGA_BASE;
+static char vga_softbuf[VGA_COLS * VGA_ROWS * 2];
+
+/* 切到软件文本缓冲 (图形模式); fb_init 调用 */
+void vga_enable_softbuf(void) { vram = vga_softbuf; }
+/* 渲染器读取的文本缓冲 (图形模式=软件缓冲) */
+const unsigned char *vga_textbuf(void) { return (const unsigned char *)vram; }
+/* 当前文本缓冲基址 — SYS_VIDEO_BASE 返回给用户程序 (EDIT), 使其图形模式下
+ * 也写 softbuf 而非物理 0xB8000 (VBE 图形模式下 0xB8000 是图形窗口)。 */
+unsigned long vga_vram_base(void) { return (unsigned long)vram; }
+
+/* ── 汉字格映射 (v6.8 中文): 与 softbuf 并行, 标记每格是 ASCII 还是汉字。
+ *   单字节格 (80×25) 放不下 GB2312 双字节汉字 → 用这张表告诉渲染器:
+ *     0         = ASCII 格 (fb_render 画 8×16 拉丁字形)
+ *     GB码       = 汉字左格 (fb_render 画 16×16 HZK16 字形, 跨 (x,y)+(x+1,y))
+ *     0xFFFF     = 汉字右格 (fb_render 跳过, 左格已覆盖两格宽)
+ *   汉字经 put_cjk_str 写入: softbuf 两格放占位字符 (0xDB), 渲染器按此表画汉字。 */
+static unsigned short cjk_cell[VGA_COLS * VGA_ROWS];
+
+/* 在 (x,y) 放一个汉字 (占两格); gb = (gbH<<8)|gbL (0xA1A1..0xF7FE) */
+void vga_cjk_set(int x, int y, unsigned gb) {
+    if (x < 0 || x + 1 >= VGA_COLS || y < 0 || y >= VGA_ROWS) return;
+    int o = y * VGA_COLS + x;
+    cjk_cell[o] = (unsigned short)gb;
+    cjk_cell[o + 1] = 0xFFFF;
+}
+/* 在 (x,y) 放一个替换框 □ (Unicode 不在 GB2312 字库时); 左格记 0xFFFE 哨兵 */
+void vga_cjk_box(int x, int y) {
+    if (x < 0 || x + 1 >= VGA_COLS || y < 0 || y >= VGA_ROWS) return;
+    int o = y * VGA_COLS + x;
+    cjk_cell[o] = 0xFFFE;
+    cjk_cell[o + 1] = 0xFFFF;
+}
+/* 写 ASCII 到 (x,y) 前调用: 清掉该格及其关联的汉字标记。
+ * 若 (x,y) 是汉字右格 (0xFFFF) → 其左格 (存 GB 码) 一并清;
+ * 若 (x,y) 是汉字左格 (GB 码) → 其右格 (续) 一并清。 */
+void vga_cjk_ascii(int x, int y) {
+    if (x < 0 || x >= VGA_COLS || y < 0 || y >= VGA_ROWS) return;
+    int o = y * VGA_COLS + x;
+    if (cjk_cell[o] == 0xFFFF) { cjk_cell[o] = 0; if (x > 0) cjk_cell[o - 1] = 0; }
+    else if (cjk_cell[o] != 0)  { cjk_cell[o] = 0; if (x + 1 < VGA_COLS) cjk_cell[o + 1] = 0; }
+}
+/* 渲染器查询: (x,y) 格的汉字标记 (0=ASCII, 0xFFFF=汉字右格, 否则 GB 码) */
+unsigned short vga_cjk_at(int x, int y) {
+    if (x < 0 || x >= VGA_COLS || y < 0 || y >= VGA_ROWS) return 0;
+    return cjk_cell[y * VGA_COLS + x];
+}
+/* 用户程序启动前清空 (其将重绘整屏; 不清则 shell 残留的汉字标记会
+ * 在 EDIT 清屏后仍渲染出鬼影汉字)。 */
+void vga_cjk_clear_all(void) {
+    for (int i = 0; i < VGA_COLS * VGA_ROWS; i++) cjk_cell[i] = 0;
+}
+/* v6.8.1 (SYS_CJKWCHAR): 在绝对格 (x,y) 放一个汉字 (占两格). EDIT 等用户程序
+ * 绕开 put_cjk_str 的光标式写入, 于任意文本位置置汉字做本地化显示。
+ * gb = GB2312 码 (含 0x05→0xE5 已还原); gb==0 → 替换框 □.
+ * fg/bg 为 VGA 属性 (0-7); 越界静默忽略. 先清邻格避免残留半个汉字标记。 */
+void vga_cjk_place_gb(int x, int y, unsigned gb, int fg, int bg) {
+    if (x < 0 || x + 1 >= VGA_COLS || y < 0 || y >= VGA_ROWS) return;
+    vga_cjk_ascii(x, y);
+    vga_cjk_ascii(x + 1, y);
+    int o = (y * VGA_COLS + x) * 2;
+    char attr = (char)((bg << 4) | (fg & 0x0F));
+    vram[o] = 0xDB; vram[o + 1] = attr;
+    vram[o + 2] = 0xDB; vram[o + 3] = attr;
+    if (gb) vga_cjk_set(x, y, gb); else vga_cjk_box(x, y);
+}
 
 // 光标坐标来自 kernel.c 的全局变量
 extern int cur_x, cur_y;
@@ -139,6 +207,7 @@ void vga_poke(int x, int y, unsigned char ch, unsigned char attr) {
     if (x < 0 || x >= VGA_COLS || y < 0 || y >= VGA_ROWS) return;
     if (ic_x == x && ic_y == y) ic_clear();
     if (mc_x == x && mc_y == y) mc_clear();
+    vga_cjk_ascii(x, y);       /* 直写 ASCII 前清汉字标记 (demo_clock/redraw 清格) */
     cell_put(x, y, ch, attr);
 }
 
@@ -152,7 +221,7 @@ void update_cursor() {
     vga_overlay_refresh();
 }
 
-/* 滚屏：整屏上移一行 */
+/* 滚屏：整屏上移一行 (softbuf 与 cjk_cell 同步滚动) */
 static void scroll_up() {
     // 将第 1 行到第 24 行复制到第 0 行到第 23 行
     for (int row = 0; row < VGA_ROWS - 1; row++) {
@@ -161,12 +230,16 @@ static void scroll_up() {
         for (int col = 0; col < VGA_COLS * 2; col++) {
             dst[col] = src[col];
         }
+        for (int col = 0; col < VGA_COLS; col++) {
+            cjk_cell[row * VGA_COLS + col] = cjk_cell[(row + 1) * VGA_COLS + col];
+        }
     }
     // 最后一行填空格
     char *last = vram + (VGA_ROWS - 1) * VGA_COLS * 2;
     for (int col = 0; col < VGA_COLS; col++) {
         last[col * 2]     = ' ';
         last[col * 2 + 1] = 0x07;
+        cjk_cell[(VGA_ROWS - 1) * VGA_COLS + col] = 0;
     }
 }
 
@@ -195,6 +268,7 @@ void put_char(char c, char color) {
         /* 写格前清掉该格上的叠加 (输入光标 | 或鼠标 █), 其影子随之作废 */
         if (ic_x == cur_x && ic_y == cur_y) ic_clear();
         if (mc_x == cur_x && mc_y == cur_y) mc_clear();
+        vga_cjk_ascii(cur_x, cur_y);       /* 该格若是汉字占位 → 清掉汉字标记 */
         int offset = (cur_y * VGA_COLS + cur_x) * 2;
         vram[offset]     = c;
         vram[offset + 1] = color;
@@ -238,6 +312,7 @@ void put_str(char *s) {
 /* 清屏 */
 void cls() {
     ic_clear(); mc_clear();          /* 复位叠加影子状态 (整屏随即清空) */
+    vga_cjk_clear_all();             /* 清汉字格标记, 防清屏后旧汉字鬼影 (v6.8 修复) */
     for (int i = 0; i < VGA_COLS * VGA_ROWS; i++) {
         int offset = i * 2;
         vram[offset]     = ' ';
@@ -245,5 +320,85 @@ void cls() {
     }
     cur_x = 0;
     cur_y = 0;
+    update_cursor();
+}
+
+/* 输出一段可能含 GB2312 汉字的字符串到当前光标处 (v6.8 中文)。
+ * 双字节 (>=0xA1 且后字节存在) → 汉字: softbuf 两格放占位 0xDB + cjk_cell 记 GB 码,
+ * 由 fb_render 经 HZK16 画 16×16; ASCII → 走 put_char。
+ * 非图形模式 (fb 未启用) 退化为 put_str 原样吐字节。 */
+static void cjk_advance(void) {
+    if (cur_x + 1 >= VGA_COLS) {        /* 放不下两格 → 换行滚动 */
+        cur_x = 0; cur_y++;
+        if (cur_y >= VGA_ROWS) { scroll_up(); cur_y = VGA_ROWS - 1; }
+    }
+}
+/* 在光标处放一个 GB2312 汉字 (占两格) */
+static void cjk_place(unsigned gb, char color) {
+    cjk_advance();
+    int o = (cur_y * VGA_COLS + cur_x) * 2;
+    vram[o] = 0xDB; vram[o + 1] = color;
+    vram[o + 2] = 0xDB; vram[o + 3] = color;
+    vga_cjk_set(cur_x, cur_y, gb);
+    cur_x += 2;
+}
+/* 在光标处放一个替换框 □ (Unicode 不在 GB2312 字库) */
+static void cjk_place_box(char color) {
+    cjk_advance();
+    int o = (cur_y * VGA_COLS + cur_x) * 2;
+    vram[o] = 0xDB; vram[o + 1] = color;
+    vram[o + 2] = 0xDB; vram[o + 3] = color;
+    vga_cjk_box(cur_x, cur_y);
+    cur_x += 2;
+}
+/* 输出一个 Unicode 码点: 查 GB2312 → 画汉字; 不在字库 → 替换框 */
+static void cjk_render_uni(unsigned cp, char color) {
+    if (cp < 0x80) { put_char((char)cp, color); return; }
+    unsigned gb = fb_uni_to_gb(cp);
+    if (gb) cjk_place(gb, color); else cjk_place_box(color);
+}
+
+/* 输出一段可能含 GB2312 / UTF-8 汉字的字符串到当前光标处 (v6.8 中文)。
+ * 逐字节自动识别: UTF-8 2/3/4 字节 (含 BOM) 或 GB2312 双字节 →
+ * softbuf 两格放占位 0xDB + cjk_cell 记 GB 码 (或 0xFFFE 替换框), 由 fb_render
+ * 经 HZK16 画 16×16; ASCII → 走 put_char。
+ * 非图形模式 (fb 未启用) 退化为 put_str 原样吐字节。 */
+void put_cjk_str(const unsigned char *s, char color) {
+    if (!fb_active()) { put_str((char *)s); return; }
+    while (*s) {
+        unsigned char b = *s;
+        unsigned cp = 0;
+        if (b == 0xEF && s[1] == 0xBB && s[2] == 0xBF) { s += 3; continue; }  /* UTF-8 BOM */
+        if (b >= 0xE0 && b <= 0xEF && s[1] >= 0x80 && s[1] <= 0xBF
+            && s[2] >= 0x80 && s[2] <= 0xBF) {            /* UTF-8 3 字节 (CJK) */
+            cp = ((unsigned)(b & 0x0F) << 12) | ((unsigned)(s[1] & 0x3F) << 6)
+                 | (unsigned)(s[2] & 0x3F);
+            s += 3;
+            cjk_render_uni(cp, color);
+            continue;
+        }
+        if (b >= 0xF0 && b <= 0xF4 && s[1] >= 0x80 && s[1] <= 0xBF
+            && s[2] >= 0x80 && s[2] <= 0xBF && s[3] >= 0x80 && s[3] <= 0xBF) {
+            cp = ((unsigned)(b & 0x07) << 18) | ((unsigned)(s[1] & 0x3F) << 12)
+                 | ((unsigned)(s[2] & 0x3F) << 6) | (unsigned)(s[3] & 0x3F);
+            s += 4;
+            cjk_render_uni(cp, color);
+            continue;
+        }
+        if (b >= 0xC2 && b <= 0xDF && s[1] >= 0x80 && s[1] <= 0xA0) {
+            /* UTF-8 2 字节: 续字节 0x80-0xA0 必非 GB2312 低位 → 定为 UTF-8 */
+            cp = ((unsigned)(b & 0x1F) << 6) | (unsigned)(s[1] & 0x3F);
+            s += 2;
+            cjk_render_uni(cp, color);
+            continue;
+        }
+        if (b >= 0xA1 && b <= 0xF7 && s[1] >= 0xA1) {     /* GB2312 双字节 */
+            cjk_place(((unsigned)b << 8) | (unsigned char)s[1], color);
+            s += 2;
+            continue;
+        }
+        put_char((char)b, color);                          /* ASCII */
+        s++;
+    }
     update_cursor();
 }

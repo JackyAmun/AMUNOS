@@ -51,7 +51,7 @@ void clearscreen(void)
     int y, x;
     for (y = 0; y < SCREENHEIGHT; y++)
         for (x = 0; x < SCREENWIDTH; x++)
-            *(volatile unsigned short*)(0xB8000 + vad(x, y)) =
+            *(volatile unsigned short*)(video_address + vad(x, y)) =
                 (unsigned short)(' ' | (clr(LIGHTGRAY, BLACK) << 8));
     setcursor(0, 0);
 }

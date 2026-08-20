@@ -38,6 +38,9 @@
 #define SYS_CURSHOW  22
 #define SYS_MOUSEHIDE 23
 #define SYS_MOUSESHOW 24
+#define SYS_VIDEO_BASE 25   /* 当前文本缓冲基址 (图形模式=softbuf; EDIT 写屏用) */
+#define SYS_UTF8TOGB  26    /* Unicode 码点 → GB2312 码 (U2GB 表; 0=不在字库) */
+#define SYS_CJKWCHAR  27    /* 绝对格 (x,y) 放汉字: packed=gb|(attr<<16) */
 
 /* ── 内联汇编封装 ── */
 static inline long syscall0(long nr) {
@@ -181,6 +184,17 @@ static inline int  sys_mousehide(void) {
 }
 static inline int  sys_mouseshow(void) {
     return (int)syscall0(SYS_MOUSESHOW);
+}
+static inline long sys_video_base(void) {   /* 当前文本缓冲基址 (图形模式=softbuf) */
+    return syscall0(SYS_VIDEO_BASE);
+}
+static inline unsigned sys_utf8togb(unsigned cp) {  /* Unicode 码点 → GB2312 (0=无) */
+    return (unsigned)syscall1(SYS_UTF8TOGB, (long)cp);
+}
+static inline void sys_cjkwchar(int x, int y, unsigned gb, int fg, int bg) {
+    /* 绝对格 (x,y) 放汉字占两格; fg/bg = VGA 前景/背景 (0-15/0-7) */
+    unsigned attr = (unsigned)((fg & 0x0F) | ((bg & 0x07) << 4));
+    syscall3(SYS_CJKWCHAR, x, y, (long)(gb | (attr << 16)));
 }
 
 /* ── 桩 (TCC 引用的 POSIX 表层, AMUNOS 暂未实现) ── */

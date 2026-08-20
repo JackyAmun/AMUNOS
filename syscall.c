@@ -362,10 +362,12 @@ static int sys_readdir(char *path, int idx, char *name_out) {
     int n = fs_list_dir(dc, ents, 64);
     if (idx < 0 || idx >= n) goto done;             /* 0 = 已列完 */
 
-    /* 8.3 → "NAME.EXT": 名字/扩展去尾空格, 扩展非全空格才拼 '.' */
+    /* 8.3 → "NAME.EXT": 名字/扩展去尾空格, 扩展非全空格才拼 '.'
+     * v6.8.1: 首字节 0x05 还原为 0xE5 (中文名首个汉字 lead 可能为 E5), 供显示/编辑层用 */
     FAT12Entry *e = &ents[idx];
     char *d = name_out;
-    for (i = 0; i < 8 && e->name[i] && e->name[i] != ' '; i++) *d++ = e->name[i];
+    for (i = 0; i < 8 && e->name[i] && e->name[i] != ' '; i++)
+        *d++ = (unsigned char)e->name[i] == 0x05 && d == name_out ? 0xE5 : e->name[i];
     if (e->ext[0] && e->ext[0] != ' ') {
         *d++ = '.';
         for (i = 0; i < 3 && e->ext[i] && e->ext[i] != ' '; i++) *d++ = e->ext[i];
@@ -496,6 +498,24 @@ void syscall_handler(unsigned *frame) {
                   * 空转时继续轮询鼠标 (v6.7 鼠标联调)。 */
         input_poll();
         result = (key_pressed != 0);
+        break;
+    }
+    case 25:     /* SYS_VIDEO_BASE: 当前文本缓冲基址 (图形模式=softbuf,
+                  * 文本模式=0xB8000)。用户程序 (EDIT) 据此重定向写屏,
+                  * 否则 VBE 图形模式下直写 0xB8000 是图形窗口 (v6.8)。 */
+        result = (int)vga_vram_base();
+        break;
+    case 26:     /* SYS_UTF8TOGB: Unicode 码点 → GB2312 码 (U2GB 表查; 0=不在字库)。
+                  * EDIT 等把 UTF-8 字符转成 HZK16 可渲染的 GB 码。 */
+        result = (int)fb_uni_to_gb((unsigned)a1);
+        break;
+    case 27: {   /* SYS_CJKWCHAR: 在绝对格 (x,y) 放一个汉字 (占两格).
+                  * a1=x a2=y; packed 低16=GB 码 (0=替换框□), 高位=attr.
+                  * EDIT 文本行渲染用它把中文字节画成真实汉字。 */
+        unsigned packed = (unsigned)a3;
+        vga_cjk_place_gb((int)a1, (int)a2, packed & 0xFFFFu,
+                         (int)((packed >> 16) & 0x0F), (int)((packed >> 20) & 0x07));
+        result = 0;
         break;
     }
     default: result = -1; break;

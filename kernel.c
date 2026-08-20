@@ -77,13 +77,15 @@ static void demo_clock_task() {
 
 void kmain(){
     serial_init();
-    cls();
-    put_str("AMUNOS Kernel v6.5.2 (Multi-Drive)\n");
-    serial_puts("AMUNOS v6.5.2 serial ready\n");   /* 冒烟标记: serial_puts 把 \n 翻成 CRLF */
     init_idt();
     mem_init();
     timer_init();
     fs_init();
+    fb_init();            /* 读 boot.asm 的 VBE fb 参数; 图形模式切软件文本缓冲 */
+    cls();                /* 清当前 vram (图形=软件缓冲 / 文本=0xB8000) */
+    fb_font_init();       /* 从 C:HZK16 加载字库 (v6.8 中文) */
+    put_str("AMUNOS Kernel v6.5.2 (Multi-Drive)\n");
+    serial_puts("AMUNOS v6.5.2 serial ready\n");   /* 冒烟标记: serial_puts 把 \n 翻成 CRLF */
     task_init();
     task_create(demo_clock_task, 2048);
     __asm__ volatile("sti");

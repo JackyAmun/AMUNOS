@@ -110,6 +110,8 @@ if os.path.exists('hello.elf'):
 else:
     print('WARN: hello.elf not found (run: make hello.elf)')
 
+# ── HZK16 汉字点阵字库: 已移至 A: (mka_img.py), C: 不放 (v6.8) ──
+
 # ── C 样例源码 (USR/SRC/) ──
 add_to(USR_SRC, 'DEMO', 'C  ',
        'int main(){printf("DEMO OK from TCC\\n");return 0;}\n')

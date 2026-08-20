@@ -7,6 +7,7 @@
 
 void getvideo(RECT, void far *);
 void storevideo(RECT, void far *);
+extern unsigned video_address;   /* 文本缓冲基址 (图形模式=内核 softbuf) */
 extern unsigned video_mode;
 extern unsigned video_page;
 void wputch(WINDOW, int, int, int);

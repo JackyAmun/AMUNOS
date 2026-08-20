@@ -68,10 +68,15 @@ def alloc_clusters(n):
         set_fat(c + i, nxt)
     return c
 
+def _b8(s, n):
+    """name8/ext3 -> raw n bytes, accepting str (UTF-8) or bytes (e.g. GB2312 8.3)."""
+    b = s if isinstance(s, bytes) else s.encode()
+    return b.ljust(n, b' ')
+
 def mk_entry(name8, ext3, attr, start, size):
     e = bytearray(32)
-    e[0:8] = name8.ljust(8).encode()
-    e[8:11] = ext3.encode()
+    e[0:8] = _b8(name8, 8)
+    e[8:11] = _b8(ext3, 3)
     e[11] = attr
     struct.pack_into('<H', e, 26, start)
     struct.pack_into('<I', e, 28, size)
@@ -169,6 +174,11 @@ int main(int argc, char **argv)
 add_to(USR_SRC, 'HELLO', 'C  ', HELLO_C)
 add_opt_to(USR_SRC, 'INP', 'C  ', 'inp.c')     # 输入测试源码 (可在 OS 内 TCC 编译)
 
+# ── HZK16 汉字点阵字库 (v6.8 中文渲染): 内核 fb_font_init 从 A:HZK16 加载 ──
+add_opt_to(root, 'HZK16', '   ', 'HZK16')
+# ── U2GB  Unicode→GB2312 映射 (v6.8 UTF-8 支持): 把 UTF-8 码点查成 GB2312 字库偏移 ──
+add_opt_to(root, 'U2GB', 'BIN', 'u2gb.bin')
+
 # ── TCC crt 文件留根 (TCC crt_paths="A:\" 绝对前缀, 任何盘/目录都能解析) ──
 add_opt_to(root, 'CRT1', 'O  ', 'libc/crt1.o')
 add_opt_to(root, 'CRTI', 'O  ', 'libc/crti.o')
@@ -182,6 +192,17 @@ CMDS_BIN = '''\
 EDIT /BIN/EDIT.ELF
 '''
 add_to(root, 'CMDS', 'BIN', CMDS_BIN)
+
+# ── 中文演示/验证样本 (v6.8.1): GB2312 中文文件名 + GB/UTF-8 内容 ──
+#   中文.TXT  = GB2312 文件名 (8.3 塞双字节); 内容为 GB2312 编码
+#   UTF8_CN   = UTF-8 编码内容 (EDIT 的 UTF-8 渲染验证目标)
+#   GB_CN     = GB2312 编码内容 (EDIT 的 GB2312 渲染/整字删验证目标)
+add_to(root, '中文'.encode('gb2312'), 'TXT',
+       '这是中文文件名, GB2312 编码内容\n第二行 123 abc\n'.encode('gb2312'))
+add_to(root, 'UTF8_CN', 'TXT',
+       '这是 UTF-8 编码的中文内容\n第二行 456 def\n')
+add_to(root, 'GB_CN', 'TXT',
+       '这是 GB2312 编码的中文内容\n第二行 789 ghi\n'.encode('gb2312'))
 
 # ── 布局落盘: 根目录 + 各子目录 + FAT2 ──
 for i, e in enumerate(root.entries):

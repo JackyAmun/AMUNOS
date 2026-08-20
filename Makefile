@@ -1,4 +1,4 @@
-# AMUNOS Makefile — FAT12 bootable multi-disk (A: boot, B:/C: data, v6.5.1)
+# AMUNOS Makefile — FAT12 bootable multi-disk (A: boot, B:/C: data, v6.5.2)
 
 ASM  = nasm
 CC   = gcc
@@ -9,7 +9,7 @@ BOOTFLAGS   = -f bin
 CFLAGS      = -m32 -c -fno-builtin -ffreestanding -fno-pie -std=gnu99 -I.
 LDFLAGS     = -m elf_i386 -T linker.ld
 
-OBJS = head.o kernel.o command.o fault.o mem.o syscall.o task.o vga.o kbd.o idt.o mouse.o fs.o disk_io.o elf.o serial.o
+OBJS = head.o kernel.o command.o fault.o mem.o syscall.o task.o vga.o kbd.o idt.o mouse.o fs.o disk_io.o elf.o serial.o fb.o
 
 BOOT_BIN   = boot.bin
 KERNEL_BIN = kernel.bin
@@ -36,7 +36,11 @@ $(KERNEL_BIN): $(OBJS) linker.ld
 	$(LD) $(LDFLAGS) -o $@ $(OBJS)
 
 # ── A.img: FAT12 system disk (boot+kernel + built-in files) ──
-$(A_IMG): $(BOOT_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) mka_img.py
+# u2gb.bin (Unicode→GB2312 映射) 是 A.img 的依赖: 若被删/重新生成, A.img 会重建,
+# 避免内核 fb_font_init 加载不到 U2GB → UTF-8 汉字全画成 □。
+u2gb.bin: gen_u2gb.py
+	python3 gen_u2gb.py
+$(A_IMG): $(BOOT_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) mka_img.py u2gb.bin
 	@echo "[IMG] Building A.img..."
 	python3 mka_img.py $@
 

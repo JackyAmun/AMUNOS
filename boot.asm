@@ -82,7 +82,69 @@ boot_code:
     mov si, msg_ok
     call print
 
-    ; 4. 开启 A20
+    ; ── 4. VBE 图形模式 (v6.8 中文渲染): 640x480x16bpp 线性帧缓冲 ──
+    ;    软件渲染器把 0xB8000 文本 + HZK16 汉字画到帧缓冲。
+    ;    失败静默跳过 (保留硬件文本模式, 渲染器禁用)。
+    ;    帧缓冲参数写到 0x1500 传给内核 fb_init:
+    ;      0x1500 flag(1)  0x1502 fb_base(4)  0x1506 w(2)
+    ;      0x1508 h(2)  0x150A bpp(1)  0x150B bpl(2)
+    ;    关键: 内核加载后 ES=0x0800, 必须先复位 ES/DS=0, 否则 SeaBIOS
+    ;    把模式信息写到 0x0800:0x1600=物理0x9600 (内核区内) 且读回错位。
+    xor ax, ax
+    mov es, ax
+    mov ds, ax
+    mov ax, 0x4F00          ; VBE 探测
+    mov di, 0x1400          ; VBE 信息块缓冲 (512B, 0x1400-0x15FF)
+    int 0x10
+    cmp ax, 0x004F
+    jne .vbe_done
+    mov ax, 0x4F01          ; 读模式信息
+    mov cx, 0x0111          ; 640x480x16bpp (标准 VBE 模式)
+    mov di, 0x1600          ; 模式信息缓冲 (256B, 0x1600-0x16FF)
+    int 0x10
+    cmp ax, 0x004F
+    jne .vbe_done
+    mov ax, 0x4F02
+    mov bx, 0x4111          ; bit14 = 线性帧缓冲
+    int 0x10
+    cmp ax, 0x004F
+    jne .vbe_done
+    ; 模式已置 — 再读一次模式信息, 取 base/bpl/x/y/bpp 存到 0x1500
+    mov ax, 0x4F01
+    mov cx, 0x0111
+    mov di, 0x1600
+    int 0x10
+    push es
+    mov ax, 0x0150
+    mov es, ax
+    xor di, di
+    mov byte [es:di], 0x01            ; flag = VBE ok
+    mov ax, 0x0000
+    mov ds, ax
+    mov esi, 0x1600
+    mov eax, [esi+0x28]               ; physical fb base
+    mov [es:di+2], eax
+    mov ax, [esi+0x12]                ; x res
+    mov [es:di+6], ax
+    mov ax, [esi+0x14]                ; y res
+    mov [es:di+8], ax
+    mov al, [esi+0x19]                ; bpp
+    mov [es:di+10], al
+    mov ax, [esi+0x10]                ; bytes per scanline
+    mov [es:di+11], ax
+    pop es
+.vbe_done:
+
+    ; ── 5. (英文字库内嵌内核 latin_font.h, 不再经 BIOS INT 10h 取 —
+    ;        QEMU SeaBIOS 返回错位数据。此处无复制。)
+
+    ; 6. 恢复 DS/ES=0 — 上面 VBE 调用污染了段寄存器, 后续
+    ;    lgdt [gdt_ptr] 用 DS 寻址, 不恢复会加载错误 GDT → 远跳转 GP fault
+    xor ax, ax
+    mov ds, ax
+    mov es, ax
+
+    ; 7. 开启 A20
     in al, 0x92
     or al, 2
     out 0x92, al

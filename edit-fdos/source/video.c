@@ -5,11 +5,12 @@
 
 #include "dflat.h"
 #include <string.h>
+#include "syscall.h"   /* sys_video_base() — 取内核文本缓冲基址 (v6.8) */
 
 BOOL ClipString;
 static BOOL snowy = FALSE;
 
-static unsigned video_address = 0xB8000;   /* 线性地址 (VA==PA, 平坦模式) */
+unsigned video_address = 0xB8000;   /* 线性地址 (VA==PA, 平坦模式); get_videomode 置 */
 
 /* -- read a rectangle of video memory into a save buffer -- */
 void getvideo(RECT rc, void *bf)
@@ -168,6 +169,35 @@ void wputs(WINDOW wnd, void *s, int x, int y)
                 continue;
                 }
 
+            /* ── v6.8.1 中文显示: UTF-8 3 字节 / GB2312 双字节占两格。
+                 softbuf 两格 0xDB 占位入 ln (列号连续/不拆字), 同时调
+                 sys_cjkwchar 设 cjk_cell 记 GB 码 → fb_render 用 HZK16 画。
+                 顺序: UTF-8 先于 GB2312 (E4..EF 既是 GB lead 又是 UTF-8 头),
+                 与内核 put_cjk_str 一致。0xAE/0xAF 已在上面按色码令牌处理。 ── */
+            if (*str >= 0xE0 && *str <= 0xEF && str[1] >= 0x80 && str[1] <= 0xBF
+                && str[2] >= 0x80 && str[2] <= 0xBF)    {   /* UTF-8 3 字节 */
+                unsigned cp = ((unsigned)(*str & 0x0F) << 12)
+                            | ((unsigned)(str[1] & 0x3F) << 6)
+                            | (unsigned)(str[2] & 0x3F);
+                int cx = GetLeft(wnd) + x;
+                if (cx + 1 < SCREENWIDTH && CharInView(wnd, x, y))
+                    sys_cjkwchar(cx, y1, sys_utf8togb(cp), foreground, background);
+                *cp1++ = 0xDB | (clr(foreground, background) << 8);
+                *cp1++ = 0xDB | (clr(foreground, background) << 8);
+                str += 3; x += 2; x2 += 2;
+                continue;
+            }
+            if (*str >= 0xA1 && *str <= 0xF7 && str[1] >= 0xA1)    {   /* GB2312 */
+                unsigned gb = ((unsigned)*str << 8) | (unsigned)str[1];
+                int cx = GetLeft(wnd) + x;
+                if (cx + 1 < SCREENWIDTH && CharInView(wnd, x, y))
+                    sys_cjkwchar(cx, y1, gb, foreground, background);
+                *cp1++ = 0xDB | (clr(foreground, background) << 8);
+                *cp1++ = 0xDB | (clr(foreground, background) << 8);
+                str += 2; x += 2; x2 += 2;
+                continue;
+            }
+
 #ifdef TAB_TOGGLING	/* made consistent with editor.c - 0.7c */
             if (*str == ('\t' | 0x80) || *str == ('\f' | 0x80))
                 *cp1 = ' ' | (clr(foreground, background) << 8);
@@ -241,8 +271,10 @@ void wputs(WINDOW wnd, void *s, int x, int y)
 /* --------- get the current video mode -------- */
 void get_videomode(void)
 {
-    /* AMUNOS: 固定 80x25 彩色文本, 线性地址 0xB8000 */
-    video_address = 0xB8000;
+    /* AMUNOS: 固定 80x25 彩色文本。线性地址取当前文本缓冲基址 —
+     * 图形模式下内核把写屏目标切到软件缓冲 (VBE 图形模式 0xB8000 是图形
+     * 窗口, 直写会消失); SYS_VIDEO_BASE 返回该缓冲地址 (v6.8)。 */
+    video_address = (unsigned)sys_video_base();
     snowy = FALSE;
 }
 

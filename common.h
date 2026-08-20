@@ -117,6 +117,16 @@ void soft_cursor_hide(void);
 void soft_cursor_show(void);
 void soft_mouse_hide(void);           // 隐藏鼠标叠加 (getvideo 捕获背景期间)
 void soft_mouse_show(void);
+void vga_enable_softbuf(void);        // 图形模式: vram 切到软件缓冲 (v6.8)
+const unsigned char *vga_textbuf(void); // 渲染器读取的文本缓冲
+unsigned long vga_vram_base(void);     // SYS_VIDEO_BASE: 当前文本缓冲基址 (v6.8)
+void vga_cjk_set(int x, int y, unsigned gb); // 汉字占两格, 记 GB 码 (v6.8 中文)
+void vga_cjk_box(int x, int y);       // 替换框 □ 占两格 (v6.8 UTF-8 未收录字)
+void vga_cjk_ascii(int x, int y);     // 写 ASCII 前清该格汉字标记
+unsigned short vga_cjk_at(int x, int y); // 渲染器查询格标记 (0=ASCII/GB=汉字左/0xFFFF=右)
+void vga_cjk_clear_all(void);         // 用户程序启动前清空 (防鬼影汉字)
+void put_cjk_str(const unsigned char *s, char color); // GB2312 感知输出 (v6.8)
+void vga_cjk_place_gb(int x, int y, unsigned gb, int fg, int bg); // v6.8.1 SYS_CJKWCHAR: 绝对格放汉字
 
 void init_idt();
 void keyboard_init();
@@ -162,6 +172,15 @@ void serial_puts(char *s);
 int  serial_getc(void);
 void lpt_putc(char c);
 void lpt_puts(char *s);
+
+// --- 12.0 软件文本渲染器 (fb.c, v6.8 中文): VBE 帧缓冲 + HZK16 ---
+int fb_active(void);                              // 图形渲染器是否启用
+void fb_init(void);                               // 读 boot.asm 0x1500 fb 参数
+void fb_font_init(void);                          // 从 C:HZK16 加载字库到堆
+void fb_render(void);                             // 0xB8000 → 帧缓冲 (定时器钩子)
+void fb_put_str_cjk(int cellx, int celly,
+                    const unsigned char *s, int fg, int bg);  // GB2312 演示
+unsigned fb_uni_to_gb(unsigned uni);   // Unicode→GB2312 二分查找 (v6.8 UTF-8)
 
 // --- 12.1 PS/2 鼠标 (mouse.c, IRQ12 → 0x2C) ---
 void mouse_init(void);
