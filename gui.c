@@ -20,6 +20,8 @@
 int gui_active = 0;                 /* 见 common.h extern; fb.c/vga.c 据此停用 */
 
 static void gcompose(void);         /* 提前于菜单助手等引用, 原定义在下方 */
+static int gadv(const unsigned char *s, int *clen, int *cjk);   /* v6.13 LFB 文本用 */
+static unsigned ggb(const unsigned char *s);                   /* v6.13 LFB 文本用 */
 
 /* ── 常量 ── */
 #define GW_MAXWIN   8
@@ -144,6 +146,7 @@ typedef struct {
     int  nitems[GMW_MENUS];          /* 各菜单项数 */
     char items[GMW_MENUS][GMW_ITEMS][32];
     int  open, hilite;               /* 展开的菜单 / 高亮项 (-1 无) */
+    int  pop_x, pop_y, pop_w, pop_h;/* v6.13 弹层绝对像素 (跟随点击菜单标题) */
 } gui_menubar_t;
 static gui_menubar_t gui_mb = {0};
 
@@ -159,6 +162,71 @@ static inline void gpx(unsigned short *b, int bw, int bh, int x, int y,
                        unsigned short c) {
     if ((unsigned)x < (unsigned)bw && (unsigned)y < (unsigned)bh)
         b[(unsigned)y * bw + (unsigned)x] = c;
+}
+
+/* ── LFB 直写版 (v6.13 菜单弹层): 不走窗口 bitmap, 直接画到帧缓冲,
+ * 弹层可覆盖其他窗口, 永远在 z 顶 ── */
+static inline void gpx_lfb(unsigned fb, int bpl, int fbw, int fbh,
+                           int x, int y, unsigned short c) {
+    if ((unsigned)x < (unsigned)fbw && (unsigned)y < (unsigned)fbh) {
+        unsigned char *p = (unsigned char *)(fb + (unsigned)y * bpl + (unsigned)x * 2);
+        p[0] = (unsigned char)(c & 0xFF); p[1] = (unsigned char)(c >> 8);
+    }
+}
+static void gfill_lfb(unsigned fb, int bpl, int fbw, int fbh,
+                      int x, int y, int w, int h, unsigned short c) {
+    int x1 = x + w; if (x < 0) x = 0; if (x1 > fbw) x1 = fbw;
+    int y1 = y + h; if (y < 0) y = 0; if (y1 > fbh) y1 = fbh;
+    for (int yy = y; yy < y1; yy++)
+        for (int xx = x; xx < x1; xx++)
+            gpx_lfb(fb, bpl, fbw, fbh, xx, yy, c);
+}
+static void gborder_lfb(unsigned fb, int bpl, int fbw, int fbh,
+                        int x, int y, int w, int h, unsigned short c) {
+    gfill_lfb(fb, bpl, fbw, fbh, x, y, w, 1, c);
+    gfill_lfb(fb, bpl, fbw, fbh, x, y + h - 1, w, 1, c);
+    gfill_lfb(fb, bpl, fbw, fbh, x, y, 1, h, c);
+    gfill_lfb(fb, bpl, fbw, fbh, x + w - 1, y, 1, h, c);
+}
+static void gtext_lfb(unsigned fb, int bpl, int fbw, int fbh,
+                      int px, int py, const unsigned char *s,
+                      unsigned short fg, unsigned short bg, int withbg) {
+    while (s[0]) {
+        int cl, cj, w = gadv(s, &cl, &cj);
+        if (cj) {
+            unsigned gb = ggb(s);
+            unsigned char *hzk = fb_hzk16();
+            if (gb && hzk && (gb >> 8) >= 0xA1 && (gb >> 8) <= 0xF7 && (gb & 0xFF) >= 0xA1) {
+                const unsigned char *g = hzk +
+                    ((unsigned)((gb >> 8) - 0xA1) * 94 + ((gb & 0xFF) - 0xA1)) * 32;
+                for (int r = 0; r < 16; r++) {
+                    unsigned char b0b = g[r * 2], b1 = g[r * 2 + 1];
+                    for (int c = 0; c < 8; c++)
+                        if ((b0b & (0x80 >> c)) || withbg)
+                            gpx_lfb(fb, bpl, fbw, fbh, px + c, py + r, (b0b & (0x80 >> c)) ? fg : bg);
+                    for (int c = 0; c < 8; c++)
+                        if ((b1 & (0x80 >> c)) || withbg)
+                            gpx_lfb(fb, bpl, fbw, fbh, px + 8 + c, py + r, (b1 & (0x80 >> c)) ? fg : bg);
+                }
+            } else {                              /* 替换框 □ */
+                for (int r = 0; r < 16; r++)
+                    for (int c = 0; c < 16; c++) {
+                        int border = (r == 0 || r == 15 || c == 0 || c == 15);
+                        if (border || withbg)
+                            gpx_lfb(fb, bpl, fbw, fbh, px + c, py + r, border ? fg : bg);
+                    }
+            }
+        } else {
+            const unsigned char *g = latin_font8x16 + s[0] * 16;
+            for (int r = 0; r < 16; r++) {
+                unsigned char bits = g[r];
+                for (int c = 0; c < 8; c++)
+                    if ((bits & (0x80 >> c)) || withbg)
+                        gpx_lfb(fb, bpl, fbw, fbh, px + c, py + r, (bits & (0x80 >> c)) ? fg : bg);
+            }
+        }
+        px += w; s += cl;
+    }
 }
 
 /* 字符分类推进: 返回像素宽, 写 clen(字节数), cjk(1=汉字/UTF8码点)
@@ -609,7 +677,7 @@ static void gw_draw(gui_win_t *w, gui_wid_t *wd) {
               (const unsigned char*)wd->txt, C_TEXT, 0, 0);
         break;
     }
-    case GW_MENU:                       /* 菜单栏条 + 展开面板 (v6.6) */
+    case GW_MENU:                       /* 菜单栏条 (v6.6, v6.13: 弹层单独画到 LFB) */
         if (gui_mb.win != (int)(w - GUW) || !gui_mb.used) break;
         gfill(b, bw, bh, 0, wd->y, w->w, 18, C_BTNBG);
         gfill(b, bw, bh, 0, wd->y + 18 - 1, w->w, 1, C_BTNBDR);
@@ -627,34 +695,7 @@ static void gw_draw(gui_win_t *w, gui_wid_t *wd) {
                 tx += tw + 16;
             }
         }
-        if (gui_mb.open >= 0) {         /* 展开的下拉面板 */
-            int m = gui_mb.open, ni = gui_mb.nitems[m];
-            int pw = 0;
-            for (int i = 0; i < ni; i++) {
-                int tw = gstr_px((const unsigned char*)gui_mb.items[m][i]);
-                if (tw > pw) pw = tw;
-            }
-            pw += 24; if (pw < 96) pw = 96;
-            int ph = ni * 16 + 2, px = 0, py = wd->y + 18;
-            if (px + pw > w->w) px = w->w - pw;
-            gfill(b, bw, bh, px, py, pw, ph, C_EDBG);
-            gborder(b, bw, bh, px, py, pw, ph, C_BTNBDR);
-            int iy = py + 1;
-            for (int i = 0; i < ni; i++) {
-                int sep = (gui_mb.items[m][i][0] == '-');
-                if (gui_mb.hilite == i && !sep) {
-                    gfill(b, bw, bh, px + 1, iy, pw - 2, 16, C_SELBG);
-                    gtext(b, bw, bh, px + 8, iy, (const unsigned char*)gui_mb.items[m][i],
-                          C_SELFG, C_SELBG, 1);
-                } else if (sep) {
-                    gfill(b, bw, bh, px + 4, iy + 8, pw - 8, 1, C_BTNBDR);
-                } else {
-                    gtext(b, bw, bh, px + 8, iy, (const unsigned char*)gui_mb.items[m][i],
-                          C_TEXT, C_EDBG, 1);
-                }
-                iy += 16;
-            }
-        }
+        /* 弹层 (open>=0) 由 gcompose_full/gblit_win 末尾统一画到 LFB, 永远在 z 顶 */
         break;
     }
 }
@@ -717,16 +758,99 @@ static int gw_radio_check(gui_win_t *w, gui_wid_t *g) {
 }
 
 /* ── 菜单栏助手 (gui_mb) ── */
+
+/* 计算菜单 m 的弹层绝对坐标 (pop_x/y/w/h): 横向从标题条中心起, 纵向在标题条下沿.
+ * 不修改 mb 状态, 仅计算. 返回 1 成功, 0 mb.win 失效. */
+static int gui_mb_compute_popup(int m, int *ox, int *oy, int *ow, int *oh) {
+    if (m < 0 || m >= gui_mb.nmenu) return 0;
+    if (gui_mb.win < 0 || gui_mb.win >= GW_MAXWIN || !GUW[gui_mb.win].used) return 0;
+    gui_win_t *w = &GUW[gui_mb.win];
+    /* 算标题条内 m 的局部 x: 累加 0..m-1 标题宽 + 间距 */
+    int tx = 4;
+    for (int i = 0; i < m; i++) {
+        int tw = gstr_px((const unsigned char*)gui_mb.titles[i]);
+        tx += tw + 16;
+    }
+    /* 项宽 = 最长项 + 24, 最小 96 */
+    int ni = gui_mb.nitems[m];
+    int pw = 0;
+    for (int i = 0; i < ni; i++) {
+        int tw = gstr_px((const unsigned char*)gui_mb.items[m][i]);
+        if (tw > pw) pw = tw;
+    }
+    pw += 24; if (pw < 96) pw = 96;
+    int ph = ni * 16 + 2;
+    int fbw = fb_vbe_w(), fbh = fb_vbe_h();
+    int px = w->x + tx;
+    if (px + pw > fbw) px = fbw - pw;     /* 超出右屏 → 左移贴右 */
+    if (px < 0) px = 0;
+    int py = w->y + 18 + 18;              /* 标题 18 + 菜单条 18 */
+    if (py + ph > fbh) py = fbh - ph;
+    if (py < 0) py = 0;
+    *ox = px; *oy = py; *ow = pw; *oh = ph;
+    return 1;
+}
+
+/* 把弹层 (gui_mb.pop_x/y/w/h) 直写到 LFB — 永远在所有窗口之上.
+ * 必须先在 gcompose_full/gblit_win 末尾调, 否则被后续 blit 覆盖. */
+static void gdraw_menu_popup(void) {
+    if (!fb_active()) return;
+    if (gui_mb.open < 0) return;
+    if (gui_mb.win < 0 || gui_mb.win >= GW_MAXWIN || !GUW[gui_mb.win].used) return;
+    int m = gui_mb.open;
+    int ni = gui_mb.nitems[m];
+    if (ni <= 0) return;
+    int px = gui_mb.pop_x, py = gui_mb.pop_y;
+    int pw = gui_mb.pop_w, ph = gui_mb.pop_h;
+    if (pw <= 0 || ph <= 0) return;
+    unsigned fb = fb_vbe_base();
+    int fbw = fb_vbe_w(), fbh = fb_vbe_h();
+    int bpl = fb_vbe_bpl();
+    /* 背景 + 边框 */
+    gfill_lfb(fb, bpl, fbw, fbh, px + 1, py + 1, pw - 2, ph - 2, C_EDBG);
+    gborder_lfb(fb, bpl, fbw, fbh, px, py, pw, ph, C_BTNBDR);
+    /* 各项 */
+    int iy = py + 1;
+    for (int i = 0; i < ni; i++) {
+        const char *itxt = gui_mb.items[m][i];
+        int sep = (itxt[0] == '-');
+        if (gui_mb.hilite == i && !sep) {
+            gfill_lfb(fb, bpl, fbw, fbh, px + 1, iy, pw - 2, 16, C_SELBG);
+            gtext_lfb(fb, bpl, fbw, fbh, px + 8, iy,
+                      (const unsigned char*)itxt, C_SELFG, C_SELBG, 1);
+        } else if (sep) {
+            gfill_lfb(fb, bpl, fbw, fbh, px + 4, iy + 8, pw - 8, 1, C_BTNBDR);
+        } else {
+            gtext_lfb(fb, bpl, fbw, fbh, px + 8, iy,
+                      (const unsigned char*)itxt, C_TEXT, C_EDBG, 1);
+        }
+        iy += 16;
+    }
+}
+
 static void gui_mb_redraw(void) {
-    if (gui_mb.win >= 0 && gui_mb.win < GW_MAXWIN && GUW[gui_mb.win].used)
-        { gw_redraw(&GUW[gui_mb.win]); gcompose(); }
+    if (gui_mb.win >= 0 && gui_mb.win < GW_MAXWIN && GUW[gui_mb.win].used) {
+        gw_redraw(&GUW[gui_mb.win]); gcompose();
+    }
 }
 static void gui_mb_close(void) {
-    if (gui_mb.open != -1) { gui_mb.open = -1; gui_mb.hilite = -1; gui_mb_redraw(); }
+    if (gui_mb.open != -1) {
+        gui_mb.open = -1; gui_mb.hilite = -1;
+        /* 关弹层 → 必须整屏清 LFB 上残留像素, 否则弹层位置画着旧菜单 */
+        gui_dirty = 1; dirty_win = -1;
+        gui_mb_redraw();
+    }
 }
 static void gui_mb_open_menu(int m) {
     if (m < 0 || m >= gui_mb.nmenu) return;
-    gui_mb.open = m; gui_mb.hilite = 0; gui_mb_redraw();
+    int px, py, pw, ph;
+    if (!gui_mb_compute_popup(m, &px, &py, &pw, &ph)) return;
+    gui_mb.pop_x = px; gui_mb.pop_y = py;
+    gui_mb.pop_w = pw; gui_mb.pop_h = ph;
+    gui_mb.open = m; gui_mb.hilite = 0;
+    /* 整屏: 标题条高亮 + 弹层覆在 LFB 顶层 */
+    gui_dirty = 1; dirty_win = -1;
+    gui_mb_redraw();
 }
 static void gui_mb_switch(int d) {         /* ←/→ 切换菜单 */
     int n = gui_mb.nmenu; if (n < 1) return;
@@ -850,6 +974,8 @@ static int gcompose_full(void) {
             }
         }
     }
+    /* v6.13: 菜单弹层永远在 z 顶, 画在所有窗口之上 (指针之下) */
+    gdraw_menu_popup();
     int mx = mouse_px_x(), my = mouse_px_y();
     if (mouse_installed_k()) {
         ptr_save_region(mx, my);
@@ -886,7 +1012,12 @@ static void gblit_win(int k) {
             p[0] = (unsigned char)(c & 0xFF); p[1] = (unsigned char)(c >> 8);
         }
     }
-    /* 指针落在本窗上: 重存背景 + 重画 */
+    /* v6.13: 弹层在 z 顶 — 若弹层与本窗矩形相交, blit 已盖掉弹层像素, 补画 */
+    if (gui_mb.used && gui_mb.open >= 0
+        && gui_mb.pop_x < w->x + w->w && gui_mb.pop_x + gui_mb.pop_w > w->x
+        && gui_mb.pop_y < w->y + w_draw_h(w) && gui_mb.pop_y + gui_mb.pop_h > w->y)
+        gdraw_menu_popup();
+    /* 指针落在本窗上: 重存背景 + 重画 (弹层已在指针下) */
     if (mx >= w->x && mx < w->x + w->w && my >= w->y && my < w->y + w_draw_h(w)) {
         ptr_bg_valid = 0;
         ptr_save_region(mx, my);
@@ -1502,15 +1633,16 @@ int gui_events(void *buf, int max) {
         drag_win = -1; sel_drag_w = sel_drag_k = -1;
     }
 
-    /* ── 菜单栏 (v6.6): 新按先看菜单条/展开下拉 (命中即消费, 不进 chrome/控件) ── */
+    /* ── 菜单栏 (v6.6, v6.13): 弹层跟点击位置, 在所有窗之上 ── */
     if (lb && !was && gui_mb.used && gui_mb.win >= 0 && gui_mb.win < GW_MAXWIN
         && GUW[gui_mb.win].used) {
         gui_win_t *mw = &GUW[gui_mb.win];
-        /* 展开下拉里点: 命中某项则激活, 框外则关闭 */
         if (gui_mb.open >= 0) {
+            /* 弹层打开中: 命中弹层 → 激活; 命中菜单条标题 → toggle;
+             * 其他 → 关菜单, 让 click 继续走 chrome/控件命中 (raise/激活按钮) */
             int m = gui_mb.open, ni = gui_mb.nitems[m];
-            int pw = 96, ph = ni * 16 + 2;
-            int px = mw->x, py = mw->y + 18 + 18;
+            int px = gui_mb.pop_x, py = gui_mb.pop_y;
+            int pw = gui_mb.pop_w, ph = gui_mb.pop_h;
             if (mx >= px && mx < px + pw && my >= py && my < py + ph) {
                 int it = (my - py - 1) / 16;
                 if (it >= 0 && it < ni && gui_mb.items[m][it][0] != '-') {
@@ -1522,21 +1654,36 @@ int gui_events(void *buf, int max) {
                         ev[3] = (m << 8) | it; n += 4; ev += 4;
                     }
                 }
-                gui_mb_close(); goto kbd;
+                gui_mb_close(); goto kbd;          /* 弹层内点 → 消费 */
             }
-            gui_mb_close(); goto kbd;             /* 框外点击 = 关菜单 */
-        }
-        /* 击菜单条标题: 找命中位置对应的菜单 open/toggle */
-        if (my >= mw->y + 18 && my < mw->y + 18 + 18) {
-            int tx = mw->x + 4;
-            for (int i = 0; i < gui_mb.nmenu; i++) {
-                int tw = gstr_px((const unsigned char*)gui_mb.titles[i]);
-                if (mx >= tx && mx < tx + tw + 16) {
-                    if (gui_mb.open == i) gui_mb_close();
-                    else gui_mb_open_menu(i);
-                    goto kbd;
+            /* 检查是否点菜单条标题 (切换菜单) */
+            if (my >= mw->y + 18 && my < mw->y + 18 + 18) {
+                int tx = mw->x + 4;
+                for (int i = 0; i < gui_mb.nmenu; i++) {
+                    int tw = gstr_px((const unsigned char*)gui_mb.titles[i]);
+                    if (mx >= tx && mx < tx + tw + 16) {
+                        if (gui_mb.open == i) gui_mb_close();
+                        else gui_mb_open_menu(i);
+                        goto kbd;                  /* 标题条点 → 消费 */
+                    }
+                    tx += tw + 16;
                 }
-                tx += tw + 16;
+            }
+            /* 弹层外 (其他窗/控件) → 关菜单 + 不消费 (让 chrome/控件逻辑处理) */
+            gui_mb_close();
+        } else {
+            /* 弹层未开: 击菜单条标题 → open/toggle */
+            if (my >= mw->y + 18 && my < mw->y + 18 + 18) {
+                int tx = mw->x + 4;
+                for (int i = 0; i < gui_mb.nmenu; i++) {
+                    int tw = gstr_px((const unsigned char*)gui_mb.titles[i]);
+                    if (mx >= tx && mx < tx + tw + 16) {
+                        if (gui_mb.open == i) gui_mb_close();
+                        else gui_mb_open_menu(i);
+                        goto kbd;
+                    }
+                    tx += tw + 16;
+                }
             }
         }
     }
