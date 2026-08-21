@@ -19,6 +19,8 @@
 
 int gui_active = 0;                 /* 见 common.h extern; fb.c/vga.c 据此停用 */
 
+static void gcompose(void);         /* 提前于菜单助手等引用, 原定义在下方 */
+
 /* ── 常量 ── */
 #define GW_MAXWIN   8
 #define GW_MAXWID   16
@@ -30,6 +32,9 @@ int gui_active = 0;                 /* 见 common.h extern; fb.c/vga.c 据此停
 #define GW_EDIT     2
 #define GW_LIST     3
 #define GW_TEXTAREA 4
+#define GW_CHECK    5                    /* v6.6 复选框: chk=是否勾选 */
+#define GW_RADIO    6                    /* v6.6 单选钮: chk/grp=选中+互斥组 */
+#define GW_MENU     7                    /* v6.6 菜单栏 (gui_mb 全局) */
 
 /* 多行文本区: 内容放独立固定槽池 (每槽 TX_SIZE 字节), 而非塞进 gui_wid_t 的
  * txt[64] — 避免结构体阵列被放大几百 KB。槽由 gw_new 分配, 关闭/替换时释放。 */
@@ -89,6 +94,9 @@ typedef struct {
      * max(anchor,active)); 相等即空。锚点在按下/非 shift 移动时固定。 */
     int  sel_anchor;
     int  sel_active;
+    /* v6.6 复选框/单选钮 */
+    int  chk;                        /* CHECK/RADIO: 是否选中 (0 未勾/1 勾选) */
+    int  grp;                        /* RADIO: 互斥组号 (同窗同组互斥) */
 } gui_wid_t;
 
 typedef struct {
@@ -120,6 +128,24 @@ static int drag_offx   = 0;          /* 按下时 鼠标x - 窗x */
 static int drag_offy   = 0;          /* 按下时 鼠标y - 窗y */
 static int sel_drag_w  = -1;         /* 鼠标拖选中的窗, -1=无 */
 static int sel_drag_k  = -1;         /* 鼠标拖选中的控件 */
+
+/* ── v6.6 菜单栏: 单一全局 (同一时刻一个活跃窗口用菜单栏) ──
+ * 每个菜单一个标题 (title) + 至多 GMW_ITEMS 项 (项 = items[i][.])。
+ * 助记符: title 内第一个 "(X)" 的 ASCII 字母转小写 (>0), 无括号则取首 ASCII 字母。
+ * "open" = 展开的菜单号 (0..nmenu-1, -1 无); "hilite" = 下拉面板高亮项。 */
+#define GMW_MENUS   6
+#define GMW_ITEMS   8
+typedef struct {
+    int  used;                       /* 本栏占用 (建 menubar 置 1) */
+    int  win;                        /* 拥有窗口 */
+    int  nmenu;                      /* 菜单数 */
+    char titles[GMW_MENUS][21];      /* 标题文本 e.g. "文件(F)" */
+    char mnem[GMW_MENUS];            /* 小写 Alt 助记字母, 0=无 */
+    int  nitems[GMW_MENUS];          /* 各菜单项数 */
+    char items[GMW_MENUS][GMW_ITEMS][32];
+    int  open, hilite;               /* 展开的菜单 / 高亮项 (-1 无) */
+} gui_menubar_t;
+static gui_menubar_t gui_mb = {0};
 
 /* ── 小工具 ── */
 static int gstrlen(const char *s) { const char *p = s; while (*p) p++; return (int)(p - s); }
@@ -432,8 +458,50 @@ static void gdraw_chrome(unsigned short *b, int bw, int bh, int winw, int isfoc)
     gx_x(b, bw, bh, bx + 36 + 2, 2, glyph);                     /* ✕ 关闭 */
 }
 
+/* 该控件是否聚焦 (TAB/点击后的键盘路由目标; LBL/MENU 恒假) */
+static inline int gw_isfoc(const gui_win_t *w, const gui_wid_t *wd) {
+    return (foc_win >= 0 && w == &GUW[foc_win] && wd == &w->wd[w->foc_wid]);
+}
+
+/* 复选框盒 (v6.6): 14×14 边框盒; 勾选画 √; 聚焦外画 1px 亮环 */
+static void gchk_box(unsigned short *b, int bw, int bh,
+                     int x, int y, int checked, int isfoc) {
+    gfill(b, bw, bh, x, y, 14, 14, C_EDBG);
+    gborder(b, bw, bh, x, y, 14, 14, isfoc ? C_TITLEFX : C_BTNBDR);
+    if (checked) {                       /* √: 左上→右下斜 + 折向上右上 */
+        for (int k = 0; k < 4; k++) gpx(b, bw, bh, x + 3 + k, y + 5 + k, C_TEXT);
+        for (int k = 0; k < 5; k++) gpx(b, bw, bh, x + 4 + k, y + 6 + k, C_TEXT);
+        for (int k = 0; k < 6; k++) gpx(b, bw, bh, x + 6 + k, y + 9 - k, C_TEXT);
+        for (int k = 0; k < 6; k++) gpx(b, bw, bh, x + 6 + k, y + 10 - k, C_TEXT);
+    }
+}
+
+/* 单选钮 (v6.6): 14×14 圆; 选中填实心点; 聚焦画亮环 */
+static void grad_box(unsigned short *b, int bw, int bh,
+                     int x, int y, int checked, int isfoc) {
+    for (int j = 0; j < 14; j++)
+        for (int i = 0; i < 14; i++) {
+            int dx = i - 6, dy = j - 6;            /* 圆心 7,7 */
+            int d2 = dx * dx + dy * dy;
+            if (d2 <= 49)                          /* 外圆 r=7 */
+                gpx(b, bw, bh, x + i, y + j, C_EDBG);
+        }
+    unsigned short ring = isfoc ? C_TITLEFX : C_BTNBDR;
+    for (int j = 0; j < 14; j++) for (int i = 0; i < 14; i++) {
+        int dx = i - 6, dy = j - 6, d2 = dx * dx + dy * dy;
+        if (d2 > 36 && d2 <= 49) gpx(b, bw, bh, x + i, y + j, ring); /* r∈(6,7] */
+        if (checked && d2 <= 16) gpx(b, bw, bh, x + i, y + j, C_TEXT); /* 实心 r≤4 */
+    }
+}
+
+static void gfocus_ring(gui_win_t *w, gui_wid_t *wd) {   /* 非文字控件聚焦描边 */
+    unsigned short *b = w->buf; int bw = w->w, bh = w->h;
+    gborder(b, bw, bh, wd->x - 1, wd->y - 1, wd->w + 2, wd->h + 2, C_TITLEFX);
+}
+
 static void gw_draw(gui_win_t *w, gui_wid_t *wd) {
     unsigned short *b = w->buf; int bw = w->w, bh = w->h;
+    int gfoc = gw_isfoc(w, wd);
     switch (wd->type) {
     case GW_BTN: {
         gfill(b, bw, bh, wd->x, wd->y, wd->w, wd->h, C_BTNBG);
@@ -443,6 +511,7 @@ static void gw_draw(gui_win_t *w, gui_wid_t *wd) {
         int tx = wd->x + (wd->w - tw) / 2, ty = wd->y + (wd->h - 16) / 2;
         gtext(b, bw, bh, tx, ty, (const unsigned char*)wd->txt, C_TEXT, C_BTNBG, 1);
         (void)bh;
+        if (gfoc) gfocus_ring(w, wd);   /* v6.6 聚焦亮框 */
         break;
     }
     case GW_LBL:
@@ -528,8 +597,68 @@ static void gw_draw(gui_win_t *w, gui_wid_t *wd) {
         }
         break;
     }
+    case GW_CHECK: {                    /* 复选框: [x] 文本 (v6.6) */
+        gchk_box(b, bw, bh, wd->x, wd->y + 1, wd->chk, gfoc);
+        gtext(b, bw, bh, wd->x + 18, wd->y + 1,
+              (const unsigned char*)wd->txt, C_TEXT, 0, 0);
+        break;
+    }
+    case GW_RADIO: {                    /* 单选钮: (o) 文本 (v6.6) */
+        grad_box(b, bw, bh, wd->x, wd->y + 1, wd->chk, gfoc);
+        gtext(b, bw, bh, wd->x + 18, wd->y + 1,
+              (const unsigned char*)wd->txt, C_TEXT, 0, 0);
+        break;
+    }
+    case GW_MENU:                       /* 菜单栏条 + 展开面板 (v6.6) */
+        if (gui_mb.win != (int)(w - GUW) || !gui_mb.used) break;
+        gfill(b, bw, bh, 0, wd->y, w->w, 18, C_BTNBG);
+        gfill(b, bw, bh, 0, wd->y + 18 - 1, w->w, 1, C_BTNBDR);
+        {
+            int tx = 4;
+            for (int i = 0; i < gui_mb.nmenu; i++) {
+                int on = (gui_mb.open == i);
+                const char *t = gui_mb.titles[i];
+                int tw = gstr_px((const unsigned char*)t);
+                gfill(b, bw, bh, tx, wd->y, tw + 16, 18,
+                      on ? C_SELBG : C_BTNBG);           /* 打开项反蓝 */
+                gtext(b, bw, bh, tx + 8, wd->y + 1, (const unsigned char*)t,
+                      on ? C_SELFG : C_TEXT,
+                      on ? C_SELBG : C_BTNBG, 1);
+                tx += tw + 16;
+            }
+        }
+        if (gui_mb.open >= 0) {         /* 展开的下拉面板 */
+            int m = gui_mb.open, ni = gui_mb.nitems[m];
+            int pw = 0;
+            for (int i = 0; i < ni; i++) {
+                int tw = gstr_px((const unsigned char*)gui_mb.items[m][i]);
+                if (tw > pw) pw = tw;
+            }
+            pw += 24; if (pw < 96) pw = 96;
+            int ph = ni * 16 + 2, px = 0, py = wd->y + 18;
+            if (px + pw > w->w) px = w->w - pw;
+            gfill(b, bw, bh, px, py, pw, ph, C_EDBG);
+            gborder(b, bw, bh, px, py, pw, ph, C_BTNBDR);
+            int iy = py + 1;
+            for (int i = 0; i < ni; i++) {
+                int sep = (gui_mb.items[m][i][0] == '-');
+                if (gui_mb.hilite == i && !sep) {
+                    gfill(b, bw, bh, px + 1, iy, pw - 2, 16, C_SELBG);
+                    gtext(b, bw, bh, px + 8, iy, (const unsigned char*)gui_mb.items[m][i],
+                          C_SELFG, C_SELBG, 1);
+                } else if (sep) {
+                    gfill(b, bw, bh, px + 4, iy + 8, pw - 8, 1, C_BTNBDR);
+                } else {
+                    gtext(b, bw, bh, px + 8, iy, (const unsigned char*)gui_mb.items[m][i],
+                          C_TEXT, C_EDBG, 1);
+                }
+                iy += 16;
+            }
+        }
+        break;
     }
 }
+
 
 static void gw_redraw(gui_win_t *w) {
     gui_dirty = 1;
@@ -555,6 +684,63 @@ static void gw_redraw(gui_win_t *w) {
         gfill(w->buf, w->w, w->h, 0, 19, w->w, 1, C_BTNBDR);
     }
     for (int i = 0; i < w->nwid; i++) gw_draw(w, &w->wd[i]);
+}
+
+/* ── v6.6 交互助手 ── */
+
+/* 可聚焦控件? (LBL/MENU 不可; EDIT/TAREA/BTN/CHECK/RADIO/LIST 可) */
+static int gw_focusable(int type) {
+    return type == GW_EDIT || type == GW_TEXTAREA || type == GW_BTN ||
+           type == GW_CHECK || type == GW_RADIO || type == GW_LIST;
+}
+
+/* TAB/方向键在窗内循环聚焦 (dir=+1 下一, -1 上一)。聚焦到控件并重画。 */
+static int gw_focus_step(gui_win_t *w, int dir) {
+    if (w->nwid == 0) return -1;
+    int cur = w->foc_wid;
+    for (int s = 1; s <= w->nwid; s++) {
+        int k = (cur + dir * s + w->nwid) % w->nwid;
+        if (gw_focusable(w->wd[k].type)) {
+            w->foc_wid = k; gw_redraw(w); return k;
+        }
+    }
+    return -1;
+}
+
+/* 同窗同组的单选互斥: 清同组所有 chk, 再把 g 置勾。返回 1=已勾。 */
+static int gw_radio_check(gui_win_t *w, gui_wid_t *g) {
+    for (int i = 0; i < w->nwid; i++)
+        if (w->wd[i].type == GW_RADIO && w->wd[i].grp == g->grp)
+            w->wd[i].chk = 0;
+    g->chk = 1;
+    return 1;
+}
+
+/* ── 菜单栏助手 (gui_mb) ── */
+static void gui_mb_redraw(void) {
+    if (gui_mb.win >= 0 && gui_mb.win < GW_MAXWIN && GUW[gui_mb.win].used)
+        { gw_redraw(&GUW[gui_mb.win]); gcompose(); }
+}
+static void gui_mb_close(void) {
+    if (gui_mb.open != -1) { gui_mb.open = -1; gui_mb.hilite = -1; gui_mb_redraw(); }
+}
+static void gui_mb_open_menu(int m) {
+    if (m < 0 || m >= gui_mb.nmenu) return;
+    gui_mb.open = m; gui_mb.hilite = 0; gui_mb_redraw();
+}
+static void gui_mb_switch(int d) {         /* ←/→ 切换菜单 */
+    int n = gui_mb.nmenu; if (n < 1) return;
+    int m = gui_mb.open < 0 ? 0 : (gui_mb.open + d + n) % n;
+    gui_mb_open_menu(m);
+}
+static void gui_mb_move(int d) {           /* ↑/↓ 移动高亮项 (跳过分隔) */
+    int m = gui_mb.open; if (m < 0) return;
+    int ni = gui_mb.nitems[m]; if (ni < 1) return;
+    int h = gui_mb.hilite, step = 0;
+    if (h < 0 || h >= ni) h = (d > 0) ? -1 : ni;      /* 首次进入 */
+    do { h += d; if (h < 0) h = ni - 1; if (h >= ni) h = 0; step++; }
+    while (gui_mb.items[m][h][0] == '-' && step < ni * 2);
+    gui_mb.hilite = h; gui_mb_redraw();
 }
 
 static void gdraw_icon(void) __attribute__((unused,noinline));
@@ -833,6 +1019,7 @@ static int gw_new(gui_win_t *w, int type, int x, int y, int ww, int hh) {
     wd->txt[0] = 0; wd->caret = 0; wd->nitems = 0; wd->sel = -1; wd->scroll = 0;
     wd->txid = -1; wd->txlen = 0; wd->txc = 0; wd->txcol = 0; wd->txsc = 0;
     wd->sel_anchor = 0; wd->sel_active = 0;
+    wd->chk = 0; wd->grp = 0;
     if (type == GW_TEXTAREA) {                /* 分配多行内容槽 */
         for (int s = 0; s < GW_TXPOOL; s++)
             if (!gui_txused[s]) { wd->txid = s; gui_txused[s] = 1; gui_txpool[s][0] = 0; break; }
@@ -983,6 +1170,84 @@ int gui_list_set(int win, int ctl, const char *str) {
     else if (wd->nitems < GW_MAXITEMS) gcopy(wd->items[wd->nitems++], str, 32);
     gw_redraw(&GUW[win]); gcompose();
     return wd->nitems;
+}
+
+/* v6.6 List 读回: 把当前选中项文本拷入 buf, 返回选中索引 (-1 无选中) */
+int gui_list_get(int win, int ctl, char *buf, int max) {
+    gui_wid_t *wd = gw_get(win, ctl);
+    if (!wd || wd->type != GW_LIST) return -1;
+    if (buf && max > 0) buf[0] = 0;
+    int i = wd->sel;
+    if (i >= 0 && i < wd->nitems && buf && max > 1)
+        gcopy(buf, wd->items[i], max);
+    return i;
+}
+
+int gui_list_n(int win, int ctl) {
+    gui_wid_t *wd = gw_get(win, ctl);
+    if (!wd || wd->type != GW_LIST) return -1;
+    return wd->nitems;
+}
+
+/* v6.6 复选框 / 单选钮 / 菜单栏 */
+int gui_check(int win, int cx, int cy, const char *label) {
+    if (!gui_active || win < 0 || win >= GW_MAXWIN || !GUW[win].used) return -1;
+    int id = gw_new(&GUW[win], GW_CHECK, cx, cy, 14 + 18 + gstr_px((const unsigned char*)label), 18);
+    if (id >= 0) gcopy(GUW[win].wd[id].txt, label ? label : "", 64);
+    return id;
+}
+int gui_check_set(int win, int ctl, int state) {
+    gui_wid_t *wd = gw_get(win, ctl);
+    if (!wd || wd->type != GW_CHECK && wd->type != GW_RADIO) return -1;
+    wd->chk = state ? 1 : 0;
+    gw_redraw(&GUW[win]); gcompose();
+    return 0;
+}
+int gui_radio(int win, int cx, int cy, const char *label) {
+    if (!gui_active || win < 0 || win >= GW_MAXWIN || !GUW[win].used) return -1;
+    int id = gw_new(&GUW[win], GW_RADIO, cx, cy, 14 + 18 + gstr_px((const unsigned char*)label), 18);
+    if (id >= 0) { gcopy(GUW[win].wd[id].txt, label ? label : "", 64);
+                   GUW[win].wd[id].grp = 0; }        /* 同窗同位组 0 互斥 */
+    return id;
+}
+
+int gui_menubar(int win) {
+    if (!gui_active || win < 0 || win >= GW_MAXWIN || !GUW[win].used) return -1;
+    /* 重绑: 清掉旧栏数据, 绑到新窗 */
+    if (gui_mb.used && gui_mb.win != win)
+        { int k = gui_mb.win; if (k >= 0 && k < GW_MAXWIN && GUW[k].used)
+            { gw_redraw(&GUW[k]); gcompose(); } }
+    gui_mb.used = 1; gui_mb.win = win; gui_mb.nmenu = 0;
+    gui_mb.open = -1; gui_mb.hilite = -1;
+    int id = gw_new(&GUW[win], GW_MENU, 0, 18, GUW[win].w, 18);
+    return id;
+}
+/* 加一个菜单到栏: title 如 "文件(F)" → 助记符取括号内 ASCII 字母小写 */
+int gui_menu_add(int win, int ctl, const char *title) {
+    (void)ctl;
+    if (gui_mb.win != win || gui_mb.nmenu >= GMW_MENUS) return -1;
+    int i = gui_mb.nmenu;
+    gcopy(gui_mb.titles[i], title ? title : "", 21);
+    gui_mb.nitems[i] = 0;
+    gui_mb.mnem[i] = 0;                     /* 解析助记符 */
+    const char *t = gui_mb.titles[i];
+    char lc = 0; int k;
+    for (k = 0; t[k]; k++) if (t[k] == '(') break;      /* 括号助记 "(F)" */
+    if (t[k] == '(' && t[k+1]) { lc = t[k+1]; if (lc >= 'A' && lc <= 'Z') lc += 32; }
+    if (!lc) for (k = 0; t[k]; k++) if (t[k] >= 'A' && t[k] <= 'Z') { lc = t[k] + 32; break; }
+    gui_mb.mnem[i] = lc;
+    gui_mb.nmenu++;
+    gui_mb_redraw();
+    return i;
+}
+/* 给菜单 m 加一项 (id 内联): "-" 或空 = 分隔项; 返回项索引或 -1 */
+int gui_menu_item(int win, int ctl, int menu, const char *item) {
+    (void)ctl;
+    if (gui_mb.win != win || menu < 0 || menu >= gui_mb.nmenu) return -1;
+    if (gui_mb.nitems[menu] >= GMW_ITEMS) return -1;
+    int i = gui_mb.nitems[menu]++;
+    gcopy(gui_mb.items[menu][i], item ? item : "-", 32);
+    return i;
 }
 
 int gui_wnd_text(int win, int ctl, const char *str) {
@@ -1237,6 +1502,45 @@ int gui_events(void *buf, int max) {
         drag_win = -1; sel_drag_w = sel_drag_k = -1;
     }
 
+    /* ── 菜单栏 (v6.6): 新按先看菜单条/展开下拉 (命中即消费, 不进 chrome/控件) ── */
+    if (lb && !was && gui_mb.used && gui_mb.win >= 0 && gui_mb.win < GW_MAXWIN
+        && GUW[gui_mb.win].used) {
+        gui_win_t *mw = &GUW[gui_mb.win];
+        /* 展开下拉里点: 命中某项则激活, 框外则关闭 */
+        if (gui_mb.open >= 0) {
+            int m = gui_mb.open, ni = gui_mb.nitems[m];
+            int pw = 96, ph = ni * 16 + 2;
+            int px = mw->x, py = mw->y + 18 + 18;
+            if (mx >= px && mx < px + pw && my >= py && my < py + ph) {
+                int it = (my - py - 1) / 16;
+                if (it >= 0 && it < ni && gui_mb.items[m][it][0] != '-') {
+                    int ctl = -1;
+                    for (int kk = 0; kk < mw->nwid; kk++)
+                        if (mw->wd[kk].type == GW_MENU) { ctl = kk; break; }
+                    if (n < max) {
+                        ev[0] = GEV_CLICK; ev[1] = gui_mb.win; ev[2] = ctl;
+                        ev[3] = (m << 8) | it; n += 4; ev += 4;
+                    }
+                }
+                gui_mb_close(); goto kbd;
+            }
+            gui_mb_close(); goto kbd;             /* 框外点击 = 关菜单 */
+        }
+        /* 击菜单条标题: 找命中位置对应的菜单 open/toggle */
+        if (my >= mw->y + 18 && my < mw->y + 18 + 18) {
+            int tx = mw->x + 4;
+            for (int i = 0; i < gui_mb.nmenu; i++) {
+                int tw = gstr_px((const unsigned char*)gui_mb.titles[i]);
+                if (mx >= tx && mx < tx + tw + 16) {
+                    if (gui_mb.open == i) gui_mb_close();
+                    else gui_mb_open_menu(i);
+                    goto kbd;
+                }
+                tx += tw + 16;
+            }
+        }
+    }
+
     /* ── 新按 → 命中窗口/chrome/控件 ── */
     if (lb && !was) {
         int top = -1, topz = -1, need_full = 0;
@@ -1342,6 +1646,10 @@ int gui_events(void *buf, int max) {
                     int item = g->scroll + ((my - (w->y + g->y)) - 1) / 16;
                     if (item >= g->nitems) item = -1;
                     if (item >= 0) { g->sel = item; ch = item; }
+                } else if (g->type == GW_CHECK) {   /* v6.6 复选框: 点击切换 */
+                    w->foc_wid = ctl; g->chk = !g->chk; ch = g->chk;
+                } else if (g->type == GW_RADIO) {   /* v6.6 单选: 同组互斥 */
+                    w->foc_wid = ctl; gw_radio_check(w, g); ch = 1;
                 } else {
                     w->foc_wid = -1;
                 }
@@ -1359,36 +1667,113 @@ int gui_events(void *buf, int max) {
     }
 
 kbd:
-    /* ── 键盘 → 聚焦输入框 / 多行文本区 ── */
+    /* ── 键盘 (v6.6): 菜单 → TAB 循环 → 列表方向 → 文本控件 (v6.11) ── */
     int fk = key_pressed;
-    if (fk && foc_win >= 0 && foc_win < GW_MAXWIN && GUW[foc_win].used) {
-        gui_win_t *w = &GUW[foc_win];
-        int fw = w->foc_wid;
-        if (fw >= 0 && fw < w->nwid) {
-            int ft = w->wd[fw].type;
-            if (ft == GW_EDIT || ft == GW_TEXTAREA) {
-                key_pressed = 0;
-                int ch = 0;
-                if (fk == 1) ch = current_char;
-                else if (fk == 2) ch = '\n';  /* 回车 → 多行换行 / 单行忽略 */
-                else if (fk == 3) ch = '\b';
-                else if (fk == 4) ch = 128;  /* ← */
-                else if (fk == 5) ch = 129;  /* → */
-                else if (fk == 6) ch = 130;  /* ↑ */
-                else if (fk == 7) ch = 131;  /* ↓ */
-                else if (fk == 9) ch = 127;  /* DEL */
-                else if (fk == 10) ch = 132; /* HOME */
-                else if (fk == 11) ch = 133; /* END */
-                else if (fk == 18) ch = 139; /* ↑页 */
-                else if (fk == 19) ch = 140; /* ↓页 */
-                else if (fk == 20) ch = 141; /* INS (v1 忽略) */
-                if (ch) {
-                    if (ft == GW_TEXTAREA) gui_tarea_char(foc_win, fw, ch);
-                    else gui_edit_char(foc_win, fw, ch);
+    if (fk) {
+        int fhk = 0;                                      /* 本轮已处理则跳过下一段 */
+        /* 1) 菜单打开中: 全部键给菜单 (ESC/方向/Enter/Alt+字母) */
+        if (gui_mb.used && gui_mb.open >= 0) {
+            key_pressed = 0; fhk = 1;
+            if (fk == 8) gui_mb_close();                  /* ESC */
+            else if (fk == 4) gui_mb_switch(-1);          /* ← */
+            else if (fk == 5) gui_mb_switch(1);           /* → */
+            else if (fk == 6) gui_mb_move(-1);            /* ↑ */
+            else if (fk == 7) gui_mb_move(1);             /* ↓ */
+            else if (fk == 2) {                           /* ENTER: 激活高亮项 */
+                int m = gui_mb.open, it = gui_mb.hilite;
+                if (m >= 0 && it >= 0 && it < gui_mb.nitems[m]
+                    && gui_mb.items[m][it][0] != '-') {
+                    int ctl = -1;
+                    for (int kk = 0; kk < GUW[gui_mb.win].nwid; kk++)
+                        if (GUW[gui_mb.win].wd[kk].type == GW_MENU) { ctl = kk; break; }
                     if (n < max) {
-                        ev[0] = (ch == '\n' || ch == '\r') ? GEV_ENTER : GEV_KEY;
-                        ev[1] = foc_win; ev[2] = fw; ev[3] = ch;
+                        ev[0] = GEV_CLICK; ev[1] = gui_mb.win; ev[2] = ctl;
+                        ev[3] = (m << 8) | it; n += 4; ev += 4;
+                    }
+                }
+                gui_mb_close();
+            } else if (fk == 1 && is_alt) {
+                int lc = current_char | 0x20;
+                if (lc >= 'a' && lc <= 'z') {
+                    for (int i = 0; i < gui_mb.nmenu; i++)
+                        if (gui_mb.mnem[i] == lc) { gui_mb_open_menu(i); break; }
+                }
+            }
+        }
+        /* 2) Alt+字母 无菜单开 → 开对应菜单 */
+        else if (fk == 1 && is_alt && gui_mb.used && gui_mb.open < 0) {
+            int lc = current_char | 0x20;
+            if (lc >= 'a' && lc <= 'z') {
+                for (int i = 0; i < gui_mb.nmenu; i++) {
+                    if (gui_mb.mnem[i] == lc) {
+                        key_pressed = 0; fhk = 1;
+                        gui_mb_open_menu(i);
+                        break;
+                    }
+                }
+            }
+        }
+        /* 3) TAB/Shift-TAB 焦点循环 */
+        if (!fhk && fk == 1 && current_char == '\t' && foc_win >= 0
+            && foc_win < GW_MAXWIN && GUW[foc_win].used) {
+            if (gw_focus_step(&GUW[foc_win], is_shift ? -1 : 1) >= 0) {
+                key_pressed = 0; fhk = 1;
+            }
+        }
+        /* 4) 列表焦点 + 方向/Enter */
+        if (!fhk && foc_win >= 0 && foc_win < GW_MAXWIN && GUW[foc_win].used) {
+            gui_win_t *w = &GUW[foc_win];
+            int fw = w->foc_wid;
+            if (fw >= 0 && fw < w->nwid && w->wd[fw].type == GW_LIST) {
+                gui_wid_t *g = &w->wd[fw];
+                if (fk == 6) {                            /* ↑ */
+                    if (g->sel > 0) g->sel--;
+                    if (g->sel < g->scroll) g->scroll = g->sel;
+                    key_pressed = 0; fhk = 1; gw_redraw(w); gcompose();
+                } else if (fk == 7) {                     /* ↓ */
+                    if (g->sel + 1 < g->nitems) g->sel++;
+                    int vis = (g->h - 2) / 16; if (vis < 1) vis = 1;
+                    if (g->sel >= g->scroll + vis) g->scroll = g->sel - vis + 1;
+                    key_pressed = 0; fhk = 1; gw_redraw(w); gcompose();
+                } else if (fk == 2) {                     /* ENTER: 确认 */
+                    if (g->sel >= 0 && g->sel < g->nitems && n < max) {
+                        ev[0] = GEV_CLICK; ev[1] = foc_win; ev[2] = fw; ev[3] = g->sel;
                         n += 4; ev += 4;
+                    }
+                    key_pressed = 0; fhk = 1;
+                }
+            }
+        }
+        /* 5) 文本控件字符/方向键 (v6.11 不变) */
+        if (!fhk && fk && foc_win >= 0 && foc_win < GW_MAXWIN && GUW[foc_win].used) {
+            gui_win_t *w = &GUW[foc_win];
+            int fw = w->foc_wid;
+            if (fw >= 0 && fw < w->nwid) {
+                int ft = w->wd[fw].type;
+                if (ft == GW_EDIT || ft == GW_TEXTAREA) {
+                    key_pressed = 0;
+                    int ch = 0;
+                    if (fk == 1) ch = current_char;
+                    else if (fk == 2) ch = '\n';  /* 回车 → 多行换行 / 单行忽略 */
+                    else if (fk == 3) ch = '\b';
+                    else if (fk == 4) ch = 128;  /* ← */
+                    else if (fk == 5) ch = 129;  /* → */
+                    else if (fk == 6) ch = 130;  /* ↑ */
+                    else if (fk == 7) ch = 131;  /* ↓ */
+                    else if (fk == 9) ch = 127;  /* DEL */
+                    else if (fk == 10) ch = 132; /* HOME */
+                    else if (fk == 11) ch = 133; /* END */
+                    else if (fk == 18) ch = 139; /* ↑页 */
+                    else if (fk == 19) ch = 140; /* ↓页 */
+                    else if (fk == 20) ch = 141; /* INS (v1 忽略) */
+                    if (ch) {
+                        if (ft == GW_TEXTAREA) gui_tarea_char(foc_win, fw, ch);
+                        else gui_edit_char(foc_win, fw, ch);
+                        if (n < max) {
+                            ev[0] = (ch == '\n' || ch == '\r') ? GEV_ENTER : GEV_KEY;
+                            ev[1] = foc_win; ev[2] = fw; ev[3] = ch;
+                            n += 4; ev += 4;
+                        }
                     }
                 }
             }

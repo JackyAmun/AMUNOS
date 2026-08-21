@@ -63,6 +63,14 @@
 #define SYS_GUI_TAREA     44   /* 多行文本区(win,pack(x,y),pack(w,h)) → ctl */
 #define SYS_GUI_TAREA_SET 45   /* 设文本区内容(win|ctl<<8, buf, len) */
 #define SYS_GUI_TAREA_GET 46   /* 读回文本区内容(win|ctl<<8, buf, max) → 字节数 */
+#define SYS_GUI_LIST_GET  47   /* 读回 list 选中项 (win|ctl<<8, buf, max) → 选中索引 */
+#define SYS_GUI_LIST_N    48   /* list 项数 (win|ctl<<8) → nitems */
+#define SYS_GUI_CHECK     49   /* 复选框 (win, pack(x,y), label) → ctl */
+#define SYS_GUI_CHECK_SET 50   /* 复选/单选置状态 (win, ctl, state) */
+#define SYS_GUI_RADIO     51   /* 单选钮 (win, pack(x,y), label) → ctl */
+#define SYS_GUI_MENUBAR   52   /* 菜单栏 (win) → ctl (GW_MENU 伪控件) */
+#define SYS_GUI_MENU_ADD  53   /* 加菜单 (win, ctl, title) → 菜单索引 */
+#define SYS_GUI_MENU_ITEM 54   /* 加项 (win, (menu<<16)|ctl, item) → 项索引; "-" 分隔 */
 
 /* 事件类型 (gui_ev_t.type) */
 #define GEV_CLICK 1
@@ -290,6 +298,33 @@ static inline int sys_gui_tarea_set(int win, int ctl, const char *str, int len) 
 static inline int sys_gui_tarea_get(int win, int ctl, char *buf, int max) {
     return (int)syscall3(SYS_GUI_TAREA_GET, (long)((win & 0xFF) | ((unsigned)ctl << 8)),
                          (long)buf, max);
+}
+/* v6.6: List 读回 + 复选/单选/菜单栏 */
+static inline int sys_gui_list_get(int win, int ctl, char *buf, int max) {
+    return (int)syscall3(SYS_GUI_LIST_GET, (long)((win & 0xFF) | ((unsigned)ctl << 8)),
+                         (long)buf, max);
+}
+static inline int sys_gui_list_n(int win, int ctl) {
+    return (int)syscall2(SYS_GUI_LIST_N, (long)((win & 0xFF) | ((unsigned)ctl << 8)), 0);
+}
+static inline int sys_gui_check(int win, int x, int y, const char *label) {
+    return (int)syscall3(SYS_GUI_CHECK, win, (long)((x & 0xFFFF) | ((unsigned)y << 16)), (long)label);
+}
+static inline int sys_gui_check_set(int win, int ctl, int state) {
+    return (int)syscall3(SYS_GUI_CHECK_SET, win, ctl, state);
+}
+static inline int sys_gui_radio(int win, int x, int y, const char *label) {
+    return (int)syscall3(SYS_GUI_RADIO, win, (long)((x & 0xFFFF) | ((unsigned)y << 16)), (long)label);
+}
+static inline int sys_gui_menubar(int win) {
+    return (int)syscall1(SYS_GUI_MENUBAR, win);
+}
+static inline int sys_gui_menu_add(int win, int ctl, const char *title) {
+    return (int)syscall3(SYS_GUI_MENU_ADD, win, ctl, (long)title);
+}
+static inline int sys_gui_menu_item(int win, int ctl, int menu, const char *item) {
+    return (int)syscall3(SYS_GUI_MENU_ITEM, win,
+                         (long)((ctl & 0xFFFF) | ((unsigned)menu << 16)), (long)item);
 }
 
 /* ── 桩 (TCC 引用的 POSIX 表层, AMUNOS 暂未实现) ── */

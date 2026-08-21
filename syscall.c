@@ -543,6 +543,23 @@ void syscall_handler(unsigned *frame) {
                                 a3 & 0xFFFF, (a3 >> 16) & 0xFFFF); break;
     case 45: result = gui_tarea_set(a1 & 0xFF, (a1 >> 8) & 0xFF, (const char*)a2, a3); break;
     case 46: result = gui_tarea_get(a1 & 0xFF, (a1 >> 8) & 0xFF, (char*)a2, a3); break;
+    /* v6.6 控件扩展: List 读回 + 复选/单选/菜单栏
+     * 47 LIST_GET (win|ctl<<8, buf, max)          选中索引; buf=选中项文本
+     * 48 LIST_N   (win|ctl<<8, 0, 0)               项数
+     * 49 CHECK    (win, pack(x,y), label)          ctl
+     * 50 CHECK_SET(win, ctl, state)                0 (复选/单选状态预设/读回)
+     * 51 RADIO    (win, pack(x,y), label)          ctl
+     * 52 MENUBAR  (win)                            ctl (GW_MENU 伪控件)
+     * 53 MENU_ADD (win, ctl, title)                菜单索引 (title 可带 "(X)" 助记)
+     * 54 MENU_ITEM(win, (menu<<16)|ctl, itemtext)  项索引; "-" = 分隔 */
+    case 47: result = gui_list_get(a1 & 0xFF, (a1 >> 8) & 0xFF, (char*)a2, (int)a3); break;
+    case 48: result = gui_list_n(a1 & 0xFF, (a1 >> 8) & 0xFF); break;
+    case 49: result = gui_check(a1, a2 & 0xFFFF, (a2 >> 16) & 0xFFFF, (const char*)a3); break;
+    case 50: result = gui_check_set(a1 & 0xFFFF, a2, (int)a3); break;
+    case 51: result = gui_radio(a1, a2 & 0xFFFF, (a2 >> 16) & 0xFFFF, (const char*)a3); break;
+    case 52: result = gui_menubar(a1); break;
+    case 53: result = gui_menu_add(a1 & 0xFFFF, a2, (const char*)a3); break;
+    case 54: result = gui_menu_item(a1, a2 & 0xFFFF, (a2 >> 16) & 0xFFFF, (const char*)a3); break;
     case 27: {   /* SYS_CJKWCHAR: 在绝对格 (x,y) 放一个汉字 (占两格).
                   * a1=x a2=y; packed 低16=GB 码 (0=替换框□), 高位=attr.
                   * EDIT 文本行渲染用它把中文字节画成真实汉字。 */

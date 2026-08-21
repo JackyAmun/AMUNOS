@@ -215,6 +215,14 @@ int gui_wnd_text(int win, int ctl, const char *str);   // 设控件文本 (按�
 int gui_tarea(int win, int x, int y, int w, int h);    // 建多行文本区 → ctl
 int gui_tarea_set(int win, int ctl, const char *str, int len); // 设文本区内容 (len 字节)
 int gui_tarea_get(int win, int ctl, char *buf, int max);       // 读回文本区内容 → 字节数
+int gui_list_get(int win, int ctl, char *buf, int max);        // v6.6 读回 list 选中项文本 → 选中索引
+int gui_list_n(int win, int ctl);                               // v6.6 list 项数
+int gui_check(int win, int x, int y, const char *label);       // v6.6 复选框 → ctl
+int gui_check_set(int win, int ctl, int state);                // v6.6 复选/单选置状态
+int gui_radio(int win, int x, int y, const char *label);       // v6.6 单选钮 → ctl
+int gui_menubar(int win);                                      // v6.6 菜单栏 → ctl (GW_MENU)
+int gui_menu_add(int win, int ctl, const char *title);         // v6.6 加菜单 (title "Xxx(F)") → 菜单索引
+int gui_menu_item(int win, int ctl, int menu, const char *item); // v6.6 加项 ("-" = 分隔) → 项索引
 int gui_edit_char(int win, int ctl, int ch);           // 输入框编辑: 打印字符在光标处插入;
                                                        //   '\b'退格 128← 129→ 132HOME 133END 127DEL
 int gui_fill(int win, int x, int y, int w, int h, unsigned short color);
