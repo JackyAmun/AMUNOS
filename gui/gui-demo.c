@@ -27,7 +27,7 @@ static void appstr(char *s, const char *p) { while (*p) { s[gstrlen(s)] = *p; s[
 int main(void) {
     if (sys_gui_enter() < 0) return -1;
 
-    int win = sys_gui_win(20, 20, 480, 360, "控件演示 v6.13");
+    int win = sys_gui_win(20, 20, 480, 360, "控件演示");
     if (win < 0) { sys_gui_leave(); return -1; }
 
     /* 菜单栏 (v6.6/v6.13): File(F) / Edit(E) / View(V) / Help(H)
@@ -146,6 +146,7 @@ int main(void) {
                     if (ewin >= 0) sys_gui_win_raise(ewin);
                     else {
                         ewin = sys_gui_win(140, 60, 420, 360, "记事簿");
+                        sys_gui_win_raise(ewin);     /* 主窗点击 raise 把自己顶到 z 顶, 新窗要再 raise */
                         ed_ta = sys_gui_tarea(ewin, 8, 30, 404, 260);
                         const char *init =
                             "第一行 Hello 中文\n第二行 中英混合 abc 123\n第三行 你好, AMUNOS!\n";

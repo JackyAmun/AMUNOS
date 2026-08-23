@@ -132,9 +132,9 @@ try:
     d = dump_fb(s, ROOT + '/vg1.bin')
     desk = cnt(d, bpl, 0x8410, 500, 430, 640, 480)
     btn  = cnt(d, bpl, 0xD69A, 40, 80, 90, 107)
-    list = cnt(d, bpl, 0xFFFF, 101, 171, 379, 329)
-    t1 = desk > 4000 and btn > 100 and list > 3000
-    results['T1 render'] = (t1, 'desk=%d btn=%d list=%d' % (desk, btn, list))
+    nlist = cnt(d, bpl, 0xFFFF, 101, 191, 379, 339)
+    t1 = desk > 4000 and btn > 100 and nlist > 3000
+    results['T1 render'] = (t1, 'desk=%d btn=%d list=%d' % (desk, btn, nlist))
 
     # ── T1b 标题字形数 (防 UTF-8 被误读成 GB 的乱码回归) ──
     # 标题 "控件演示" = 4 个 CJK 字形, 各占 16px 宽, 白 fg 于标题栏。
@@ -187,31 +187,31 @@ try:
             if a != b: diff_px[(a, b)] += 1
             x += 3
             if x >= PX1: x = PX0; y += 3
-        print('  RESTORE DIFF colors:', dict(list(diff_px.items())[:6]))
+        print('  RESTORE DIFF colors:', [(k, v) for k, v in list(diff_px.items())[:6]])
     t2 = ok_open and ok_close and d_open > 50 and d_rest == 0
     results['T2 popup cover+restore'] = (t2, 'open_chg=%d restore_diff=%d' % (d_open, d_rest))
 
     # ── T3 列表点选 (重试直到高亮出现) ──
     def list_sel():
         d = dump_fb(s, ROOT + '/vg3.bin')
-        return cnt(d, bpl, 0x0019, 101, 171, 200, 187) > 300
-    ok_list = click_until(120, 178, list_sel)
+        return cnt(d, bpl, 0x0019, 101, 191, 200, 207) > 300
+    ok_list = click_until(120, 200, list_sel)
     d3 = dump_fb(s, ROOT + '/vg3.bin')
-    blue = cnt(d3, bpl, 0x0019, 101, 171, 200, 187)
+    blue = cnt(d3, bpl, 0x0019, 101, 191, 200, 207)
     t3 = ok_list and blue > 300
     results['T3 list select'] = (t3, 'blue=%d' % blue)
 
     # ── T4 输入框键盘回显 (聚焦 + 键入; 重试直到回显出现) ──
     def edit_caret():                          # 聚焦输入框后出现闪烁块光标 (0xFC30)
         d = dump_fb(s, ROOT + '/vg4c.bin')
-        return cnt(d, bpl, 0xFC30, 100, 128, 340, 150) > 2
+        return cnt(d, bpl, 0xFC30, 100, 115, 340, 134) > 2
     def t4_try():
-        foc = click_until(220, 138, edit_caret)   # 点输入框中段, 直到聚焦 (光标出现)
+        foc = click_until(240, 124, edit_caret)   # 点输入框中段, 直到聚焦 (光标出现)
         d4 = dump_fb(s, ROOT + '/vg4a.bin')
-        r4a = reg_pixels(d4, bpl, 100, 131, 340, 147, 2)
+        r4a = reg_pixels(d4, bpl, 100, 116, 340, 132, 2)
         ch(s, 'abc'); time.sleep(0.3)             # 连打三字符, diff 留足余量
         d5 = dump_fb(s, ROOT + '/vg4b.bin')
-        r5 = reg_pixels(d5, bpl, 100, 131, 340, 147, 2)
+        r5 = reg_pixels(d5, bpl, 100, 116, 340, 132, 2)
         return foc and sum(1 for a, b in zip(r4a, r5) if a != b) > 10
     t4 = False
     for _ in range(6):
@@ -226,11 +226,11 @@ try:
     def caret_x():
         d = dump_fb(s, ROOT + '/vg5c.bin')
         for x in range(101, 220):
-            c = sum(1 for y in range(131, 146) if pix(d, bpl, x, y) == 0xFC30)
+            c = sum(1 for y in range(116, 132) if pix(d, bpl, x, y) == 0xFC30)
             if c > 8: return x
         return -1
     click_until(200, 80, lambda: True); time.sleep(0.3)   # 点"清空"按钮 → 内容确定为空
-    click_until(220, 138, edit_caret); time.sleep(0.3)    # 点输入框重新聚焦 (光标 x=103)
+    click_until(240, 124, edit_caret); time.sleep(0.3)    # 点输入框重新聚焦 (光标 x=103)
     ch(s, 'abc'); time.sleep(0.3)                          # "abc" 光标在串尾 x=103+24=127
     cx_end = caret_x()
     mon_cmd(s, 'sendkey home', 0.5); time.sleep(0.3)      # HOME → 光标到串首 x≈103
@@ -239,7 +239,7 @@ try:
     ch(s, 'd'); time.sleep(0.3)                            # 光标处插入 → "dabc" 光标 x≈111
     sa = dump_fb(s, ROOT + '/vg5a.bin')
     cx_ins = caret_x()
-    diff_first = sum(1 for yy in range(131, 147, 2) for xx in range(103, 111, 2)
+    diff_first = sum(1 for yy in range(116, 132, 2) for xx in range(103, 111, 2)
                      if pix(sb, bpl, xx, yy) != pix(sa, bpl, xx, yy))
     # 若为"串尾追加": HOME 后插入会变成 "abcX" 光标 x=135 → cx_ins 断言失败
     t5 = (125 <= cx_end <= 130 and 101 <= cx_home <= 105
@@ -325,7 +325,7 @@ try:
     # 主窗现(80,70); chrome ▢ abs(80+413,79)=(493,79)。最大化 → 标题蓝铺满 (0,0,640,18)。
     def maximized():
         return cnt(dump_fb(s, ROOT + '/vg7m.bin'), bpl, 0x0019, 0, 0, 640, 18) > 9000
-    ok_max = click_until(493, 79, maximized)
+    ok_max = click_until(533, 79, maximized)
     def de_maximized():
         d = dump_fb(s, ROOT + '/vg7r.bin')
         return cnt(d, bpl, 0x0019, 0, 0, 640, 18) < 500
@@ -356,6 +356,61 @@ try:
     results['T9 drag mid follow+expose'] = (t9,
         'mid_band=%d mid_expose=%d fin_band=%d fin_expose=%d'
         % (mid_band, mid_expose, fin_band, fin_expose))
+
+    # ── T10 Checkbox 点击切换 (v6.6) ──
+    # T9 后主窗移至 (80, 100); chk_b 窗 (80, 125) → 屏 (160, 225);
+    # 盒 14×14 屏 (160, 226)-(174, 240)
+    mm(*PARK); time.sleep(0.3)
+    def chk_black(d, x0, y0, x1, y1):
+        return sum(1 for y in range(y0, y1) for x in range(x0, x1)
+                   if pix(d, bpl, x, y) == 0x0000)
+    d10a = dump_fb(s, ROOT + '/vg10a.bin')
+    ba = chk_black(d10a, 160, 226, 174, 240)
+    click_until(167, 232, lambda: True); time.sleep(0.4)
+    d10b = dump_fb(s, ROOT + '/vg10b.bin')
+    bb = chk_black(d10b, 160, 226, 174, 240)
+    click_until(167, 232, lambda: True); time.sleep(0.4)
+    d10c = dump_fb(s, ROOT + '/vg10c.bin')
+    bc = chk_black(d10c, 160, 226, 174, 240)
+    t10 = ba > 12 and bb < ba and bc > bb and bc > 12
+    results['T10 checkbox toggle'] = (t10, 'a=%d b=%d c=%d' % (ba, bb, bc))
+
+    # ── T11 Menu: Alt+字母 打开 + 方向键+Enter 激活 (v6.6) ──
+    # 窗 (80, 100), 菜单条屏 y[118, 136); 弹层约屏 (84, 136)-(132, 216)
+    mm(*PARK); time.sleep(0.3)
+    mon_cmd(s, 'sendkey esc', 0.15); time.sleep(0.3)        # 关可能残留
+    # QEMU 组合键: sendkey alt-f 一次发送 (避免 alt_l 单独释放, is_alt 掉)
+    mon_cmd(s, 'sendkey alt-f', 0.2); time.sleep(0.5)
+    d11 = dump_fb(s, ROOT + '/vg11.bin')
+    panel_white = sum(1 for y in range(138, 218, 2)
+                      for x in range(82, 160, 2)
+                      if pix(d11, bpl, x, y) == 0xFFFF)
+    item1_text = sum(1 for y in range(140, 156)
+                     for x in range(92, 160, 2)
+                     if pix(d11, bpl, x, y) == 0x0000)        # "新建"
+    mon_cmd(s, 'sendkey down', 0.1); time.sleep(0.1)
+    mon_cmd(s, 'sendkey down', 0.1); time.sleep(0.1)         # hilite=2 (保存)
+    mon_cmd(s, 'sendkey ret', 0.1); time.sleep(0.5)
+    d11b = dump_fb(s, ROOT + '/vg11b.bin')
+    ed_after = sum(1 for y in range(196, 212) for x in range(160, 280, 2)
+                   if pix(d11b, bpl, x, y) == 0x0000)         # "保存文件" 4 字
+    t11 = panel_white > 800 and item1_text > 4 and ed_after > 30
+    results['T11 menu alt-letter+enter'] = (t11,
+        'panel=%d text=%d ed=%d' % (panel_white, item1_text, ed_after))
+
+    # ── T12 TAB 焦点循环 (v6.6) ──
+    # 窗 (80, 100): b_pop 屏 (100, 160)-(168, 186); b_cn 屏 (180, 160)-(248, 186)
+    # 焦点环 C_TITLEFX (0x0019) 外扩 1px
+    mm(*PARK); time.sleep(0.3)
+    click(134, 173); time.sleep(0.4)                          # 点 b_pop 中心
+    d12a = dump_fb(s, ROOT + '/vg12a.bin')
+    ring_pop = cnt(d12a, bpl, 0x0019, 99, 159, 170, 188)
+    mon_cmd(s, 'sendkey tab', 0.2); time.sleep(0.4)
+    d12b = dump_fb(s, ROOT + '/vg12b.bin')
+    ring_pop2 = cnt(d12b, bpl, 0x0019, 99, 159, 170, 188)
+    ring_cn   = cnt(d12b, bpl, 0x0019, 179, 159, 250, 188)
+    t12 = ring_pop > 30 and ring_pop2 < 5 and ring_cn > 30
+    results['T12 tab focus'] = (t12, 'pop=%d pop2=%d cn=%d' % (ring_pop, ring_pop2, ring_cn))
 
     print('OVERALL', 'PASS' if all(v[0] for v in results.values()) else 'FAIL')
     for k, (ok, info) in results.items():

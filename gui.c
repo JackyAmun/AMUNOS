@@ -25,7 +25,7 @@ static unsigned ggb(const unsigned char *s);                   /* v6.13 LFB 文�
 
 /* ── 常量 ── */
 #define GW_MAXWIN   8
-#define GW_MAXWID   16
+#define GW_MAXWID   24
 #define GW_MAXITEMS 24
 #define GW_TITLE    24
 
@@ -1757,10 +1757,65 @@ int gui_events(void *buf, int max) {
                 gw_redraw(w); if (need_full) dirty_win = -1; gcompose();
                 goto kbd;
             }
+            /* v6.6 菜单栏条 / 打开的下拉面板: 鼠标点击 (窗有 menubar 才进) */
+            if (gui_mb.used && gui_mb.win == top) {
+                int winw = w->w, wwww = w->h;
+                int in_mb = (my >= w->y + 18 && my < w->y + 36);
+                /* 打开的下拉面板: y∈[36, 36+ph) 且 x∈[px, px+pw) */
+                if (gui_mb.open >= 0) {
+                    int m = gui_mb.open, ni = gui_mb.nitems[m], pw = 0;
+                    for (int i = 0; i < ni; i++) {
+                        int tw = gstr_px((const unsigned char*)gui_mb.items[m][i]);
+                        if (tw > pw) pw = tw;
+                    }
+                    pw += 24; if (pw < 96) pw = 96;
+                    int ph = ni * 16 + 2, px = 0, py = 18 + 18;
+                    if (px + pw > winw) px = winw - pw;
+                    if (my >= w->y + py && my < w->y + py + ph
+                        && mx >= w->x + px && mx < w->x + px + pw) {
+                        int it = (my - (w->y + py) - 1) / 16;
+                        if (it >= 0 && it < ni
+                            && gui_mb.items[m][it][0] != '-') {
+                            int ctl = -1;
+                            for (int kk = 0; kk < w->nwid; kk++)
+                                if (w->wd[kk].type == GW_MENU) { ctl = kk; break; }
+                            if (n < max) {
+                                ev[0] = GEV_CLICK; ev[1] = top; ev[2] = ctl;
+                                ev[3] = (m << 8) | it; n += 4; ev += 4;
+                            }
+                        }
+                        gui_mb_close();
+                        gcompose();
+                        goto kbd;
+                    }
+                    /* 点下拉外: 关菜单, 让点击继续处理其他控件 */
+                    if (!in_mb) gui_mb_close();
+                }
+                if (in_mb) {                                /* 标题列 → 打开/切换 */
+                    int tx = 4, mi = -1;
+                    for (int i = 0; i < gui_mb.nmenu; i++) {
+                        int tw = gstr_px((const unsigned char*)gui_mb.titles[i]);
+                        if (mx - (w->x + tx) >= 0 && mx - (w->x + tx) < tw + 16) {
+                            mi = i; break;
+                        }
+                        tx += tw + 16;
+                    }
+                    if (mi >= 0) {
+                        if (gui_mb.open == mi) gui_mb_close();
+                        else gui_mb_open_menu(mi);
+                        gcompose();
+                        goto kbd;
+                    }
+                    /* 点在条内但未命中标题: 关菜单 (避免下拉消失时仍点中) */
+                    if (gui_mb.open >= 0) gui_mb_close();
+                }
+                (void)wwww;
+            }
             /* body → 控件命中 */
             int ctl = -1, ch = 0;
             for (int i = 0; i < w->nwid; i++) {
                 gui_wid_t *g = &w->wd[i];
+                if (g->type == GW_MENU) continue;            /* v6.6 菜单栏在前面已处理 */
                 if (mx >= w->x + g->x && mx < w->x + g->x + g->w &&
                     my >= w->y + g->y && my < w->y + g->y + g->h) { ctl = i; break; }
             }
@@ -1797,6 +1852,8 @@ int gui_events(void *buf, int max) {
                     w->foc_wid = ctl; g->chk = !g->chk; ch = g->chk;
                 } else if (g->type == GW_RADIO) {   /* v6.6 单选: 同组互斥 */
                     w->foc_wid = ctl; gw_radio_check(w, g); ch = 1;
+                } else if (g->type == GW_BTN) {     /* v6.6 按钮: 点击也设焦点, 便于 TAB 导航 */
+                    w->foc_wid = ctl;
                 } else {
                     w->foc_wid = -1;
                 }
@@ -1888,6 +1945,53 @@ kbd:
                         n += 4; ev += 4;
                     }
                     key_pressed = 0; fhk = 1;
+                }
+            }
+        }
+        /* 4b) 按钮 / 复选 / 单选: 空格激活+方向键焦点步 (v6.6) */
+        if (!fhk && fk && foc_win >= 0 && foc_win < GW_MAXWIN && GUW[foc_win].used) {
+            gui_win_t *w = &GUW[foc_win];
+            int fw = w->foc_wid;
+            if (fw >= 0 && fw < w->nwid) {
+                gui_wid_t *g = &w->wd[fw];
+                if (g->type == GW_BTN) {
+                    if (fk == 1 && current_char == ' ') {    /* 空格 = 按下按钮 */
+                        key_pressed = 0; fhk = 1;
+                        gw_redraw(w); gcompose();
+                        if (n < max) {
+                            ev[0] = GEV_CLICK; ev[1] = foc_win; ev[2] = fw; ev[3] = 0;
+                            n += 4; ev += 4;
+                        }
+                    } else if (fk == 4 || fk == 5 || fk == 6 || fk == 7) {
+                        key_pressed = 0; fhk = 1;
+                        gw_focus_step(w, (fk == 4 || fk == 6) ? -1 : 1);
+                    }
+                } else if (g->type == GW_CHECK) {
+                    if (fk == 1 && current_char == ' ') {    /* 空格 = 切换 */
+                        key_pressed = 0; fhk = 1;
+                        g->chk = !g->chk;
+                        gw_redraw(w); gcompose();
+                        if (n < max) {
+                            ev[0] = GEV_CLICK; ev[1] = foc_win; ev[2] = fw; ev[3] = g->chk;
+                            n += 4; ev += 4;
+                        }
+                    } else if (fk == 4 || fk == 5 || fk == 6 || fk == 7) {
+                        key_pressed = 0; fhk = 1;
+                        gw_focus_step(w, (fk == 4 || fk == 6) ? -1 : 1);
+                    }
+                } else if (g->type == GW_RADIO) {
+                    if (fk == 1 && current_char == ' ') {    /* 空格 = 互斥勾选 */
+                        key_pressed = 0; fhk = 1;
+                        gw_radio_check(w, g);
+                        gw_redraw(w); gcompose();
+                        if (n < max) {
+                            ev[0] = GEV_CLICK; ev[1] = foc_win; ev[2] = fw; ev[3] = 1;
+                            n += 4; ev += 4;
+                        }
+                    } else if (fk == 4 || fk == 5 || fk == 6 || fk == 7) {
+                        key_pressed = 0; fhk = 1;
+                        gw_focus_step(w, (fk == 4 || fk == 6) ? -1 : 1);
+                    }
                 }
             }
         }
