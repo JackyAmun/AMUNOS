@@ -50,10 +50,11 @@ static int   gui_txused[GW_TXPOOL];
 #define GEV_ENTER 3
 #define GEV_CLOSE 4              /* 标题栏 ✕ 关闭: 内核已关窗, 通知程序 (主窗→退) */
 
-/* GUI (内核窗口服务器) 版本 — AMUNOS Classic GUI 0.1 (v6.5.3 携带)
- * 对应 docs/AMUNOS_Classic_GUI_设计与实现规划.md 的 GUI 0.1 里程碑:
- * Window/Button/Label/Edit/Textarea/List/中文 + 多窗口叠放 + 拖动chrome(最小/最大/关) + 文本选中。 */
-#define GUI_VERSION      "0.1"
+/* GUI (内核窗口服务器) 版本 — AMUNOS Classic GUI 0.2 (v6.5.3 携带)
+ * 对应 docs/AMUNOS_Classic_GUI_设计与实现规划.md 的 GUI 0.2 里程碑:
+ * Window/Button/Label/Edit/Textarea/List/中文 + 多窗口叠放 + 拖动chrome(最小/最大/关) + 文本选中。
+ * v6.6 增: Checkbox / Radio / Menu(Alt+字母) / TAB 焦点循环 / List 读回。 */
+#define GUI_VERSION      "0.2"
 #define GUI_VERSION_FULL "AMUNOS Classic GUI " GUI_VERSION
 
 /* 窗口状态 (v6.11) */
