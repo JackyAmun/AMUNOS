@@ -3,33 +3,33 @@
 
 // --- 1. 基础 I/O ---
 static inline void io_out8(unsigned short port, unsigned char data) {
-    __asm__ volatile ("outb %0, %1" : : "a"(data), "nd"(port));
+ __asm__ volatile ("outb %0, %1" : : "a"(data), "nd"(port));
 }
 static inline unsigned char io_in8(unsigned short port) {
-    unsigned char data;
-    __asm__ volatile ("inb %1, %0" : "=a"(data) : "nd"(port));
-    return data;
+ unsigned char data;
+ __asm__ volatile ("inb %1, %0" : "=a"(data) : "nd"(port));
+ return data;
 }
 
 static inline void io_out16(unsigned short port, unsigned short data) {
-    __asm__ volatile ("outw %0, %1" : : "a"(data), "nd"(port));
+ __asm__ volatile ("outw %0, %1" : : "a"(data), "nd"(port));
 }
 static inline unsigned short io_in16(unsigned short port) {
-    unsigned short data;
-    __asm__ volatile ("inw %1, %0" : "=a"(data) : "nd"(port));
-    return data;
+ unsigned short data;
+ __asm__ volatile ("inw %1, %0" : "=a"(data) : "nd"(port));
+ return data;
 }
 
 // --- 2. FAT12 结构定义 ---
 typedef struct {
-    char name[8];
-    char ext[3];
-    unsigned char attr;
-    unsigned char reserved[10];
-    unsigned short time;
-    unsigned short date;
-    unsigned short start_cluster;
-    unsigned int size;
+ char name[8];
+ char ext[3];
+ unsigned char attr;
+ unsigned char reserved[10];
+ unsigned short time;
+ unsigned short date;
+ unsigned short start_cluster;
+ unsigned int size;
 } __attribute__((packed)) FAT12Entry;
 
 // --- 3. 全局变量 ---
@@ -46,15 +46,15 @@ extern char cmd_buf[128];
 
 // 文件系统全局状态
 extern int current_drive_idx; // 0=A(主盘) 1=B(从盘) 2=C(次主盘) 3=D(次从盘)
-extern int cwd_cluster;       // 当前目录起始簇 (0=根目录)
-extern char cwd_path[128];    // 当前路径字符串
+extern int cwd_cluster; // 当前目录起始簇 (0=根目录)
+extern char cwd_path[128]; // 当前路径字符串
 
 // 导出 FS 布局参数供 DIR 命令使用
 extern int fs_root_lba;
 extern int fs_root_entries;
 extern int fs_data_lba;
-extern int fs_spc;        // 每簇扇区数 (BPB off 13; v6.5.1 FAT16)
-extern int fs_fat_bits;   // FAT 位宽 12/16 (v6.5.1 自动识别)
+extern int fs_spc; // 每簇扇区数 (BPB off 13; v6.5.1 FAT16)
+extern int fs_fat_bits; // FAT 位宽 12/16 (v6.5.1 自动识别)
 
 extern void put_num(unsigned int n);
 extern void update_cursor();
@@ -81,7 +81,7 @@ int fs_list_dir(int dir_cluster, FAT12Entry* out_buf, int max_entries);
 unsigned short fat12_get_next_cluster(unsigned short cluster);
 int fs_dir_secs(int dc);
 int fs_dir_lba(int dc, int idx);
-unsigned int fs_cluster_lba(unsigned int c);   // 簇 → 数据区首扇 LBA (FAT16 每簇多扇)
+unsigned int fs_cluster_lba(unsigned int c); // 簇 → 数据区首扇 LBA (FAT16 每簇多扇)
 void to_fat12_name(char* src, char* dest);
 
 // --- 5.1 盘符限定路径 (v6.5.1) ---
@@ -97,9 +97,9 @@ int fs_drive_present(int d);
 int strcmp(const char *s1, const char *s2);
 int strlen(const char *s);
 void strcpy(char *dst, const char *src);
-char to_upper(char c);  // 添加这一行
+char to_upper(char c); // 添加这一行
 char drive_letter(void);
-void cmd_ver();         // 添加这一行
+void cmd_ver(); // 添加这一行
 
 void put_char(char c, char color);
 void put_str(char *s);
@@ -109,22 +109,22 @@ void cls();
 // update_cursor() 隐藏硬件文本光标并重绘两个叠加。
 // 用户程序 (EDIT) 用 soft_cursor_at/hide/show 定位输入光标。
 void vga_overlay_refresh(void);
-void vga_overlay_selfheal(void);   // 定时器每 tick 重铺 (EDIT 重绘抹掉后自愈)
+void vga_overlay_selfheal(void); // 定时器每 tick 重铺 (EDIT 重绘抹掉后自愈)
 void vga_mouse_redraw(void);
 void vga_poke(int x, int y, unsigned char ch, unsigned char attr);
 void soft_cursor_at(int x, int y);
 void soft_cursor_hide(void);
 void soft_cursor_show(void);
-void soft_mouse_hide(void);           // 隐藏鼠标叠加 (getvideo 捕获背景期间)
+void soft_mouse_hide(void); // 隐藏鼠标叠加 (getvideo 捕获背景期间)
 void soft_mouse_show(void);
-void vga_enable_softbuf(void);        // 图形模式: vram 切到软件缓冲 (v6.8)
+void vga_enable_softbuf(void); // 图形模式: vram 切到软件缓冲 (v6.8)
 const unsigned char *vga_textbuf(void); // 渲染器读取的文本缓冲
-unsigned long vga_vram_base(void);     // SYS_VIDEO_BASE: 当前文本缓冲基址 (v6.8)
+unsigned long vga_vram_base(void); // SYS_VIDEO_BASE: 当前文本缓冲基址 (v6.8)
 void vga_cjk_set(int x, int y, unsigned gb); // 汉字占两格, 记 GB 码 (v6.8 中文)
-void vga_cjk_box(int x, int y);       // 替换框 □ 占两格 (v6.8 UTF-8 未收录字)
-void vga_cjk_ascii(int x, int y);     // 写 ASCII 前清该格汉字标记
+void vga_cjk_box(int x, int y); // 替换框 □ 占两格 (v6.8 UTF-8 未收录字)
+void vga_cjk_ascii(int x, int y); // 写 ASCII 前清该格汉字标记
 unsigned short vga_cjk_at(int x, int y); // 渲染器查询格标记 (0=ASCII/GB=汉字左/0xFFFF=右)
-void vga_cjk_clear_all(void);         // 用户程序启动前清空 (防鬼影汉字)
+void vga_cjk_clear_all(void); // 用户程序启动前清空 (防鬼影汉字)
 void put_cjk_str(const unsigned char *s, char color); // GB2312 感知输出 (v6.8)
 void vga_cjk_place_gb(int x, int y, unsigned gb, int fg, int bg); // v6.8.1 SYS_CJKWCHAR: 绝对格放汉字
 
@@ -156,11 +156,11 @@ void *timer_schedule(unsigned *frame);
 int elf_load(unsigned char *buf, int size);
 
 // --- 10. 用户程序控制 (前台程序任务 + 强制终止) ---
-extern volatile int force_kill;   // Ctrl+C 置 1
-extern volatile int prog_active;  // 前台程序任务运行中
-extern volatile int prog_killed;  // 前台程序被 Ctrl+C 强杀
-extern int prog_exit_status;      // SYS_EXIT 的退出码
-void force_terminate(void);       // 定时器中断重定向入口 (CPU 密集死循环强杀)
+extern volatile int force_kill; // Ctrl+C 置 1
+extern volatile int prog_active; // 前台程序任务运行中
+extern volatile int prog_killed; // 前台程序被 Ctrl+C 强杀
+extern int prog_exit_status; // SYS_EXIT 的退出码
+void force_terminate(void); // 定时器中断重定向入口 (CPU 密集死循环强杀)
 
 // --- 11. FS 覆盖写 (syscall fd 层落盘用) ---
 void fs_write_file(char* name, char* data, int size);
@@ -169,19 +169,19 @@ void fs_write_file(char* name, char* data, int size);
 void serial_init(void);
 void serial_putc(char c);
 void serial_puts(char *s);
-int  serial_getc(void);
+int serial_getc(void);
 void lpt_putc(char c);
 void lpt_puts(char *s);
 
 // --- 12.0 软件文本渲染器 (fb.c, v6.8 中文): VBE 帧缓冲 + HZK16 ---
-int fb_active(void);                              // 图形渲染器是否启用
-void fb_init(void);                               // 读 boot.asm 0x1500 fb 参数
-void fb_font_init(void);                          // 从 C:HZK16 加载字库到堆
-void fb_render(void);                             // 0xB8000 → 帧缓冲 (定时器钩子)
+int fb_active(void); // 图形渲染器是否启用
+void fb_init(void); // 读 boot.asm 0x1500 fb 参数
+void fb_font_init(void); // 从 C:HZK16 加载字库到堆
+void fb_render(void); // 0xB8000 → 帧缓冲 (定时器钩子)
 void fb_put_str_cjk(int cellx, int celly,
-                    const unsigned char *s, int fg, int bg);  // GB2312 演示
-unsigned fb_uni_to_gb(unsigned uni);   // Unicode→GB2312 二分查找 (v6.8 UTF-8)
-int fb_is_boxcode(unsigned char b);    // 框线/滑块/箭头字节? (v6.8.1, CJK 判定前短路用)
+ const unsigned char *s, int fg, int bg); // GB2312 演示
+unsigned fb_uni_to_gb(unsigned uni); // Unicode→GB2312 二分查找 (v6.8 UTF-8)
+int fb_is_boxcode(unsigned char b); // 框线/滑块/箭头字节? (v6.8.1, CJK 判定前短路用)
 /* GUI 窗口服务器访问器 (gui.c 直接写帧缓冲/取字库) */
 unsigned fb_vbe_base(void);
 int fb_vbe_bpl(void);
@@ -191,16 +191,16 @@ unsigned char *fb_hzk16(void);
 
 // --- 12.1 PS/2 鼠标 (mouse.c, IRQ12 → 0x2C) ---
 void mouse_init(void);
-int mouse_installed_k(void);   // 驱动是否就绪
+int mouse_installed_k(void); // 驱动是否就绪
 int mouse_buttons_state(void); // 按钮位 (bit0 左 bit1 右 bit2 中)
-int mouse_char_x(void);        // 字符格列 0-79
-int mouse_char_y(void);        // 字符格行 0-24
-int mouse_px_x(void);          // 原始像素 X (GUI 命中测试)
-int mouse_px_y(void);          // 原始像素 Y (GUI 命中测试)
-int mouse_lbutton(void);       // 左键按下? (GUI 点击投递)
+int mouse_char_x(void); // 字符格列 0-79
+int mouse_char_y(void); // 字符格行 0-24
+int mouse_px_x(void); // 原始像素 X (GUI 命中测试)
+int mouse_px_y(void); // 原始像素 Y (GUI 命中测试)
+int mouse_lbutton(void); // 左键按下? (GUI 点击投递)
 
 // --- 13.0 GUI 窗口服务器 (gui.c, v6.9) ---
-extern int gui_active;         // 1 = GUI 接管屏幕 (fb_render/叠加层停用)
+extern int gui_active; // 1 = GUI 接管屏幕 (fb_render/叠加层停用)
 int gui_enter(void);
 void gui_leave(void);
 int gui_win(int x, int y, int w, int h, const char *title);
@@ -210,24 +210,24 @@ int gui_btn(int win, int cx, int cy, const char *label);
 int gui_lbl(int win, int x, int y, const char *text);
 int gui_edit(int win, int cx, int cy, int w);
 int gui_list(int win, int x, int y, int w, int h);
-int gui_list_set(int win, int ctl, const char *str);   // 追加/替换项, 空串清空
-int gui_wnd_text(int win, int ctl, const char *str);   // 设控件文本 (按钮/标签/输入框)
-int gui_tarea(int win, int x, int y, int w, int h);    // 建多行文本区 → ctl
+int gui_list_set(int win, int ctl, const char *str); // 追加/替换项, 空串清空
+int gui_wnd_text(int win, int ctl, const char *str); // 设控件文本 (按钮/标签/输入框)
+int gui_tarea(int win, int x, int y, int w, int h); // 建多行文本区 → ctl
 int gui_tarea_set(int win, int ctl, const char *str, int len); // 设文本区内容 (len 字节)
-int gui_tarea_get(int win, int ctl, char *buf, int max);       // 读回文本区内容 → 字节数
-int gui_list_get(int win, int ctl, char *buf, int max);        // v6.6 读回 list 选中项文本 → 选中索引
-int gui_list_n(int win, int ctl);                               // v6.6 list 项数
-int gui_check(int win, int x, int y, const char *label);       // v6.6 复选框 → ctl
-int gui_check_set(int win, int ctl, int state);                // v6.6 复选/单选置状态
-int gui_radio(int win, int x, int y, const char *label);       // v6.6 单选钮 → ctl
-int gui_menubar(int win);                                      // v6.6 菜单栏 → ctl (GW_MENU)
-int gui_menu_add(int win, int ctl, const char *title);         // v6.6 加菜单 (title "Xxx(F)") → 菜单索引
-int gui_menu_item(int win, int ctl, int menu, const char *item); // v6.6 加项 ("-" = 分隔) → 项索引
-int gui_edit_char(int win, int ctl, int ch);           // 输入框编辑: 打印字符在光标处插入;
-                                                       //   '\b'退格 128← 129→ 132HOME 133END 127DEL
+int gui_tarea_get(int win, int ctl, char *buf, int max); // 读回文本区内容 → 字节数
+int gui_list_get(int win, int ctl, char *buf, int max); // 读回 list 选中项文本 → 选中索引
+int gui_list_n(int win, int ctl); // list 项数
+int gui_check(int win, int x, int y, const char *label); // 复选框 → ctl
+int gui_check_set(int win, int ctl, int state); // 复选/单选置状态
+int gui_radio(int win, int x, int y, const char *label); // 单选钮 → ctl
+int gui_menubar(int win); // 菜单栏 → ctl (GW_MENU)
+int gui_menu_add(int win, int ctl, const char *title); // 加菜单 (title "Xxx(F)") → 菜单索引
+int gui_menu_item(int win, int ctl, int menu, const char *item); // 加项 ("-" = 分隔) → 项索引
+int gui_edit_char(int win, int ctl, int ch); // 输入框编辑: 打印字符在光标处插入;
+ // '\b'退格 128← 129→ 132HOME 133END 127DEL
 int gui_fill(int win, int x, int y, int w, int h, unsigned short color);
 int gui_text(int win, int x, int y, const char *str);
 int gui_dialog(int parent, int w, int h, const char *title); // 弹窗 → 新窗 id
-int gui_events(void *buf, int max);  // 取一批事件, 返回个数
+int gui_events(void *buf, int max); // 取一批事件, 返回个数
 
 #endif
