@@ -16,13 +16,24 @@ static const char *cities[] = {
 
 /* 多行文本区演示 (保留) */
 static char edbuf[2048];
-static int ewin = -1, ed_ta = -1, ed_ok = -1, ed_st = -1;
+static int ewin = -1, ed_ta = -1, ed_sb = -1;
 
 static int gstrlen(const char *s) { const char *p = s; while (*p) p++; return (int)(p - s); }
 static void appdec(char *s, int v) { while (*s) s++; char t[12]; int i = 0;
  do { t[i++] = (char)('0' + v % 10); v /= 10; } while (v);
  while (i--) *s++ = t[i]; *s = 0; }
 static void appstr(char *s, const char *p) { while (*p) { s[gstrlen(s)] = *p; s[gstrlen(s)+1] = 0; p++; } }
+/* 回读文本区内容 → 状态栏 (取代原"读回"按钮): bytes= 字节数, lines= 行数 */
+static void ed_update_sb(void) {
+ if (ewin < 0 || ed_ta < 0 || ed_sb < 0) return;
+ int n = sys_gui_tarea_get(ewin, ed_ta, edbuf, sizeof(edbuf));
+ int lines = 1;
+ for (int i = 0; i < n; i++) if (edbuf[i] == '\n') lines++;
+ char s[48]; s[0] = 0;
+ appstr(s, "UTF-8 | bytes="); appdec(s, n);
+ appstr(s, " | lines="); appdec(s, lines);
+ sys_gui_wnd_text(ewin, ed_sb, s);
+}
 
 int main(void) {
  if (sys_gui_enter() < 0) return -1;
@@ -124,16 +135,7 @@ int main(void) {
  if (ev[i].ctl == dlg_ok) { sys_gui_win_close(dlg); dlg = -1; }
  continue;
  }
- if (ev[i].win == ewin && ed_ok >= 0 && ev[i].ctl == ed_ok) {
- int n = sys_gui_tarea_get(ewin, ed_ta, edbuf, sizeof(edbuf));
- int lines = 1;
- for (int i = 0; i < n; i++) if (edbuf[i] == '\n') lines++;
- char s[48]; s[0] = 0;
- appstr(s, "textarea bytes="); appdec(s, n);
- appstr(s, " lines="); appdec(s, lines);
- sys_gui_wnd_text(ewin, ed_st, s);
- continue;
- }
+ if (ev[i].win == ewin) { ed_update_sb(); continue; } /* 点记事簿任意处刷新状态栏 */
  if (ev[i].win != win) continue;
  int c = ev[i].ctl;
  if (c == b_pop) {
@@ -151,8 +153,8 @@ int main(void) {
  const char *init =
  "第一行 Hello 中文\n第二行 中英混合 abc 123\n第三行 你好, AMUNOS!\n";
  sys_gui_tarea_set(ewin, ed_ta, init, gstrlen(init));
- ed_ok = sys_gui_btn(ewin, 8, 300, "读回");
- ed_st = sys_gui_lbl(ewin, 96, 310, "按 读回 看字节/行数");
+ ed_sb = sys_gui_statusbar(ewin, 8, 330, 404, "UTF-8 | bytes=- | lines=-");
+ ed_update_sb(); /* 初始即回读显示 */
  }
  } else if (c == b_exit) { sys_gui_leave(); return 0; }
  else if (c == chk_b || c == chk_i) {
@@ -173,6 +175,7 @@ int main(void) {
  sys_gui_wnd_text(win, st, s);
  }
  } else if (ev[i].type == GEV_KEY) {
+ if (ev[i].win == ewin) { ed_update_sb(); continue; } /* 编辑中实时刷新状态栏 */
  if (ev[i].win != win) continue;
  int c = ev[i].ch;
  char s[48]; s[0] = 0;
@@ -193,7 +196,7 @@ int main(void) {
  if (ev[i].win == win) sys_gui_wnd_text(win, st, "回车 (确认列表/编辑)");
  } else if (ev[i].type == GEV_CLOSE) {
  if (ev[i].win == win) { sys_gui_leave(); return 0; }
- if (ev[i].win == ewin) { ewin = -1; ed_ta = ed_ok = ed_st = -1; }
+ if (ev[i].win == ewin) { ewin = -1; ed_ta = ed_sb = -1; }
  if (ev[i].win == dlg) { dlg = -1; }
  }
  }

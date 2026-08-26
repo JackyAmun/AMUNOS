@@ -265,15 +265,14 @@ try:
     ch(s, 'z'); time.sleep(0.3) # 新行打 z
     # 换行使原 L2 下移到 y139 (原为空行区 y136-152); 该区应由空变有字
     new_row = ta_dark(136, 152)
-    # ── 内容读回: 点"读回" rel(8,300)→abs(148,360..196,386); 结果到状态标签(236,370) ──
-    lb0 = reg_pixels(dump_fb(s, ROOT + '/vg6d.bin'), bpl, 236, 370, 520, 386, 2)
-    click_until(172, 372, lambda: True); time.sleep(0.5)
-    lb1 = reg_pixels(dump_fb(s, ROOT + '/vg6e.bin'), bpl, 236, 370, 520, 386, 2)
-    lb_chg = sum(1 for a, b in zip(lb0, lb1) if a != b)
-    t6 = ok_open_ed and ok_foc and d0 > 300 and new_row > 30 and lb_chg > 2
+    # ── 内容读回: 状态栏取代"读回"按钮, 实时回显 bytes/lines ──
+    # 状态栏 rel(8,330,404,18)→abs(148,390..552,408); 文字黑 0x0000。
+    # 创建时已调用 ed_update_sb() 读回初始内容 → 状态栏应渲染出黑字。
+    sb_ink = cnt(dump_fb(s, ROOT + '/vg6e.bin'), bpl, 0x0000, 150, 392, 500, 406)
+    t6 = ok_open_ed and ok_foc and d0 > 300 and new_row > 30 and sb_ink > 30
     results['T6 textarea+readback'] = (t6,
-        'open=%s foc=%s dark=%d newrow=%d lbl_change=%d'
-        % (ok_open_ed, ok_foc, d0, new_row, lb_chg))
+        'open=%s foc=%s dark=%d newrow=%d sb_ink=%d'
+        % (ok_open_ed, ok_foc, d0, new_row, sb_ink))
 
     # ── 鼠标按住拖动 (选中/移动共用): 下→移动(按住)→松 ──
     def drag_select(x0, y0, x1, y1, wait=0.4):

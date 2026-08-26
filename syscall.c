@@ -519,6 +519,8 @@ void syscall_handler(unsigned *frame) {
  case 33: result = gui_wnd_text(a1, a2, (const char*)a3); break;
  case 34: result = gui_btn(a1, a2 & 0xFFFF, (a2 >> 16) & 0xFFFF, (const char*)a3); break;
  case 35: result = gui_lbl(a1, a2 & 0xFFFF, (a2 >> 16) & 0xFFFF, (const char*)a3); break;
+ case 55: result = gui_statusbar(a1 & 0xFFFF, a2 & 0xFFFF, (a2 >> 16) & 0xFFFF,
+  (a1 >> 16) & 0xFFFF, (const char*)a3); break;
  case 36: result = gui_edit(a1, a2 & 0xFFFF, (a2 >> 16) & 0xFFFF, a3 & 0xFFFF); break;
  case 37: result = gui_list(a1, a2 & 0xFFFF, (a2 >> 16) & 0xFFFF,
  a3 & 0xFFFF, (a3 >> 16) & 0xFFFF); break;

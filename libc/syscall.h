@@ -71,6 +71,7 @@
 #define SYS_GUI_MENUBAR 52 /* 菜单栏 (win) → ctl (GW_MENU 伪控件) */
 #define SYS_GUI_MENU_ADD 53 /* 加菜单 (win, ctl, title) → 菜单索引 */
 #define SYS_GUI_MENU_ITEM 54 /* 加项 (win, (menu<<16)|ctl, item) → 项索引; "-" 分隔 */
+#define SYS_GUI_STATUSBAR 55 /* 建状态栏 (win|(w<<16), pack(x,y), text) → ctl */
 
 /* 事件类型 (gui_ev_t.type) */
 #define GEV_CLICK 1
@@ -258,6 +259,10 @@ static inline int sys_gui_btn(int win, int cx, int cy, const char *label) {
 }
 static inline int sys_gui_lbl(int win, int x, int y, const char *str) {
  return (int)syscall3(SYS_GUI_LBL, win, (long)((x & 0xFFFF) | ((unsigned)y << 16)), (long)str);
+}
+static inline int sys_gui_statusbar(int win, int x, int y, int w, const char *str) {
+ return (int)syscall3(SYS_GUI_STATUSBAR, win | ((long)w << 16),
+  (long)((x & 0xFFFF) | ((unsigned)y << 16)), (long)str);
 }
 static inline int sys_gui_edit(int win, int cx, int cy, int w) {
  return (int)syscall3(SYS_GUI_EDIT, win, (long)((cx & 0xFFFF) | ((unsigned)cy << 16)), w);

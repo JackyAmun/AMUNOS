@@ -208,6 +208,7 @@ int gui_win_close(int id);
 int gui_win_raise(int id);
 int gui_btn(int win, int cx, int cy, const char *label);
 int gui_lbl(int win, int x, int y, const char *text);
+int gui_statusbar(int win, int x, int y, int w, const char *text); // 状态栏控件
 int gui_edit(int win, int cx, int cy, int w);
 int gui_list(int win, int x, int y, int w, int h);
 int gui_list_set(int win, int ctl, const char *str); // 追加/替换项, 空串清空

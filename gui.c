@@ -37,6 +37,7 @@ static unsigned ggb(const unsigned char *s); /* LFB 文本用 */
 #define GW_CHECK 5 /* 复选框: chk=是否勾选 */
 #define GW_RADIO 6 /* 单选钮: chk/grp=选中+互斥组 */
 #define GW_MENU 7 /* 菜单栏 (gui_mb 全局) */
+#define GW_STATUSBAR 8 /* 状态栏: 窗底横条显示状态文本 */
 
 /* 多行文本区: 内容放独立固定槽池 (每槽 TX_SIZE 字节), 而非塞进 gui_wid_t 的
  * txt[64] — 避免结构体阵列被放大几百 KB。槽由 gw_new 分配, 关闭/替换时释放。 */
@@ -598,6 +599,15 @@ static void gw_draw(gui_win_t *w, gui_wid_t *wd) {
  gtext(b, bw, bh, wd->x, wd->y, (const unsigned char*)wd->txt, C_TEXT, 0, 0);
  break;
  }
+ case GW_STATUSBAR: {
+ /* 状态栏: 窗底凹陷横条 — 灰底 + 顶部暗分隔线 + 黑字 (工业计算机质感) */
+ gfill(b, bw, bh, wd->x, wd->y, wd->w, wd->h, C_BTNBG);
+ gfill(b, bw, bh, wd->x, wd->y, wd->w, 1, C_BTNBDR); /* 顶部暗分隔线 */
+ int tw = gstr_px((const unsigned char*)wd->txt);
+ if (tw > 0) gtext(b, bw, bh, wd->x + 4, wd->y + (wd->h - 16) / 2,
+  (const unsigned char*)wd->txt, C_TEXT, C_BTNBG, 1);
+ break;
+ }
  case GW_EDIT: {
  gfill(b, bw, bh, wd->x, wd->y, wd->w, wd->h, C_EDBG);
  gborder(b, bw, bh, wd->x, wd->y, wd->w, wd->h, C_EDBDR);
@@ -743,6 +753,10 @@ static void gw_redraw(gui_win_t *w) {
  if (w->state != W_MIN) { /* 最小化条只留标题带 (无控制钮/下划线) */
  gdraw_chrome(w->buf, w->w, w->h, w->w, isfoc);
  gfill(w->buf, w->w, w->h, 0, 19, w->w, 1, C_BTNBDR);
+ } else { /* 最小化条: 右侧画 ▢ 图标 (12x10) 提示"可点击最大化" */
+ int mx = w->w - 16, my = 3, mw = 12, mh = 10;
+ gborder(w->buf, w->w, w->h, mx, my, mw, mh, C_TITLEFG);
+ gfill(w->buf, w->w, w->h, mx + 2, my + 2, mw - 4, mh - 4, band);
  }
  for (int i = 0; i < w->nwid; i++) gw_draw(w, &w->wd[i]);
 }
@@ -1264,6 +1278,14 @@ int gui_lbl(int win, int x, int y, const char *text) {
  return id;
 }
 
+int gui_statusbar(int win, int x, int y, int w, const char *text) {
+ if (!gui_active || win < 0 || win >= GW_MAXWIN || !GUW[win].used) return -1;
+ if (w < 20) w = 20;
+ int id = gw_new(&GUW[win], GW_STATUSBAR, x, y, w, 18);
+ if (id >= 0) gcopy(GUW[win].wd[id].txt, text ? text : "", 64);
+ return id;
+}
+
 int gui_edit(int win, int cx, int cy, int w) {
  if (!gui_active || win < 0 || win >= GW_MAXWIN || !GUW[win].used) return -1;
  if (w > 56 * 8) w = 56 * 8; if (w < 20) w = 20;
@@ -1655,7 +1677,13 @@ int gui_events(void *buf, int max) {
  if (dw->x == dw->rx && dw->y == dw->ry) {
  dw->x = dw->rx; dw->y = dw->ry;
  dw->w = dw->rw; dw->h = dw->rh;
- dw->state = W_NORM;
+ /* 还原到之前的状态: 若还原矩形=全屏 → 还原到 W_MAX (修"最小化后无法
+ * 最大化"bug: 之前总是 W_NORM, 即便之前是 MAX 也会被强降) */
+ int fbw = fb_vbe_w(), fbh = fb_vbe_h();
+ if (dw->rx == 0 && dw->ry == 0 && dw->rw == fbw && dw->rh == fbh)
+  dw->state = W_MAX;
+ else
+  dw->state = W_NORM;
  gw_redraw(dw);
  }
  /* 最小化条被移: 不变状态, 整屏合成补暴露区 */
@@ -1723,12 +1751,22 @@ int gui_events(void *buf, int max) {
  /* ── 新按 → 命中窗口/chrome/控件 ── */
  if (lb && !was) {
  int top = -1, topz = -1, need_full = 0;
- for (int k = 0; k < GW_MAXWIN; k++) {
- gui_win_t *w = &GUW[k];
- if (!w->used) continue;
- /* 可见高度用 w_draw_h: 最小化条只占 18px, 不可见主体不得命中 */
- if (mx >= w->x && mx < w->x + w->w && my >= w->y && my < w->y + w_draw_h(w))
- if (w->z > topz) { topz = w->z; top = k; }
+ /* 弹层在所有窗之上 (直写 LFB): 点击落在打开弹层内 → 强制路由到菜单窗。
+ * 修"在当前窗选中后点击会跳到下层窗": 弹层盖住下层窗时, 下层窗几何上
+ * 反而是该点最高窗口, 原循环会 raise 它并点它的控件而非激活菜单项。 */
+ int pop_hit = (gui_mb.used && gui_mb.open >= 0
+  && mx >= gui_mb.pop_x && mx < gui_mb.pop_x + gui_mb.pop_w
+  && my >= gui_mb.pop_y && my < gui_mb.pop_y + gui_mb.pop_h);
+ if (pop_hit && gui_mb.win >= 0 && gui_mb.win < GW_MAXWIN && GUW[gui_mb.win].used) {
+  top = gui_mb.win; /* 弹层可能伸出窗沿, 不能靠几何命中判定 */
+ } else {
+  for (int k = 0; k < GW_MAXWIN; k++) {
+  gui_win_t *w = &GUW[k];
+  if (!w->used) continue;
+  /* 可见高度用 w_draw_h: 最小化条只占 18px, 不可见主体不得命中 */
+  if (mx >= w->x && mx < w->x + w->w && my >= w->y && my < w->y + w_draw_h(w))
+  if (w->z > topz) { topz = w->z; top = k; }
+  }
  }
  if (top >= 0) {
  gui_win_t *w = &GUW[top];
@@ -1747,8 +1785,17 @@ int gui_events(void *buf, int max) {
  int in_title = (my >= w->y && my < w->y + 18);
  int chrome_x = w->x + w->w - CHROME_N * CHROME_W;
 
- /* 点最小化条 → 拖动模式 (按住移动 = 移动最小化条; 短按未移 = 还原) */
+ /* 点最小化条 → 拖动模式 (按住移动 = 移动最小化条; 短按未移 = 还原)
+ * 例外: 点 ▢ 图标区 (右侧 16px 内) → 直接最大化 (修"最小化后无法最大化"bug) */
  if (in_title && w->state == W_MIN) {
+ if (mx >= w->x + w->w - 16 && mx < w->x + w->w && my >= w->y + 2 && my < w->y + 14) {
+  int fbw = fb_vbe_w(), fbh = fb_vbe_h();
+  w->x = 0; w->y = 0; w->w = fbw; w->h = fbh; w->state = W_MAX;
+  unsigned short *nb = (unsigned short*)mem_alloc((unsigned)fbw * (unsigned)fbh * 2);
+  if (nb) { mem_free(w->buf); w->buf = nb; }
+  gw_redraw(w); gui_dirty = 1; dirty_win = -1; gcompose();
+  goto kbd;
+ }
  drag_win = top; drag_offx = mx - w->x; drag_offy = my - w->y;
  /* 不立即还原: 松开时若未移 → 还原, 已移 → 保持最小化在新位 */
  goto kbd;
