@@ -532,16 +532,23 @@ static inline int gw_isfoc(const gui_win_t *w, const gui_wid_t *wd) {
  return (foc_win >= 0 && w == &GUW[foc_win] && wd == &w->wd[w->foc_wid]);
 }
 
-/* 复选框盒 (): 14×14 边框盒; 勾选画 √; 聚焦外画 1px 亮环 */
+/* 复选框盒: 14×14 边框盒; 勾选画 2px 宽的 √ (下折→上挑), 顶点≈(5,10),
+ * 起点≈(2,7), 终点≈(12,3), 整笔画居中清晰 */
 static void gchk_box(unsigned short *b, int bw, int bh,
  int x, int y, int checked, int isfoc) {
  gfill(b, bw, bh, x, y, 14, 14, C_EDBG);
  gborder(b, bw, bh, x, y, 14, 14, isfoc ? C_TITLEFX : C_BTNBDR);
- if (checked) { /* √: 左上→右下斜 + 折向上右上 */
- for (int k = 0; k < 4; k++) gpx(b, bw, bh, x + 3 + k, y + 5 + k, C_TEXT);
- for (int k = 0; k < 5; k++) gpx(b, bw, bh, x + 4 + k, y + 6 + k, C_TEXT);
- for (int k = 0; k < 6; k++) gpx(b, bw, bh, x + 6 + k, y + 9 - k, C_TEXT);
- for (int k = 0; k < 6; k++) gpx(b, bw, bh, x + 6 + k, y + 10 - k, C_TEXT);
+ if (checked) {
+ /* 下折笔 2px: (2,7)(2,8)(3,8)(3,9)(4,9)(4,10)(5,10)(5,11) */
+ int dl[8][2] = {{2,7},{2,8},{3,8},{3,9},{4,9},{4,10},{5,10},{5,11}};
+ /* 上挑笔 2px: (5,10)(5,11)(6,9)(6,10)(7,8)(7,9)(8,7)(8,8)(9,6)(9,7)
+ * (10,5)(10,6)(11,4)(11,5)(12,3)(12,4) */
+ int ul[16][2] = {{5,10},{5,11},{6,9},{6,10},{7,8},{7,9},{8,7},{8,8},
+ {9,6},{9,7},{10,5},{10,6},{11,4},{11,5},{12,3},{12,4}};
+ for (int k = 0; k < 8; k++)
+ gpx(b, bw, bh, x + dl[k][0], y + dl[k][1], C_TEXT);
+ for (int k = 0; k < 16; k++)
+ gpx(b, bw, bh, x + ul[k][0], y + ul[k][1], C_TEXT);
  }
 }
 
@@ -583,9 +590,14 @@ static void gw_draw(gui_win_t *w, gui_wid_t *wd) {
  if (gfoc) gfocus_ring(w, wd); /* 聚焦亮框 */
  break;
  }
- case GW_LBL:
+ case GW_LBL: {
+ /* 透明背景: 显式清掉文字所占矩形, 防止"新短文覆盖在旧长文后面"残影。
+ * gw_redraw 虽已整窗清 C_WINBG, 但保险: 按文字实际像素宽清一次。 */
+ int tw = gstr_px((const unsigned char*)wd->txt);
+ if (tw > 0) gfill(b, bw, bh, wd->x, wd->y, tw, 16, C_WINBG);
  gtext(b, bw, bh, wd->x, wd->y, (const unsigned char*)wd->txt, C_TEXT, 0, 0);
  break;
+ }
  case GW_EDIT: {
  gfill(b, bw, bh, wd->x, wd->y, wd->w, wd->h, C_EDBG);
  gborder(b, bw, bh, wd->x, wd->y, wd->w, wd->h, C_EDBDR);
@@ -602,9 +614,12 @@ static void gw_draw(gui_win_t *w, gui_wid_t *wd) {
  }
  int isfoc = (w == &GUW[foc_win >= 0 ? foc_win : 0] && wd == &w->wd[w->foc_wid]
  && w->foc_wid >= 0);
- if (isfoc) { /* 块状光标 (在光标字节处, 非恒在串尾) */
+ if (isfoc) { /* 块状光标 (在光标字节处, 非恒在串尾), 2px 宽更醒目 */
  int cx = wd->x + 3 + gcaret_px(wd->txt, wd->caret);
- for (int r = 0; r < 14; r++) gpx(b, bw, bh, cx, wd->y + 1 + r, 0xFC30);
+ for (int r = 0; r < 14; r++) {
+ gpx(b, bw, bh, cx, wd->y + 1 + r, 0xFC30);
+ gpx(b, bw, bh, cx + 1, wd->y + 1 + r, 0xFC30);
+ }
  }
  break;
  }
@@ -662,7 +677,11 @@ static void gw_draw(gui_win_t *w, gui_wid_t *wd) {
  int cls = gtx_line_start(buf, len, wd->txc);
  int clp = gtx_px(buf, cls, wd->txc, gtx_line_end(buf, len, wd->txc));
  int cx = wd->x + 2 + clp, cy = wd->y + 1 + (crow - wd->txsc) * 16;
- for (int r = 0; r < 14; r++) gpx(b, bw, bh, cx, cy + r, 0xFC30);
+ /* 2px 宽块光标 */
+ for (int r = 0; r < 14; r++) {
+ gpx(b, bw, bh, cx, cy + r, 0xFC30);
+ gpx(b, bw, bh, cx + 1, cy + r, 0xFC30);
+ }
  }
  break;
  }
@@ -1630,7 +1649,19 @@ int gui_events(void *buf, int max) {
  }
  /* ── 松开边沿 → 结束拖窗/拖选 (保留选区) ── */
  if (was && !lb) {
- if (drag_win >= 0) { gui_dirty = 1; dirty_win = -1; gfull_force = 1; } /* 拖完收尾兜底 */
+ if (drag_win >= 0 && drag_win < GW_MAXWIN && GUW[drag_win].used) {
+ gui_win_t *dw = &GUW[drag_win];
+ if (dw->state == W_MIN) { /* 最小化窗被拖: 未移 → 还原; 已移 → 保持最小化 */
+ if (dw->x == dw->rx && dw->y == dw->ry) {
+ dw->x = dw->rx; dw->y = dw->ry;
+ dw->w = dw->rw; dw->h = dw->rh;
+ dw->state = W_NORM;
+ gw_redraw(dw);
+ }
+ /* 最小化条被移: 不变状态, 整屏合成补暴露区 */
+ }
+ gui_dirty = 1; dirty_win = -1; gfull_force = 1; /* 拖完收尾兜底 */
+ }
  drag_win = -1; sel_drag_w = sel_drag_k = -1;
  }
 
@@ -1716,11 +1747,10 @@ int gui_events(void *buf, int max) {
  int in_title = (my >= w->y && my < w->y + 18);
  int chrome_x = w->x + w->w - CHROME_N * CHROME_W;
 
- /* 点最小化条任意处 → 还原 */
+ /* 点最小化条 → 拖动模式 (按住移动 = 移动最小化条; 短按未移 = 还原) */
  if (in_title && w->state == W_MIN) {
- w->x = w->rx; w->y = w->ry; w->w = w->rw; w->h = w->rh;
- w->state = W_NORM;
- gw_redraw(w); gui_dirty = 1; dirty_win = -1; gcompose();
+ drag_win = top; drag_offx = mx - w->x; drag_offy = my - w->y;
+ /* 不立即还原: 松开时若未移 → 还原, 已移 → 保持最小化在新位 */
  goto kbd;
  }
  /* chrome 三钮 (仅正常窗口显示) */
