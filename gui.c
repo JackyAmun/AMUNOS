@@ -781,8 +781,8 @@ static void gw_redraw(gui_win_t *w) {
  if (used + cw > maxw) { over = 1; break; }
  used += cw; n += cl;
  }
- gtx_line(w->buf, w->w, w->h, 4, 1, w->title, 0, n, C_TITLEFG, band, 1);
- if (over) gtext(w->buf, w->w, w->h, 4 + used, 1,
+ gtx_line(w->buf, w->w, w->h, 4, 2, w->title, 0, n, C_TITLEFG, band, 1);
+ if (over) gtext(w->buf, w->w, w->h, 4 + used, 2,
  (const unsigned char*)"...", C_TITLEFG, band, 1);
  if (w->state != W_MIN) { /* 最小化条只留标题带 (无控制钮/下划线) */
  gdraw_chrome(w->buf, w->w, w->h, w->w, isfoc);
@@ -1333,8 +1333,10 @@ void gui_leave(void) {
  gui_active = 0;
  for (int k = 0; k < GW_MAXWIN; k++)
  if (GUW[k].used) { if (GUW[k].buf) mem_free(GUW[k].buf); GUW[k].used = 0; }
- foc_win = -1; gui_zmax = 0;
+ foc_win = -1; gui_zmax = 0; active_win = -1;
  drag_win = -1; sel_drag_w = -1;
+ for (int s = 0; s < GW_TXPOOL; s++) gui_txused[s] = 0;
+ gui_mb.used = 0; gui_mb.win = -1; gui_mb.open = -1; gui_mb.hilite = -1;
  cls();
 }
 
@@ -1384,6 +1386,9 @@ int gui_win_close(int id) {
  if (!gui_active || id < 0 || id >= GW_MAXWIN || !GUW[id].used) return -1;
  int ex = GUW[id].x, ey = GUW[id].y, ew = GUW[id].w, eh = w_draw_h(&GUW[id]);
  if (GUW[id].buf) mem_free(GUW[id].buf);
+ for (int i = 0; i < GUW[id].nwid; i++) /* 释放文本区内容槽 (泄漏修复) */
+ if (GUW[id].wd[i].type == GW_TEXTAREA && GUW[id].wd[i].txid >= 0)
+ gui_txused[GUW[id].wd[i].txid] = 0;
  GUW[id].used = 0; gui_dirty = 1; dirty_win = -1;
  if (foc_win == id) foc_win = -1;
  if (gui_mb.used && gui_mb.win == id) gui_mb_close(); /* 菜单栏属主关 → 收弹层 */
@@ -1997,17 +2002,20 @@ int gui_events(void *buf, int max) {
  if (in_title && w->state == W_MIN) {
  if (mx >= w->x + w->w - 16 && mx < w->x + w->w && my >= w->y + 2 && my < w->y + 14) {
   /* 展开按钮 → 恢复原大小, 不是直接最大化 */
-  w->x = w->rx; w->y = w->ry; w->w = w->rw; w->h = w->rh;
+  int obx = w->x, oby = w->y; /* 旧最小化条位置 (可能被拖过) → 还原后暴露 */
   /* 检查还原矩形是否为全屏: 若是则恢复为 W_MAX, 否则 W_NORM */
   int fbw = fb_vbe_w(), fbh = fb_vbe_h();
-  if (w->rx == 0 && w->ry == 0 && w->rw == fbw && w->rh == fbh)
-  w->state = W_MAX;
-  else
-  w->state = W_NORM;
-  /* 大小变化需重新分配缓冲 */
-  unsigned short *nb = (unsigned short*)mem_alloc((unsigned)w->w * (unsigned)w->h * 2);
-  if (nb) { mem_free(w->buf); w->buf = nb; }
-  gw_redraw(w); gui_dirty = 1; dirty_win = -1; gcompose();
+  int newstate = (w->rx == 0 && w->ry == 0 && w->rw == fbw && w->rh == fbh)
+  ? W_MAX : W_NORM;
+  /* 大小变化需重新分配缓冲; 失败则保持最小化 (防旧小缓冲按新尺寸越界写) */
+  unsigned short *nb = (unsigned short*)mem_alloc(
+  (unsigned)w->rw * (unsigned)w->rh * 2);
+  if (!nb) goto kbd;
+  w->x = w->rx; w->y = w->ry; w->w = w->rw; w->h = w->rh;
+  w->state = newstate;
+  mem_free(w->buf); w->buf = nb;
+  gw_redraw(w);
+  gcompose_expose(obx, oby, w->rw, 18); /* 旧条区暴露 (防残影) */
   goto kbd;
  }
  drag_win = top; drag_offx = mx - w->x; drag_offy = my - w->y;
@@ -2021,6 +2029,8 @@ int gui_events(void *buf, int max) {
  if (ci == 0) { /* ▁ 最小化 */
  w->rx = w->x; w->ry = w->y; w->rw = w->w; w->rh = w->h;
  w->state = W_MIN;
+ if (gui_mb.used && gui_mb.open >= 0 && gui_mb.win == top)
+ gui_mb_close(); /* 最小化属主窗 → 先收弹层 */
  gw_redraw(w);
  gcompose_expose(w->x, w->y + 18, w->w, w->h - 18); /* 只擦收起的窗体 */
  goto kbd;
@@ -2030,11 +2040,13 @@ int gui_events(void *buf, int max) {
  w->state = W_NORM;
  wmax_restore = 1; /* 几何缩小 → 旧最大化区须暴露重画 */
  } else {
+ /* 先分配后切换: 失败则放弃最大化 (防旧小缓冲按新尺寸越界写) */
+ unsigned short *nb = (unsigned short*)mem_alloc(
+ (unsigned)fbw * (unsigned)fbh * 2);
+ if (!nb) goto kbd;
  w->rx = w->x; w->ry = w->y; w->rw = w->w; w->rh = w->h;
  w->x = 0; w->y = 0; w->w = fbw; w->h = fbh; w->state = W_MAX;
- unsigned short *nb = (unsigned short*)mem_alloc(
- (unsigned)w->w * (unsigned)w->h * 2);
- if (nb) { mem_free(w->buf); w->buf = nb; }
+ mem_free(w->buf); w->buf = nb;
  }
  gw_redraw(w);
  if (wmax_restore)
@@ -2052,6 +2064,8 @@ int gui_events(void *buf, int max) {
  }
  /* 标题栏拖 (非 chrome 区) */
  if (in_title && w->state != W_MIN && mx < chrome_x) {
+ if (gui_mb.used && gui_mb.open >= 0 && gui_mb.win == top)
+ gui_mb_close(); /* 拖动属主窗 → 先收弹层 (免弹层悬空脱钩) */
  drag_win = top; drag_offx = mx - w->x; drag_offy = my - w->y;
  gw_redraw(w); if (need_full) dirty_win = -1; gcompose();
  goto kbd;
@@ -2204,7 +2218,8 @@ kbd:
  }
  }
  /* 2) Alt+字母 无菜单开 → 开对应菜单 */
- else if (fk == 1 && is_alt && gui_mb.used && gui_mb.open < 0) {
+ else if (fk == 1 && is_alt && gui_mb.used && gui_mb.open < 0
+ && gui_mb.win == foc_win) { /* 助记符只对菜单栏属主活跃窗生效 */
  int lc = current_char | 0x20;
  if (lc >= 'a' && lc <= 'z') {
  for (int i = 0; i < gui_mb.nmenu; i++) {
