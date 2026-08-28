@@ -20,6 +20,8 @@
 int gui_active = 0; /* 见 common.h extern; fb.c/vga.c 据此停用 */
 
 static void gcompose(void); /* 提前于菜单助手等引用, 原定义在下方 */
+static void gui_mb_close(void); /* 活跃切换时关弹层用 */
+static void gcompose_expose(int ex, int ey, int ew, int eh); /* 区域重合成 */
 static int gadv(const unsigned char *s, int *clen, int *cjk); /* LFB 文本用 */
 static unsigned ggb(const unsigned char *s); /* LFB 文本用 */
 
@@ -68,16 +70,16 @@ static int gui_txused[GW_TXPOOL];
 #define CHROME_N 3
 
 /* RGB565 主题色 */
-#define C_DESKTOP 0x8410 /* 桌面底色 (中蓝, 非黑块; 侧边=窗外的桌面区) */
+#define C_DESKTOP 0xC618 /* 桌面底色 #C0C0C0 灰 (docs#21/#34: 灰色桌面) */
 #define C_WINBG 0xF7BE
-#define C_TITLEFX 0x0019
-#define C_TITLEF 0x7BEF
+#define C_TITLEFX 0x0010 /* 活跃标题 #000080 深蓝 (docs#21 ACTIVE) */
+#define C_TITLEF 0x8410 /* 非活跃标题 #808080 灰 (docs#21 INACTIVE) */
 #define C_TITLEFG 0xFFFF
-#define C_BTNBG 0xD69A
-#define C_BTNBDR 0x4A49
+#define C_BTNBG 0xC618 /* 控件 FACE #C0C0C0 银 (docs#22) */
+#define C_BTNBDR 0x4A49 /* SHADOW 暗边 */
 #define C_EDBG 0xFFFF
 #define C_EDBDR 0x4A49
-#define C_SELBG 0x0019
+#define C_SELBG 0x0010 /* 选中/高亮 #000080 (docs#21 HIGHLIGHT) */
 #define C_SELFG 0xFFFF
 #define C_TEXT 0x0000
 #define C_PTR 0xFFFF
@@ -115,16 +117,20 @@ typedef struct {
  /* 窗口状态: 最小化/最大化 + 还原矩形 (最小/最大前的 x,y,w,h) */
  int state;
  int rx, ry, rw, rh;
+ int active; /* 文档: 活跃窗口 (只有一个 active=true, 点击激活) */
+ int topmost; /* 1=置顶窗 (优先响应点击) */
 } gui_win_t;
 
 static gui_win_t GUW[GW_MAXWIN];
 static int gui_zmax = 0;
-static int foc_win = -1; /* 聚焦窗口 (键盘路由) */
+static int active_win = -1; /* 活跃窗口 (只有一个 active=true, 文档规范) */
+static int foc_win = -1; /* 聚焦窗口 (键盘路由; 默认同 active_win) */
 static int prev_lbutton = 0;
 static int gui_buf_h = 480; /* 帧缓冲高 */
 static int gui_dirty = 1; /* 有待重合成 (状态变更或指针移动) */
 static int dirty_win = -1; /* >=0: 仅需重blit该窗口 (widget 变更, 不全屏) */
 static int last_mx = -1, last_my = -1; /* 上次合成时的指针位置 */
+static int desktop_init = 0; /* 首次合成铺桌面底色, 之后免整屏清 → 抗闪 */
 
 /* 拖动/活动选择状态 (按住跨 poll) */
 static int drag_win = -1; /* 正在被拖的窗, -1=无 */
@@ -571,6 +577,15 @@ static void grad_box(unsigned short *b, int bw, int bh,
  }
 }
 
+/* docs#22 凹陷边缘: 左/上=SHADOW, 右/下=LIGHT (输入框/列表/文本区) */
+static void gsunken(unsigned short *b, int bw, int bh,
+ int x, int y, int w, int h) {
+ gfill(b, bw, bh, x, y, w, 1, C_BTNBDR);
+ gfill(b, bw, bh, x, y, 1, h, C_BTNBDR);
+ gfill(b, bw, bh, x, y + h - 1, w, 1, 0xFFFF);
+ gfill(b, bw, bh, x + w - 1, y, 1, h, 0xFFFF);
+}
+
 static void gfocus_ring(gui_win_t *w, gui_wid_t *wd) { /* 非文字控件聚焦描边 */
  unsigned short *b = w->buf; int bw = w->w, bh = w->h;
  gborder(b, bw, bh, wd->x - 1, wd->y - 1, wd->w + 2, wd->h + 2, C_TITLEFX);
@@ -582,8 +597,11 @@ static void gw_draw(gui_win_t *w, gui_wid_t *wd) {
  switch (wd->type) {
  case GW_BTN: {
  gfill(b, bw, bh, wd->x, wd->y, wd->w, wd->h, C_BTNBG);
- gborder(b, bw, bh, wd->x, wd->y, wd->w, wd->h, C_BTNBDR);
- gfill(b, bw, bh, wd->x, wd->y + wd->h - 3, wd->w, 2, C_BTNBDR);
+ /* docs#22 凸起: 左/上 2px 亮, 右/下 2px 暗 */
+ gfill(b, bw, bh, wd->x, wd->y, wd->w, 2, 0xFFFF);
+ gfill(b, bw, bh, wd->x, wd->y, 2, wd->h, 0xFFFF);
+ gfill(b, bw, bh, wd->x, wd->y + wd->h - 2, wd->w, 2, C_BTNBDR);
+ gfill(b, bw, bh, wd->x + wd->w - 2, wd->y, 2, wd->h, C_BTNBDR);
  int tw = gstr_px((const unsigned char*)wd->txt);
  int tx = wd->x + (wd->w - tw) / 2, ty = wd->y + (wd->h - 16) / 2;
  gtext(b, bw, bh, tx, ty, (const unsigned char*)wd->txt, C_TEXT, C_BTNBG, 1);
@@ -610,7 +628,7 @@ static void gw_draw(gui_win_t *w, gui_wid_t *wd) {
  }
  case GW_EDIT: {
  gfill(b, bw, bh, wd->x, wd->y, wd->w, wd->h, C_EDBG);
- gborder(b, bw, bh, wd->x, wd->y, wd->w, wd->h, C_EDBDR);
+ gsunken(b, bw, bh, wd->x, wd->y, wd->w, wd->h); /* docs#22 凹陷 */
  gtext(b, bw, bh, wd->x + 3, wd->y + 1, (const unsigned char*)wd->txt, C_TEXT, C_EDBG, 1);
  if (wd->sel_anchor != wd->sel_active) { /* 选区高亮 (先于光标) */
  int slo, shi; sel_range(wd, &slo, &shi);
@@ -635,7 +653,7 @@ static void gw_draw(gui_win_t *w, gui_wid_t *wd) {
  }
  case GW_LIST: {
  gfill(b, bw, bh, wd->x, wd->y, wd->w, wd->h, C_EDBG);
- gborder(b, bw, bh, wd->x, wd->y, wd->w, wd->h, C_EDBDR);
+ gsunken(b, bw, bh, wd->x, wd->y, wd->w, wd->h); /* docs#22 凹陷 */
  int visible = (wd->h - 2) / 16; if (visible < 1) visible = 1;
  if (wd->scroll > wd->nitems - visible) wd->scroll = wd->nitems - visible;
  if (wd->scroll < 0) wd->scroll = 0;
@@ -654,7 +672,7 @@ static void gw_draw(gui_win_t *w, gui_wid_t *wd) {
  const char *buf = gui_txpool[wd->txid];
  int len = wd->txlen;
  gfill(b, bw, bh, wd->x, wd->y, wd->w, wd->h, C_EDBG);
- gborder(b, bw, bh, wd->x, wd->y, wd->w, wd->h, C_EDBDR);
+ gsunken(b, bw, bh, wd->x, wd->y, wd->w, wd->h); /* docs#22 凹陷 */
  int visible = (wd->h - 2) / 16; if (visible < 1) visible = 1;
  int crow = gtx_row(buf, len, wd->txc);
  if (wd->txsc < 0) wd->txsc = 0;
@@ -707,10 +725,17 @@ static void gw_draw(gui_win_t *w, gui_wid_t *wd) {
  (const unsigned char*)wd->txt, C_TEXT, 0, 0);
  break;
  }
- case GW_MENU: /* 菜单栏条 (, : 弹层单独画到 LFB) */
+ case GW_MENU: /* 菜单栏条 (Win9x 风: 两端+底部外框 + 右下阴影) */
  if (gui_mb.win != (int)(w - GUW) || !gui_mb.used) break;
  gfill(b, bw, bh, 0, wd->y, w->w, 18, C_BTNBG);
- gfill(b, bw, bh, 0, wd->y + 18 - 1, w->w, 1, C_BTNBDR);
+ /* Win9x 外框: 左/右/底各 1px 黑色 + 内侧上 1px 亮线 (弹层不画框/阴影仍干净) */
+ gfill(b, bw, bh, 0, wd->y, 1, 18, C_TEXT);
+ gfill(b, bw, bh, w->w - 1, wd->y, 1, 18, C_TEXT);
+ gfill(b, bw, bh, 0, wd->y + 18 - 1, w->w, 1, C_TEXT);
+ gfill(b, bw, bh, 1, wd->y, w->w - 2, 1, 0xFFFF);
+ /* Win9x 阴影: 右下 2px 黑色硬边 (与弹层阴影风格一致) */
+ gfill(b, bw, bh, w->w, wd->y + 1, 2, 18 + 2, 0x0000);
+ gfill(b, bw, bh, 1, wd->y + 18, w->w, 2, 0x0000);
  {
  int tx = 4;
  for (int i = 0; i < gui_mb.nmenu; i++) {
@@ -719,9 +744,10 @@ static void gw_draw(gui_win_t *w, gui_wid_t *wd) {
  int tw = gstr_px((const unsigned char*)t);
  gfill(b, bw, bh, tx, wd->y, tw + 16, 18,
  on ? C_SELBG : C_BTNBG); /* 打开项反蓝 */
+ /* 活跃层级: 非活跃窗的菜单标题文字变灰 */
+ unsigned short mfg = on ? C_SELFG : (w->active ? C_TEXT : C_TITLEF);
  gtext(b, bw, bh, tx + 8, wd->y + 1, (const unsigned char*)t,
- on ? C_SELFG : C_TEXT,
- on ? C_SELBG : C_BTNBG, 1);
+ mfg, on ? C_SELBG : C_BTNBG, 1);
  tx += tw + 16;
  }
  }
@@ -735,9 +761,17 @@ static void gw_redraw(gui_win_t *w) {
  gui_dirty = 1;
  dirty_win = (int)(w - GUW); /* 只重blit本窗, 不全屏清桌面 → 交互不闪 */
  gfill(w->buf, w->w, w->h, 0, 0, w->w, w->h, C_WINBG);
- int isfoc = (foc_win == (w - GUW));
+ int isfoc = (active_win == (w - GUW)); /* 活跃窗口蓝色标题, 非活跃灰色 */
  unsigned short band = isfoc ? C_TITLEFX : C_TITLEF;
- gfill(w->buf, w->w, w->h, 0, 0, w->w, 18, band);
+ /* Win9x window frame: 1px 黑细外框 (CTLCOLOR_WINDOWFRAME) + 1px 内侧亮线
+ * 模拟早期 Windows 立体感; 不画现代模糊阴影 (docs#30 禁止) */
+ gborder(w->buf, w->w, w->h, 0, 0, w->w, w->h, C_TEXT); /* 1px 黑外框 */
+ gfill(w->buf, w->w, w->h, 1, 1, w->w - 2, 1, 0xFFFF); /* 内侧上 1px 亮 */
+ gfill(w->buf, w->w, w->h, 1, w->h - 2, w->w - 2, 1, C_BTNBDR); /* 下暗 */
+ gfill(w->buf, w->w, w->h, 1, 1, 1, w->h - 2, 0xFFFF); /* 左亮 */
+ gfill(w->buf, w->w, w->h, w->w - 2, 1, 1, w->h - 2, C_BTNBDR); /* 右暗 */
+ /* 标题带: 跨宽度, 但避开 2px 边线 */
+ gfill(w->buf, w->w, w->h, 2, 2, w->w - 4, 16, band);
  /* 标题文字: 右让出 chrome 区, 过长按字形截断 + 补 "..." */
  int maxw = w->w - (CHROME_N * CHROME_W) - 8;
  int tlen = gstrlen(w->title), n = 0, used = 0, over = 0;
@@ -840,6 +874,11 @@ static void gdraw_menu_popup(void) {
  unsigned fb = fb_vbe_base();
  int fbw = fb_vbe_w(), fbh = fb_vbe_h();
  int bpl = fb_vbe_bpl();
+ /* Win9x 弹层阴影: 2px 黑色右下偏移 (与窗口 frame 风格一致的硬边阴影,
+ * 非现代模糊阴影; docs#30 禁模糊但允许 Win9x 硬边阴影) */
+ int sh = 2;
+ gfill_lfb(fb, bpl, fbw, fbh, px + sh, py + ph, pw, sh, 0x0000); /* 底部 */
+ gfill_lfb(fb, bpl, fbw, fbh, px + pw, py + sh, sh, ph, 0x0000); /* 右侧 */
  /* 背景 + 边框 */
  gfill_lfb(fb, bpl, fbw, fbh, px + 1, py + 1, pw - 2, ph - 2, C_EDBG);
  gborder_lfb(fb, bpl, fbw, fbh, px, py, pw, ph, C_BTNBDR);
@@ -869,10 +908,14 @@ static void gui_mb_redraw(void) {
 }
 static void gui_mb_close(void) {
  if (gui_mb.open != -1) {
+ int px = gui_mb.pop_x, py = gui_mb.pop_y;
+ int pw = gui_mb.pop_w, ph = gui_mb.pop_h;
  gui_mb.open = -1; gui_mb.hilite = -1;
- /* 关弹层 → 必须整屏清 LFB 上残留像素, 否则弹层位置画着旧菜单 */
- gui_dirty = 1; dirty_win = -1;
- gui_mb_redraw();
+ if (gui_mb.win >= 0 && gui_mb.win < GW_MAXWIN && GUW[gui_mb.win].used)
+ gw_redraw(&GUW[gui_mb.win]); /* 标题条去高亮 */
+ /* 弹层矩形区域暴露: 弹层可能伸出窗沿压到桌面, 全量 blit 不清桌面
+ * (desktop_init 优化) → 须显式擦弹层矩形再补相交窗 */
+ gcompose_expose(px, py, pw, ph);
  }
 }
 static void gui_mb_open_menu(int m) {
@@ -988,10 +1031,15 @@ static int gcompose_full(void) {
  gfull_force = 0; last_full_tick = now;
  unsigned fb = fb_vbe_base(); int fbw = fb_vbe_w(), fbh = fb_vbe_h();
  int bpl = fb_vbe_bpl();
+ /* 抗闪: 只在首帧铺桌面底色; 之后按 z 全量 blit 本身幂等, 无需整屏清
+ * (整屏清与重 blit 分帧可见 → 点击/切活跃整屏闪烁) */
+ if (!desktop_init) {
  for (int y = 0; y < fbh; y++)
  for (int x = 0; x < fbw; x++) {
  unsigned char *p = (unsigned char *)(fb + (unsigned)y * bpl + (unsigned)x * 2);
  p[0] = (unsigned char)(C_DESKTOP & 0xFF); p[1] = (unsigned char)(C_DESKTOP >> 8);
+ }
+ desktop_init = 1;
  }
  for (int z = 1; z <= gui_zmax; z++) {
  for (int k = 0; k < GW_MAXWIN; k++) {
@@ -1022,6 +1070,56 @@ static int gcompose_full(void) {
  return 1;
 }
 
+/* 区域重合成: 只擦暴露矩形 (关窗/最小化收起的区) + 重 blit 相交窗/活跃窗。
+ * 取代"整屏清桌面再全部重 blit" — 消除关窗/最小化时的整屏闪烁。 */
+static void gcompose_expose(int ex, int ey, int ew, int eh) {
+ if (!fb_active()) return;
+ unsigned fb = fb_vbe_base(); int fbw = fb_vbe_w(), fbh = fb_vbe_h();
+ int bpl = fb_vbe_bpl();
+ int x1 = ex + ew, y1 = ey + eh;
+ if (ex < 0) ex = 0; if (ey < 0) ey = 0;
+ if (x1 > fbw) x1 = fbw; if (y1 > fbh) y1 = fbh;
+ for (int y = ey; y < y1; y++)
+ for (int x = ex; x < x1; x++) {
+ unsigned char *p = (unsigned char *)(fb + (unsigned)y * bpl + (unsigned)x * 2);
+ p[0] = (unsigned char)(C_DESKTOP & 0xFF); p[1] = (unsigned char)(C_DESKTOP >> 8);
+ }
+ int mx = mouse_px_x(), my = mouse_px_y();
+ int ptr_hit = (mx >= ex && mx < x1 && my >= ey && my < y1);
+ for (int z = 1; z <= gui_zmax; z++)
+ for (int k = 0; k < GW_MAXWIN; k++) {
+ gui_win_t *w = &GUW[k];
+ if (!w->used || w->z != z) continue;
+ /* 暴露矩形相交窗必 blit; 活跃窗标题色可能已变, 也 blit */
+ if (k != active_win &&
+ !(w->x < x1 && w->x + w->w > ex && w->y < y1 && w->y + w_draw_h(w) > ey))
+ continue;
+ for (int y = 0; y < w_draw_h(w); y++) {
+ int yy = w->y + y; if (yy < 0 || yy >= fbh) continue;
+ for (int x = 0; x < w->w; x++) {
+ int xx = w->x + x; if (xx < 0 || xx >= fbw) continue;
+ unsigned char *p = (unsigned char *)(fb + (unsigned)yy * bpl + (unsigned)xx * 2);
+ unsigned short c = w->buf[(unsigned)y * w->w + (unsigned)x];
+ p[0] = (unsigned char)(c & 0xFF); p[1] = (unsigned char)(c >> 8);
+ }
+ }
+ if (mx >= w->x && mx < w->x + w->w && my >= w->y && my < w->y + w_draw_h(w))
+ ptr_hit = 1;
+ }
+ gdraw_menu_popup();
+ if (mouse_installed_k()) {
+ if (ptr_hit) {
+ ptr_bg_valid = 0;
+ ptr_save_region(mx, my);
+ gui_draw_pointer();
+ }
+ } else {
+ ptr_bg_valid = 0;
+ }
+ last_mx = mx; last_my = my;
+ gui_dirty = 0; dirty_win = -1;
+}
+
 /* 只重blit单个窗口到 LFB (widget 变更): 不整屏清桌面/不重blit其他窗 →
  * 点按钮/打字不再出现"先全屏变暗再重绘"的闪烁 (v6.9.5)。窗口在顶层不透明,
  * 直接覆盖即可; 指针若落在该区, 先擦旧背景再画新, 不残留鬼影。 */
@@ -1046,13 +1144,35 @@ static void gblit_win(int k) {
  p[0] = (unsigned char)(c & 0xFF); p[1] = (unsigned char)(c >> 8);
  }
  }
- /* : 弹层在 z 顶 — 若弹层与本窗矩形相交, blit 已盖掉弹层像素, 补画 */
+ /* z 序修复: 本窗可能是被埋在下层的 (demo 改它任一控件都会 gw_redraw →
+ * 单窗 blit)。若直接画上 LFB, 它会盖住 z 更高的活跃窗 — "灰窗浮在蓝窗上"。
+ * 补: 按 z 序重 blit 所有与本窗相交的更高窗。 */
+ int ptr_hit = (mx >= w->x && mx < w->x + w->w
+ && my >= w->y && my < w->y + w_draw_h(w));
+ for (int q = 0; q < GW_MAXWIN; q++) {
+ gui_win_t *o = &GUW[q];
+ if (!o->used || q == k || o->z <= w->z) continue;
+ if (!(o->x < w->x + w->w && o->x + o->w > w->x
+ && o->y < w->y + w_draw_h(w) && o->y + w_draw_h(o) > w->y)) continue;
+ for (int y = 0; y < w_draw_h(o); y++) {
+ int yy = o->y + y; if (yy < 0 || yy >= fbh) continue;
+ for (int x = 0; x < o->w; x++) {
+ int xx = o->x + x; if (xx < 0 || xx >= fbw) continue;
+ unsigned char *p = (unsigned char *)(fb + (unsigned)yy * bpl + (unsigned)xx * 2);
+ unsigned short c = o->buf[(unsigned)y * o->w + (unsigned)x];
+ p[0] = (unsigned char)(c & 0xFF); p[1] = (unsigned char)(c >> 8);
+ }
+ }
+ if (mx >= o->x && mx < o->x + o->w && my >= o->y && my < o->y + w_draw_h(o))
+ ptr_hit = 1;
+ }
+ /* : 弹层在 z 顶 — 若弹层与被 blit 区域相交, blit 已盖掉弹层像素, 补画 */
  if (gui_mb.used && gui_mb.open >= 0
  && gui_mb.pop_x < w->x + w->w && gui_mb.pop_x + gui_mb.pop_w > w->x
  && gui_mb.pop_y < w->y + w_draw_h(w) && gui_mb.pop_y + gui_mb.pop_h > w->y)
  gdraw_menu_popup();
- /* 指针落在本窗上: 重存背景 + 重画 (弹层已在指针下) */
- if (mx >= w->x && mx < w->x + w->w && my >= w->y && my < w->y + w_draw_h(w)) {
+ /* 指针落在被 blit 区域: 重存背景 + 重画 (弹层已在指针下) */
+ if (ptr_hit) {
  ptr_bg_valid = 0;
  ptr_save_region(mx, my);
  gui_draw_pointer();
@@ -1203,6 +1323,7 @@ int gui_enter(void) {
  gui_buf_h = fb_vbe_h(); if (gui_buf_h <= 0) gui_buf_h = 480;
  gui_zmax = 0; foc_win = -1; gui_dirty = 1; dirty_win = -1;
  drag_win = -1; sel_drag_w = -1;
+ gfull_force = 1; /* 启动强制铺一次桌面, 30Hz 限流会跳过首轮 */
  gcompose();
  return 0;
 }
@@ -1229,10 +1350,30 @@ int gui_win(int x, int y, int w, int h, const char *title) {
  wd->used = 1; wd->x = x; wd->y = y; wd->w = w; wd->h = h;
  wd->z = ++gui_zmax; wd->foc_wid = -1; wd->nwid = 0;
  wd->state = W_NORM; wd->rx = x; wd->ry = y; wd->rw = w; wd->rh = h;
+ wd->topmost = 0;
  gcopy(wd->title, title ? title : "", GW_TITLE);
  wd->buf = (unsigned short *)mem_alloc((unsigned)w * (unsigned)h * 2);
  if (!wd->buf) { wd->used = 0; gui_zmax--; return -1; }
+ /* 新窗口(含弹窗)自动成为活跃窗口: 活跃窗始终在最顶层 */
+ int olda = active_win;
+ if (olda >= 0 && olda < GW_MAXWIN && GUW[olda].used) {
+ GUW[olda].active = 0;
+ for (int i = 0; i < GUW[olda].nwid; i++) { /* 旧活跃窗选区塌缩 */
+ gui_wid_t *od = &GUW[olda].wd[i];
+ if (od->type == GW_EDIT || od->type == GW_TEXTAREA)
+ od->sel_anchor = od->sel_active = 0;
+ }
+ gw_redraw(&GUW[olda]); /* 旧活跃窗标题转灰 */
+ }
+ wd->active = 1;
+ active_win = k;
+ if (gui_mb.used && gui_mb.open >= 0 && gui_mb.win != k)
+ gui_mb_close(); /* 活跃层级: 弹层属主非新活跃窗 → 收起 */
+ foc_win = k; /* 键盘焦点跟随活跃 */
  gw_redraw(wd);
+ dirty_win = -1;
+ last_full_tick = 0;
+ gfull_force = 1; /* 切活跃立即刷 (消"卡一帧") */
  gcompose();
  return k;
  }
@@ -1241,22 +1382,55 @@ int gui_win(int x, int y, int w, int h, const char *title) {
 
 int gui_win_close(int id) {
  if (!gui_active || id < 0 || id >= GW_MAXWIN || !GUW[id].used) return -1;
+ int ex = GUW[id].x, ey = GUW[id].y, ew = GUW[id].w, eh = w_draw_h(&GUW[id]);
  if (GUW[id].buf) mem_free(GUW[id].buf);
- GUW[id].used = 0; gui_dirty = 1; dirty_win = -1; /* 关窗须整屏恢复下层 */
+ GUW[id].used = 0; gui_dirty = 1; dirty_win = -1;
  if (foc_win == id) foc_win = -1;
- gcompose();
+ if (gui_mb.used && gui_mb.win == id) gui_mb_close(); /* 菜单栏属主关 → 收弹层 */
+ if (active_win == id) {
+ /* 关的是活跃窗 → 把活跃转给 z 最高的剩余窗口 (无窗则 -1) */
+ active_win = -1;
+ int bestz = -1;
+ for (int k = 0; k < GW_MAXWIN; k++)
+ if (GUW[k].used && GUW[k].z > bestz) { bestz = GUW[k].z; active_win = k; }
+ if (active_win >= 0) {
+ GUW[active_win].active = 1;
+ foc_win = active_win;
+ gw_redraw(&GUW[active_win]); /* 新活跃窗标题转蓝 */
+ last_full_tick = 0;
+ gfull_force = 1; /* 切活跃立即刷 (消"卡一帧") */
+ }
+ }
+ gcompose_expose(ex, ey, ew, eh); /* 只擦被关窗矩形 + 重blit相交/活跃窗 */
  return 0;
 }
 
 int gui_win_raise(int id) {
  if (!gui_active || id < 0 || id >= GW_MAXWIN || !GUW[id].used) return -1;
- int oldfoc = foc_win;
+ int olda = active_win;
  GUW[id].z = ++gui_zmax;
- if (GUW[id].foc_wid >= 0) foc_win = id;
+ /* raise = 置顶 = 成为活跃窗口 (规范: 活跃窗始终在最顶层) */
+ if (olda != id) {
+ if (olda >= 0 && olda < GW_MAXWIN && GUW[olda].used) {
+ GUW[olda].active = 0;
+ for (int i = 0; i < GUW[olda].nwid; i++) { /* 旧活跃窗选区塌缩 */
+ gui_wid_t *od = &GUW[olda].wd[i];
+ if (od->type == GW_EDIT || od->type == GW_TEXTAREA)
+ od->sel_anchor = od->sel_active = 0;
+ }
+ }
+ GUW[id].active = 1;
+ active_win = id;
+ if (gui_mb.used && gui_mb.open >= 0 && gui_mb.win != id)
+ gui_mb_close(); /* 活跃层级: 弹层属主非新活跃窗 → 收起 */
+ }
+ foc_win = id; /* 键盘焦点恒跟随活跃窗口 */
  gw_redraw(&GUW[id]);
- if (oldfoc >= 0 && oldfoc != id && GUW[oldfoc].used) {
- gw_redraw(&GUW[oldfoc]); /* 旧焦点窗标题恢复未聚焦色 */
- dirty_win = -1; /* 两窗都变 → 整屏 */
+ if (olda >= 0 && olda != id && olda < GW_MAXWIN && GUW[olda].used) {
+ gw_redraw(&GUW[olda]); /* 旧活跃窗标题转灰 */
+ dirty_win = -1;
+ last_full_tick = 0;
+ gfull_force = 1; /* 切活跃立即刷 (消"卡一帧") */
  }
  gcompose();
  return 0;
@@ -1673,28 +1847,34 @@ int gui_events(void *buf, int max) {
  if (was && !lb) {
  if (drag_win >= 0 && drag_win < GW_MAXWIN && GUW[drag_win].used) {
  gui_win_t *dw = &GUW[drag_win];
+ int drag_moved = 0;
  if (dw->state == W_MIN) { /* 最小化窗被拖: 未移 → 还原; 已移 → 保持最小化 */
  if (dw->x == dw->rx && dw->y == dw->ry) {
  dw->x = dw->rx; dw->y = dw->ry;
  dw->w = dw->rw; dw->h = dw->rh;
  /* 还原到之前的状态: 若还原矩形=全屏 → 还原到 W_MAX (修"最小化后无法
  * 最大化"bug: 之前总是 W_NORM, 即便之前是 MAX 也会被强降) */
- int fbw = fb_vbe_w(), fbh = fb_vbe_h();
- if (dw->rx == 0 && dw->ry == 0 && dw->rw == fbw && dw->rh == fbh)
+ int fbw2 = fb_vbe_w(), fbh2 = fb_vbe_h();
+ if (dw->rx == 0 && dw->ry == 0 && dw->rw == fbw2 && dw->rh == fbh2)
   dw->state = W_MAX;
  else
   dw->state = W_NORM;
  gw_redraw(dw);
+ drag_moved = 1;
  }
  /* 最小化条被移: 不变状态, 整屏合成补暴露区 */
  }
- gui_dirty = 1; dirty_win = -1; gfull_force = 1; /* 拖完收尾兜底 */
+ /* 拖完收尾: 不整屏清 (会闪), 走 gblit_win 按 z 序补画
+ * (暴露区 gdx_move 已补; 但弹层/相交窗可能因 gdx_move 拷贝污染, 须再走一次) */
+ last_full_tick = 0; /* 强制下次 gcompose 走全量 (避免 30Hz 限流造成 1 帧延迟) */
+ gui_dirty = 1; dirty_win = -1;
  }
  drag_win = -1; sel_drag_w = sel_drag_k = -1;
  }
 
  /* ── 菜单栏 (, ): 弹层跟点击位置, 在所有窗之上 ── */
- if (lb && !was && gui_mb.used && gui_mb.win >= 0 && gui_mb.win < GW_MAXWIN
+ if (lb && !was && gui_mb.used && gui_mb.win == active_win
+ && gui_mb.win >= 0 && gui_mb.win < GW_MAXWIN
  && GUW[gui_mb.win].used) {
  gui_win_t *mw = &GUW[gui_mb.win];
  if (gui_mb.open >= 0) {
@@ -1754,7 +1934,7 @@ int gui_events(void *buf, int max) {
  /* 弹层在所有窗之上 (直写 LFB): 点击落在打开弹层内 → 强制路由到菜单窗。
  * 修"在当前窗选中后点击会跳到下层窗": 弹层盖住下层窗时, 下层窗几何上
  * 反而是该点最高窗口, 原循环会 raise 它并点它的控件而非激活菜单项。 */
- int pop_hit = (gui_mb.used && gui_mb.open >= 0
+ int pop_hit = (gui_mb.used && gui_mb.open >= 0 && gui_mb.win == active_win
   && mx >= gui_mb.pop_x && mx < gui_mb.pop_x + gui_mb.pop_w
   && my >= gui_mb.pop_y && my < gui_mb.pop_y + gui_mb.pop_h);
  if (pop_hit && gui_mb.win >= 0 && gui_mb.win < GW_MAXWIN && GUW[gui_mb.win].used) {
@@ -1770,28 +1950,62 @@ int gui_events(void *buf, int max) {
  }
  if (top >= 0) {
  gui_win_t *w = &GUW[top];
+ int in_title = (my >= w->y && my < w->y + 18);
+ /* active 管理: 任何位置点击都只作用到活跃窗口 (哪怕下面有其他窗);
+ * 例外: 点击到未被遮挡的标题栏 → 切换活跃窗口 */
+ if (active_win != top && in_title) {
+ /* 点到非活跃窗未遮挡的标题栏 → 切换活跃窗口 */
+ int olda = active_win;
+ if (olda >= 0 && olda < GW_MAXWIN && GUW[olda].used)
+ GUW[olda].active = 0;
+ w->active = 1;
+ active_win = top;
+ if (gui_mb.used && gui_mb.open >= 0 && gui_mb.win != top)
+ gui_mb_close(); /* 活跃层级: 弹层属主非新活跃窗 → 收起 */
  w->z = ++gui_zmax; /* raise */
- if (foc_win != top && foc_win >= 0 && GUW[foc_win].used) {
+ if (olda >= 0 && olda < GW_MAXWIN && GUW[olda].used && olda != top) {
+ gw_redraw(&GUW[olda]); /* 旧活跃窗标题转灰 */
+ need_full = 1; /* 两窗标题色都变 → 整屏 */
+ last_full_tick = 0;
+ gfull_force = 1; /* 切活跃立即刷 (消"卡一帧") */
+ }
+ } else if (active_win == top) {
+ /* 点在活跃窗口 → 正常处理 (raise), 绝不下落到下层窗 */
+ w->z = ++gui_zmax;
+ } else {
+ /* 点在非活跃窗的本体 → 忽略, 不切换不透传 */
+ goto kbd;
+ }
+ if (foc_win != active_win && active_win >= 0 && active_win < GW_MAXWIN
+ && GUW[active_win].used) {
  gui_win_t *ow = &GUW[foc_win]; /* 焦点变更 → 塌缩旧窗选区 */
+ if (foc_win >= 0 && foc_win < GW_MAXWIN && ow->used) {
  for (int i = 0; i < ow->nwid; i++) {
  gui_wid_t *od = &ow->wd[i];
  if (od->type == GW_EDIT || od->type == GW_TEXTAREA)
  od->sel_anchor = od->sel_active = 0;
  }
- gw_redraw(ow); need_full = 1; /* 旧窗重画(去选区) + 强制整屏 */
+ gw_redraw(ow); need_full = 1; /* 旧窗重画(去选区) + 标题转灰 */
  }
- foc_win = top;
+ }
+ foc_win = active_win; /* 键盘焦点始终跟随活跃窗口 */
 
- int in_title = (my >= w->y && my < w->y + 18);
  int chrome_x = w->x + w->w - CHROME_N * CHROME_W;
 
  /* 点最小化条 → 拖动模式 (按住移动 = 移动最小化条; 短按未移 = 还原)
  * 例外: 点 ▢ 图标区 (右侧 16px 内) → 直接最大化 (修"最小化后无法最大化"bug) */
  if (in_title && w->state == W_MIN) {
  if (mx >= w->x + w->w - 16 && mx < w->x + w->w && my >= w->y + 2 && my < w->y + 14) {
+  /* 展开按钮 → 恢复原大小, 不是直接最大化 */
+  w->x = w->rx; w->y = w->ry; w->w = w->rw; w->h = w->rh;
+  /* 检查还原矩形是否为全屏: 若是则恢复为 W_MAX, 否则 W_NORM */
   int fbw = fb_vbe_w(), fbh = fb_vbe_h();
-  w->x = 0; w->y = 0; w->w = fbw; w->h = fbh; w->state = W_MAX;
-  unsigned short *nb = (unsigned short*)mem_alloc((unsigned)fbw * (unsigned)fbh * 2);
+  if (w->rx == 0 && w->ry == 0 && w->rw == fbw && w->rh == fbh)
+  w->state = W_MAX;
+  else
+  w->state = W_NORM;
+  /* 大小变化需重新分配缓冲 */
+  unsigned short *nb = (unsigned short*)mem_alloc((unsigned)w->w * (unsigned)w->h * 2);
   if (nb) { mem_free(w->buf); w->buf = nb; }
   gw_redraw(w); gui_dirty = 1; dirty_win = -1; gcompose();
   goto kbd;
@@ -1803,15 +2017,18 @@ int gui_events(void *buf, int max) {
  /* chrome 三钮 (仅正常窗口显示) */
  if (in_title && w->state != W_MIN && mx >= chrome_x) {
  int ci = (mx - chrome_x) / CHROME_W;
+ int wmax_restore = 0; /* ▢ 还原 (最大化→正常) 置位: 须暴露旧最大化区 */
  if (ci == 0) { /* ▁ 最小化 */
  w->rx = w->x; w->ry = w->y; w->rw = w->w; w->rh = w->h;
  w->state = W_MIN;
- gw_redraw(w); gui_dirty = 1; dirty_win = -1; gcompose();
+ gw_redraw(w);
+ gcompose_expose(w->x, w->y + 18, w->w, w->h - 18); /* 只擦收起的窗体 */
  goto kbd;
  } else if (ci == 1) { /* ▢ 最大化/还原 */
  if (w->state == W_MAX) {
  w->x = w->rx; w->y = w->ry; w->w = w->rw; w->h = w->rh;
  w->state = W_NORM;
+ wmax_restore = 1; /* 几何缩小 → 旧最大化区须暴露重画 */
  } else {
  w->rx = w->x; w->ry = w->y; w->rw = w->w; w->rh = w->h;
  w->x = 0; w->y = 0; w->w = fbw; w->h = fbh; w->state = W_MAX;
@@ -1819,7 +2036,11 @@ int gui_events(void *buf, int max) {
  (unsigned)w->w * (unsigned)w->h * 2);
  if (nb) { mem_free(w->buf); w->buf = nb; }
  }
- gw_redraw(w); gui_dirty = 1; dirty_win = -1; gcompose();
+ gw_redraw(w);
+ if (wmax_restore)
+ gcompose_expose(0, 0, fbw, fbh); /* 缩小: 旧最大化区暴露 (偶发操作, 可整屏) */
+ else
+ gcompose();
  goto kbd;
  } else if (ci == 2) { /* ✕ 关闭: 立即关窗 + 通知程序 */
  gui_win_close(top);

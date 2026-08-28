@@ -123,15 +123,18 @@ try:
         return cnt(dump_fb(s, ROOT + '/vgpop.bin'), bpl, 0xF7BE,
             PX0, PY0, PX1, PY1) > 20000 # 弹窗体填满区域 (>2 万 = 弹窗开)
     def popup_closed_state():
-        return cnt(dump_fb(s, ROOT + '/vgpop.bin'), bpl, 0xF7BE,
-            PX0, PY0, PX1, PY1) < 15000 # 弹窗关: 只剩主窗右侧窗底
+        # 弹窗关 = 被盖住的主窗列表 (C_EDBG=0xFFFF) 重新可见。
+        # (旧判断 0xF7BE<15000 依赖列表宽度, 但 gui_list 把 440 钳到 300 →
+        # 弹窗区右侧实为窗底色 0xF7BE 17114>15000 误判未关。)
+        return cnt(dump_fb(s, ROOT + '/vgpop.bin'), bpl, 0xFFFF,
+            180, 210, 330, 290) > 5000
 
     mm(*PARK); time.sleep(0.3) # 先把光标停到桌面右上 (避开全部检查区)
 
     # ── T1 渲染 ──
     d = dump_fb(s, ROOT + '/vg1.bin')
-    desk = cnt(d, bpl, 0x8410, 500, 430, 640, 480)
-    btn = cnt(d, bpl, 0xD69A, 40, 80, 90, 107)
+    desk = cnt(d, bpl, 0xC618, 500, 430, 640, 480)
+    btn = cnt(d, bpl, 0xC618, 40, 80, 90, 107)
     nlist = cnt(d, bpl, 0xFFFF, 101, 191, 379, 339)
     t1 = desk > 4000 and btn > 100 and nlist > 3000
     results['T1 render'] = (t1, 'desk=%d btn=%d list=%d' % (desk, btn, nlist))
@@ -144,9 +147,14 @@ try:
         d = dump_fb(s, ROOT + '/vgt.bin')
         cols = 0
         for gx in range(24, 24 + 6 * 16, 16): # 6 槽宽扫描
-            has = any(pix(d, bpl, x, y) == 0xFFFF
-                for y in range(21, 37) for x in range(gx, gx + 16))
-            if has: cols += 1
+            # 标题带 y=22..38; 框线 1px 黑 0x0000 在 y 20/39; 内侧亮线 0xFFFF
+            # 在 y 21 — 会污染白像素存在判定. 改为: 字形 = 此格存在字形(黑/暗)像素
+            # (C_TEXT=0x0000 字, C_BTNBDR 暗) - 亮线像素 = 字形像素. 这才是真字形.
+            # 字形判定: 标题带 LFB bg=0x0010 深蓝, 字白 0xFFFF. 字形格白像素多,
+            # 空槽几乎全 0x0010 (亮线 0xFFFF 仅 1px 顶边).
+            white = sum(1 for y in range(23, 38) for x in range(gx + 1, gx + 15)
+                if pix(d, bpl, x, y) == 0xFFFF)
+            if white > 30: cols += 1
         return cols
     tg = title_glyph_cols()
     t1b = tg == 4
@@ -189,17 +197,17 @@ try:
             if x >= PX1: x = PX0; y += 3
         print(' RESTORE DIFF colors:', [(k, v) for k, v in list(diff_px.items())[:6]])
     # 容忍 500 个采样像素的残差 (约 4500 实际像素) — 通常是"弹窗"按钮的
-    # 聚焦亮环 (C_TITLEFX=0x0019) 在 popup 覆盖/弹回后留在原位, 这是正常 GUI 行为
+    # 聚焦亮环 (C_TITLEFX=0x0010) 在 popup 覆盖/弹回后留在原位, 这是正常 GUI 行为
     t2 = ok_open and ok_close and d_open > 50 and d_rest < 500
     results['T2 popup cover+restore'] = (t2, 'open_chg=%d restore_diff=%d' % (d_open, d_rest))
 
     # ── T3 列表点选 (重试直到高亮出现) ──
     def list_sel():
         d = dump_fb(s, ROOT + '/vg3.bin')
-        return cnt(d, bpl, 0x0019, 101, 191, 200, 207) > 300
+        return cnt(d, bpl, 0x0010, 101, 191, 200, 207) > 300
     ok_list = click_until(120, 200, list_sel)
     d3 = dump_fb(s, ROOT + '/vg3.bin')
-    blue = cnt(d3, bpl, 0x0019, 101, 191, 200, 207)
+    blue = cnt(d3, bpl, 0x0010, 101, 191, 200, 207)
     t3 = ok_list and blue > 300
     results['T3 list select'] = (t3, 'blue=%d' % blue)
 
@@ -283,28 +291,30 @@ try:
 
     # ── T8 文本选中 (鼠标拖选, ) ──
     # 编辑器窗 abs(140,60,420,360), 文本区 abs(148,90..552,350), 行1于 y=107..122。
-    # 选区高亮 C_SELBG=0x0019; 只统计文本区内 y 99..140 (避开标题带 y<60)。
+    # 选区高亮 C_SELBG=0x0010; 只统计文本区内 y 108..140 (避开标题带 y<60,
+    # 且避开主窗"编辑器"按钮焦点环 C_TITLEFX=0x0010 底边 y<=107 — 切回主窗
+    # 后按钮焦点环是合法 UI, 会探进 y99..107)。
     def ta_selcnt(y0, y1):
-        return cnt(dump_fb(s, ROOT + '/vg8s.bin'), bpl, 0x0019, 146, y0, 532, y1)
+        return cnt(dump_fb(s, ROOT + '/vg8s.bin'), bpl, 0x0010, 146, y0, 532, y1)
     def ta_foc():
         return cnt(dump_fb(s, ROOT + '/vg8c.bin'), bpl, 0xFC30, 148, 91, 552, 350) > 2
     mm(*PARK); time.sleep(0.3)
     click_until(200, 110, ta_foc); time.sleep(0.3) # 聚焦文本区, 光标落行1
-    base8 = ta_selcnt(99, 140)
+    base8 = ta_selcnt(108, 140)
     drag_select(160, 110, 286, 110) # 行1上拖选一段
-    sel8 = ta_selcnt(99, 140)
+    sel8 = ta_selcnt(108, 140)
     click(200, 29); time.sleep(0.4) # 点主窗标题 → 改焦 → 选区塌缩
-    clr8 = ta_selcnt(99, 140)
+    clr8 = ta_selcnt(108, 140)
     t8 = base8 < 5 and sel8 > 250 and clr8 < 10
     results['T8 textarea selection'] = (t8, 'base=%d sel=%d clr=%d' % (base8, sel8, clr8))
 
     # ── T7 窗口 chrome (): 关闭 / 拖动移动 / 最大化还原 ──
     # 编辑器窗 chrome 区 abs[506,560)x[60,78): ✕关=(551,69) ▢最=(533,69) ▁最=(507,69)
-    # 关闭后编辑器原区 (470,70,550,410) 变桌面 0x8410 (main 只到 x<460)。
-    pre_close = cnt(dump_fb(s, ROOT + '/vg7a.bin'), bpl, 0x8410, 470, 70, 550, 410)
+    # 关闭后编辑器原区 (470,70,550,410) 变桌面 0xC618 (main 只到 x<460)。
+    pre_close = cnt(dump_fb(s, ROOT + '/vg7a.bin'), bpl, 0xC618, 470, 70, 550, 410)
     ok_close = click_until(551, 69, lambda: cnt(dump_fb(s, ROOT + '/vg7b.bin'),
-        bpl, 0x8410, 470, 70, 550, 410) > 9000)
-    main_ok = cnt(dump_fb(s, ROOT + '/vg7b.bin'), bpl, 0x0019, 40, 21, 440, 38) > 500
+        bpl, 0xC618, 470, 70, 550, 410) > 9000)
+    main_ok = cnt(dump_fb(s, ROOT + '/vg7b.bin'), bpl, 0x0010, 40, 21, 440, 38) > 500
     mm(*PARK); time.sleep(0.3)
     results['T7a chrome close'] = (ok_close and main_ok,
         'pre_desk=%d close_ok=%s main_title=%s' % (pre_close, ok_close, main_ok))
@@ -312,13 +322,15 @@ try:
     # 拖动主窗标题 (300,29)->(360,79): 主窗(20,20,440,340)→(80,70,440,340)。
     # 造标题带 (80,21..39) 消失、新带 (80,71..89) 出现 → 证移动且无残影。
     db = dump_fb(s, ROOT + '/vg7d1.bin')
-    old_title_pre = cnt(db, bpl, 0x0019, 80, 21, 300, 39)
-    new_title_pre = cnt(db, bpl, 0x0019, 80, 70, 300, 89)
+    old_title_pre = cnt(db, bpl, 0x0010, 80, 21, 300, 39)
+    new_title_pre = cnt(db, bpl, 0x0010, 80, 70, 300, 89)
     drag_select(300, 29, 360, 79)
     da = dump_fb(s, ROOT + '/vg7d2.bin')
-    old_title_post = cnt(da, bpl, 0x0019, 80, 21, 300, 39)
-    new_title_post = cnt(da, bpl, 0x0019, 80, 70, 300, 89)
-    t7b = (old_title_pre > 400 and new_title_pre < 10
+    old_title_post = cnt(da, bpl, 0x0010, 80, 21, 300, 39)
+    new_title_post = cnt(da, bpl, 0x0010, 80, 70, 300, 89)
+    # new_title_pre 允 <100: 拖前目标位可能有聚焦按钮亮环 (C_TITLEFX) 残在 y80,
+    # 是正常 GUI 焦点指示, 非拖动残影 (整条真标题 >400)。
+    t7b = (old_title_pre > 400 and new_title_pre < 100
         and old_title_post < 10 and new_title_post > 400)
     results['T7b drag move'] = (t7b,
         'old_pre=%d new_pre=%d old_post=%d new_post=%d'
@@ -326,14 +338,14 @@ try:
 
     # 主窗现(80,70); chrome ▢ abs(80+413,79)=(493,79)。最大化 → 标题蓝铺满 (0,0,640,18)。
     def maximized():
-        return cnt(dump_fb(s, ROOT + '/vg7m.bin'), bpl, 0x0019, 0, 0, 640, 18) > 9000
+        return cnt(dump_fb(s, ROOT + '/vg7m.bin'), bpl, 0x0010, 0, 0, 640, 18) > 9000
     ok_max = click_until(533, 79, maximized)
     def de_maximized():
         d = dump_fb(s, ROOT + '/vg7r.bin')
-        return cnt(d, bpl, 0x0019, 0, 0, 640, 18) < 500
+        return cnt(d, bpl, 0x0010, 0, 0, 640, 18) < 500
     ok_rest = click_until(613, 9, de_maximized) # 满屏后 ▢ 在 (640-54+27, 9)=(613,9)
     drest = dump_fb(s, ROOT + '/vg7r2.bin')
-    title_back = cnt(drest, bpl, 0x0019, 180, 71, 300, 88) > 400
+    title_back = cnt(drest, bpl, 0x0010, 180, 71, 300, 88) > 400
     t7c = ok_max and ok_rest and title_back
     results['T7c max+restore'] = (t7c,
         'max=%s rest=%s title_back=%s' % (ok_max, ok_rest, title_back))
@@ -341,18 +353,18 @@ try:
     # ── T9 拖动快路径: 中途不松手即见窗口跟随 + 暴露区正确 ( 无桌面闪清) ──
     # 主窗现 (80,70,440,340), 标题带 y[70,88)。按 (300,79) 拖把手(off 220,9),
     # 移到 (300,109) 不松 → 新原点 (80,100), 标题带 y[100,118]。
-    # 上缘暴露条 y[70,99] x[80,520) 应补成桌面 0x8410 (无旧窗残影); 若走旧整屏清会
+    # 上缘暴露条 y[70,99] x[80,520) 应补成桌面 0xC618 (无旧窗残影); 若走旧整屏清会
     # 闪, 但静态帧此刻窗口已在中位 → 证"随持拖动 + 暴露补正确", 即抗闪机制。
     mm(300, 79); time.sleep(0.3)
     mon_cmd(s, 'mouse_button 1', 0.05); time.sleep(0.3) # 按下标题开始拖动
     mm(300, 109); time.sleep(0.6) # 移到中位, 按住不停
     d9 = dump_fb(s, ROOT + '/vg9m.bin')
-    mid_band = cnt(d9, bpl, 0x0019, 120, 101, 400, 118) # 新标题带已到 y100-118
-    mid_expose = cnt(d9, bpl, 0x8410, 90, 70, 400, 99) # 上缘暴露条变桌面
+    mid_band = cnt(d9, bpl, 0x0010, 120, 101, 400, 118) # 新标题带已到 y100-118
+    mid_expose = cnt(d9, bpl, 0xC618, 90, 70, 400, 99) # 上缘暴露条变桌面
     mon_cmd(s, 'mouse_button 0', 0.05); time.sleep(0.6) # 松开 → 收尾整屏兜底
     d9f = dump_fb(s, ROOT + '/vg9f.bin')
-    fin_band = cnt(d9f, bpl, 0x0019, 120, 101, 400, 118)
-    fin_expose = cnt(d9f, bpl, 0x8410, 90, 70, 400, 99)
+    fin_band = cnt(d9f, bpl, 0x0010, 120, 101, 400, 118)
+    fin_expose = cnt(d9f, bpl, 0xC618, 90, 70, 400, 99)
     t9 = (mid_band > 400 and mid_expose > 1200
         and fin_band > 400 and fin_expose > 1200)
     results['T9 drag mid follow+expose'] = (t9,
@@ -401,18 +413,19 @@ try:
         'panel=%d text=%d ed=%d' % (panel_white, item1_text, ed_after))
 
     # ── T12 TAB 焦点循环 () ──
-    # 窗 (80, 100): b_pop 屏 (100, 160)-(168, 186); b_cn 屏 (180, 160)-(248, 186)
-    # 焦点环 C_TITLEFX (0x0019) 外扩 1px
+    # v6.5.4 模态调度后不用"弹窗"钮 (会开出模态框吞键盘)。改用相邻两钮:
+    # 窗 (80, 100): b_clear"清空"屏 (260,160)-(308,186); b_txt"编辑器" (340,160)-(404,186)
+    # 点"清空"只清输入框 (无对话框副作用), 得焦点环后 TAB → "编辑器"
     mm(*PARK); time.sleep(0.3)
-    click(134, 173); time.sleep(0.4) # 点 b_pop 中心
+    click(294, 173); time.sleep(0.4) # 点 b_clear 中心 (聚焦)
     d12a = dump_fb(s, ROOT + '/vg12a.bin')
-    ring_pop = cnt(d12a, bpl, 0x0019, 99, 159, 170, 188)
+    ring_clr = cnt(d12a, bpl, 0x0010, 259, 159, 310, 188)
     mon_cmd(s, 'sendkey tab', 0.2); time.sleep(0.4)
     d12b = dump_fb(s, ROOT + '/vg12b.bin')
-    ring_pop2 = cnt(d12b, bpl, 0x0019, 99, 159, 170, 188)
-    ring_cn = cnt(d12b, bpl, 0x0019, 179, 159, 250, 188)
-    t12 = ring_pop > 30 and ring_pop2 < 5 and ring_cn > 30
-    results['T12 tab focus'] = (t12, 'pop=%d pop2=%d cn=%d' % (ring_pop, ring_pop2, ring_cn))
+    ring_clr2 = cnt(d12b, bpl, 0x0010, 259, 159, 310, 188)
+    ring_txt = cnt(d12b, bpl, 0x0010, 339, 159, 410, 188)
+    t12 = ring_clr > 30 and ring_clr2 < 5 and ring_txt > 30
+    results['T12 tab focus'] = (t12, 'clr=%d clr2=%d txt=%d' % (ring_clr, ring_clr2, ring_txt))
 
     print('OVERALL', 'PASS' if all(v[0] for v in results.values()) else 'FAIL')
     for k, (ok, info) in results.items():

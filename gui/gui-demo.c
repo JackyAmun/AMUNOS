@@ -23,13 +23,20 @@ static void appdec(char *s, int v) { while (*s) s++; char t[12]; int i = 0;
  do { t[i++] = (char)('0' + v % 10); v /= 10; } while (v);
  while (i--) *s++ = t[i]; *s = 0; }
 static void appstr(char *s, const char *p) { while (*p) { s[gstrlen(s)] = *p; s[gstrlen(s)+1] = 0; p++; } }
+/* v6.5.4: 整块清零 — 只清 s[0] 时, 残留旧字节 (非零) 会让 appstr 的
+ * "gstrlen 找尾"跳过残留区, 两次点击的文本错位拼在一起 (列表选: 深圳 3/8表选: …) */
+static void strclr(char *s, int n) { for (int i = 0; i < n; i++) s[i] = 0; }
 /* 回读文本区内容 → 状态栏 (取代原"读回"按钮): bytes= 字节数, lines= 行数 */
 static void ed_update_sb(void) {
  if (ewin < 0 || ed_ta < 0 || ed_sb < 0) return;
  int n = sys_gui_tarea_get(ewin, ed_ta, edbuf, sizeof(edbuf));
+ if (n < 0) n = 0;
+ if (n > (int)sizeof(edbuf)) n = (int)sizeof(edbuf); /* 防御: 防读越界 */
  int lines = 1;
  for (int i = 0; i < n; i++) if (edbuf[i] == '\n') lines++;
- char s[48]; s[0] = 0;
+ if (lines < 1 || lines > 9999) lines = 1;
+ /* v6.5.4: 整块清零的栈缓冲 (见 strclr 注释) */
+ char s[96]; strclr(s, sizeof(s));
  appstr(s, "UTF-8 | bytes="); appdec(s, n);
  appstr(s, " | lines="); appdec(s, lines);
  sys_gui_wnd_text(ewin, ed_sb, s);
@@ -104,7 +111,7 @@ int main(void) {
  /* 菜单激活 (ch = (menu<<8) | item) */
  if (ev[i].ctl == mb) {
  int m = (ev[i].ch >> 8) & 0xFF, it = ev[i].ch & 0xFF;
- char s[64]; s[0] = 0;
+ char s[64]; strclr(s, sizeof(s));
  appstr(s, "菜单: "); appdec(s, m); appstr(s, "/");
  appdec(s, it);
  if (m == mfile && it == 4) { sys_gui_leave(); return 0; } /* 退出 */
@@ -124,7 +131,7 @@ int main(void) {
  else if (it == 1) sys_gui_wnd_text(win, st, "视图: 状态栏 (待实现)");
  }
  if (m == mhelp) {
- if (it == 0) sys_gui_wnd_text(win, st, "关于: AMUNOS Classic GUI 0.2 (v6.5.3)");
+ if (it == 0) sys_gui_wnd_text(win, st, "关于: AMUNOS Classic GUI 0.2.1 (v6.5.4)");
  else if (it == 2) sys_gui_wnd_text(win, st, "说明: TAB 切焦点, Alt+字母 开菜单, ↑↓ 列表");
  }
  if (ev[i].ch == ((mfile<<8)|4)) continue;
@@ -148,23 +155,25 @@ int main(void) {
  if (ewin >= 0) sys_gui_win_raise(ewin);
  else {
  ewin = sys_gui_win(140, 60, 420, 360, "记事簿");
- sys_gui_win_raise(ewin); /* 主窗点击 raise 把自己顶到 z 顶, 新窗要再 raise */
+ /* v6.5.4: 先建控件再置顶+raise — raise 依赖 foc_wid 接管键盘焦点,
+ * 顺序反了 foc_win 仍停在下层主窗, 打字全部落错窗 */
  ed_ta = sys_gui_tarea(ewin, 8, 30, 404, 260);
  const char *init =
  "第一行 Hello 中文\n第二行 中英混合 abc 123\n第三行 你好, AMUNOS!\n";
  sys_gui_tarea_set(ewin, ed_ta, init, gstrlen(init));
  ed_sb = sys_gui_statusbar(ewin, 8, 330, 404, "UTF-8 | bytes=- | lines=-");
+ sys_gui_win_raise(ewin); /* raise: 点击编辑器窗激活, 切换 active, 提到 z 顶 */
  ed_update_sb(); /* 初始即回读显示 */
  }
  } else if (c == b_exit) { sys_gui_leave(); return 0; }
  else if (c == chk_b || c == chk_i) {
- char s[32]; s[0] = 0;
+ char s[32]; strclr(s, sizeof(s));
  appstr(s, "复选 ev.ch="); appdec(s, ev[i].ch);
  sys_gui_wnd_text(win, st, s);
  } else if (c == r_s || c == r_m || c == r_l) {
  sys_gui_wnd_text(win, st, "单选: 选中 (互斥 OK)");
  } else if (c == li) {
- char s[48]; s[0] = 0;
+ char s[48]; strclr(s, sizeof(s));
  char buf[32]; int sel = sys_gui_list_get(win, li, buf, 32);
  int n = sys_gui_list_n(win, li);
  appstr(s, "列表选: ");
@@ -178,7 +187,7 @@ int main(void) {
  if (ev[i].win == ewin) { ed_update_sb(); continue; } /* 编辑中实时刷新状态栏 */
  if (ev[i].win != win) continue;
  int c = ev[i].ch;
- char s[48]; s[0] = 0;
+ char s[48]; strclr(s, sizeof(s));
  if (c == '\b') appstr(s, "键: 退格");
  else if (c == 128) appstr(s, "键: LEFT");
  else if (c == 129) appstr(s, "键: RIGHT");
