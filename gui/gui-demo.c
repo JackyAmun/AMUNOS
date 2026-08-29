@@ -131,7 +131,7 @@ int main(void) {
  else if (it == 1) sys_gui_wnd_text(win, st, "视图: 状态栏 (待实现)");
  }
  if (m == mhelp) {
- if (it == 0) sys_gui_wnd_text(win, st, "关于: AMUNOS Classic GUI 0.2.1 (v6.5.4)");
+ if (it == 0) sys_gui_wnd_text(win, st, "关于: AMUNOS Classic GUI 0.3 (v6.5.5)");
  else if (it == 2) sys_gui_wnd_text(win, st, "说明: TAB 切焦点, Alt+字母 开菜单, ↑↓ 列表");
  }
  if (ev[i].ch == ((mfile<<8)|4)) continue;

@@ -1,6 +1,6 @@
 # AMUNOS Classic
 
-![language](https://img.shields.io/badge/language-C%20%2F%20x86%20ASM-blue) ![kernel](https://img.shields.io/badge/kernel-v6.5.5-8A2BE2) ![gui](https://img.shields.io/badge/GUI-0.2-008080) ![license](https://img.shields.io/badge/license-MIT--style%20%2B%20third--party-lightgrey)
+![language](https://img.shields.io/badge/language-C%20%2F%20x86%20ASM-blue) ![kernel](https://img.shields.io/badge/kernel-v6.5.5-8A2BE2) ![gui](https://img.shields.io/badge/GUI-0.3-008080) ![license](https://img.shields.io/badge/license-MIT--style%20%2B%20third--party-lightgrey)
 
 > **一个从零编写的 x86 32 位保护模式操作系统 · 自举 · 中文原生**
 
@@ -12,7 +12,7 @@ AMUNOS 从一段 FAT12 引导扇区启动，进入 **x86 32 位保护模式**（
 写 HELLO.C  →  TCC HELLO.C -o HELLO.EXE  →  ELF HELLO.EXE  →  HELLO OK from TCC
 ```
 
-在此基础上提供 **内核驻留的图形窗口服务器（AMUNOS Classic GUI 0.2）**：
+在此基础上提供 **内核驻留的图形窗口服务器（AMUNOS Classic GUI 0.3）**：
 窗口 / 控件 / 菜单 / 多行编辑 / 鼠标 / 中文点阵渲染，全部经 `int 0x30` 系统调用
 对用户态暴露——用户程序几十行 C 就能写出带菜单栏、复选框、文本编辑器的完整 GUI。
 
@@ -31,11 +31,11 @@ AMUNOS 从一段 FAT12 引导扇区启动，进入 **x86 32 位保护模式**（
 | **Shell** | REPL、行编辑（←→/Home/End/Del）、`DIR -P` 分页、按名运行 `XXX.ELF/.EXE/...` |
 | **中文** | GB2312/UTF-8 全链路：中文文件名（8.3 短名塞 GB 双字节）、点阵渲染（HZK16）、U2GB 映射表 |
 | **串口** | COM1 屏幕镜像 + 键盘/串口统一输入源，串口即远程控制台 |
-| **GUI 0.2** | 内核窗口服务器：多窗叠放 / 拖动 / 最小化·最大化·关闭 / 8 类控件 / 菜单栏 / 文本编辑 / 全中文 |
+| **GUI 0.3** | 内核窗口服务器：多窗叠放 / 拖动 / 最小化·最大化·关闭 / 8 类控件 / 菜单栏 / 文本编辑 / 全中文 |
 
 ---
 
-## 🪟 AMUNOS Classic GUI 0.2
+## 🪟 AMUNOS Classic GUI 0.3
 
 图形栈：**VBE 640×480×16bpp 帧缓冲**。内核 `gui.c` 是一个 retained-mode 窗口服务器——
 每个窗口一块离屏 RGB565 缓冲，变更后按 Z 序增量合成到 LFB（单窗 blit / 区域暴露 /
@@ -197,7 +197,7 @@ ABI：`eax=调用号, ebx=arg1, ecx=arg2, edx=arg3`，返回值在 EAX。
 - `docs/中文输入法_设计.md` — 拼音 IME 方案（全用户态，零内核增量）
 - `docs/AMUNOS_操作逻辑_生产工具_应用生态规划.md` / `docs/AMUNOS_未来路线报告.md`
 
-版本号约定：内核 `vX.Y.Z`（串口与 shell 启动横幅一致），GUI 独立版本 `GUI 0.2`。
+版本号约定：内核 `vX.Y.Z`（串口与 shell 启动横幅一致），GUI 独立版本 `GUI 0.3`。
 变更历史见 git 提交信息（每 commit 标注版本）。
 
 ## ⚖️ 许可
