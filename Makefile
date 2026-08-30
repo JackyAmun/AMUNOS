@@ -9,7 +9,7 @@ BOOTFLAGS   = -f bin
 CFLAGS      = -m32 -c -fno-builtin -ffreestanding -fno-pie -std=gnu99 -I.
 LDFLAGS     = -m elf_i386 -T linker.ld
 
-OBJS = head.o kernel.o command.o fault.o mem.o syscall.o task.o vga.o kbd.o idt.o mouse.o fs.o disk_io.o elf.o serial.o fb.o gui.o
+OBJS = head.o kernel.o command.o fault.o mem.o syscall.o task.o vga.o kbd.o idt.o mouse.o fs.o disk_io.o dev.o elf.o serial.o fb.o gui.o
 
 BOOT_BIN   = boot.bin
 KERNEL_BIN = kernel.bin
@@ -22,7 +22,7 @@ EDIT_ELF   = edit.elf
 GUI_ELF    = gui-demo.elf
 
 .PHONY: all clean run run-gui run-dual run-dual-gui run-serial \
-        run-trio run-trio-gui run-trio-serial
+        run-trio run-trio-gui run-trio-serial run-floppy floppy
 
 all: $(A_IMG)
 
@@ -148,6 +148,18 @@ run-trio-serial: $(A_IMG) $(B_IMG) $(C_IMG)
 	  -monitor telnet:127.0.0.1:45454,server,nowait \
 	  -serial tcp:127.0.0.1:5555,server,nowait \
 	  -parallel file:lpt.log
+
+# ── 软盘引导 (v6.5.6 阶段A): A.img 作软盘 (-fda) 启动, IDE 上挂 B:/C: 数据盘。
+#    注意: 内核无 FDC 驱动, 运行时读不了 A: 自身 (无 TCC/BIN) — 数据与字库
+#    由 B:/C: 提供 (fb_font_init 跨盘搜索)。CHS 分块引导路径在此模式生效。
+run-floppy: $(A_IMG) $(B_IMG) $(C_IMG)
+	qemu-system-i386 -rtc base=localtime -fda $(A_IMG) -boot a -hda $(B_IMG) -hdb $(C_IMG)
+
+# floppy: A.img 本身即 1.44MB 软盘几何, 可直接写物理软盘 (Linux):
+#   dd if=A.img of=/dev/fd0 bs=512 conv=notrunc
+floppy: $(A_IMG)
+	@echo "A.img is 1.44MB floppy geometry. Write to real disk with:"
+	@echo "  dd if=A.img of=/dev/fd0 bs=512 conv=notrunc"
 
 clean:
 	rm -f *.o *.bin *.img

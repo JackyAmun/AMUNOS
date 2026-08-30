@@ -45,16 +45,17 @@ void to_fat12_name(char* src, char* dest) {
 static void load_fat_cache(void);   /* 定义见下; fs_init 须先声明 (fs.c 内部) */
 
 /* ── 初始化: 读取 BPB ── */
-void fs_init() {
+/* 返回 0=成功, -1=失败 (dev_automount 依此判定挂载) */
+int fs_init() {
     unsigned char bpb[512];
     int ret = read_sector_asm(0, bpb, current_drive_idx);
     if (ret != 0) {
         put_str("Error: Disk read failed\n");
-        return;
+        return -1;
     }
     if (bpb[510] != 0x55 || bpb[511] != 0xAA) {
         put_str("Error: Invalid Disk Format\n");
-        return;
+        return -1;
     }
     int reserved_sectors = *(unsigned short*)(bpb + 14);
     int fat_count = bpb[16];
@@ -71,7 +72,7 @@ void fs_init() {
         fs_root_entries < 1) {
         put_str("Error: Invalid BPB geometry\n");
         fat_cached = 0;
-        return;
+        return -1;
     }
 
     fs_fat_lba = reserved_sectors;
@@ -86,6 +87,7 @@ void fs_init() {
     }
     cwd_cluster = 0;  // 切盘后回到根目录
     load_fat_cache();            // v6.8.1: FAT 读入 0x70000 缓存, 快读少读盘
+    return 0;
 }
 
 /* ── 盘符限定路径 (v6.5.1): "A:\..." / "B:..." / "./..." 统一入口 ──
@@ -135,9 +137,11 @@ int is_cmds_file(char *fat11) {
     return 1;
 }
 
-/* 磁盘是否存在 (读扇区 0 验 0x55AA), 供 cmd_custom 跳过失盘, 避免 fs_init 报错刷屏 */
+/* 磁盘是否存在: 先查 dev_scan() 的 IDENTIFY 表 (空槽直接否, 不刷屏),
+ * 再读扇区 0 验 0x55AA (IDENTIFY 在但非 FAT 盘仍由这里兜底) */
 int fs_drive_present(int d) {
     unsigned char b[512];
+    if (d >= 0 && d < 4 && !devs[d].present) return 0;
     int sv = current_drive_idx, sc = cwd_cluster;
     current_drive_idx = d;
     int ret = read_sector_asm(0, b, d);

@@ -16,6 +16,7 @@
 section .text
 global read_sector_asm
 global write_sector_asm
+global identify_drive_asm
 
 DISK_TIMEOUT equ 0x100000
 
@@ -268,5 +269,104 @@ write_sector_asm:
     add esp, 4
     popad
     popfd                         ; 恢复 IF (B3 配对)
+    pop ebp
+    ret
+
+; -------------------------------------------------------------------------
+; int identify_drive_asm(int drive_idx, void* buf512)
+; ATA IDENTIFY DEVICE (0xEC): 读回 512 字节设备信息。
+;   buf word 27-46 = 型号 (40 字节, 大端字序), word 60-61 = LBA 扇区总数。
+; 无盘 (选驱动器后 BSY 永不清 / ERR) → 软复位重试 3 次 → -1。
+; 栈布局与 read/write_sector_asm 相同, 返回值槽 [esp+32]。
+; -------------------------------------------------------------------------
+identify_drive_asm:
+    push ebp
+    mov ebp, esp
+    pushfd
+    cli                            ; B3 磁盘锁
+    pushad
+    sub esp, 4
+    mov dword [esp], 3             ; 重试次数
+
+    ; 0. 通道基址
+    mov ebx, 0x1F0
+    mov ecx, [ebp + 8]
+    test ecx, 2
+    jz .base_ok_i
+    mov ebx, 0x170
+.base_ok_i:
+
+.retry_i:
+    ; 1. 选择驱动器
+    lea edx, [ebx + 6]
+    mov al, 0xE0
+    test ecx, 1
+    jz .master_i
+    or al, 0xF0
+.master_i:
+    out dx, al
+
+    ; 等 BSY 清零
+    lea edx, [ebx + 7]
+    mov ecx, DISK_TIMEOUT
+.wait_bsy_i:
+    in al, dx
+    test al, 0x80
+    jz .bsy_ok_i
+    dec ecx
+    jnz .wait_bsy_i
+    jmp .fail_i
+.bsy_ok_i:
+
+    ; 2. 扇区数/LBA 全 0 + IDENTIFY 命令
+    lea edx, [ebx + 2]
+    xor al, al
+    out dx, al
+    lea edx, [ebx + 3]
+    out dx, al
+    lea edx, [ebx + 4]
+    out dx, al
+    lea edx, [ebx + 5]
+    out dx, al
+    lea edx, [ebx + 7]
+    mov al, 0xEC
+    out dx, al
+
+    ; 3. 等 DRQ (ERR → 重试); 无盘时状态 0x00 (DRDY 不置位) 也算无盘
+    mov ecx, DISK_TIMEOUT
+.wait_drq_i:
+    in al, dx
+    test al, 0x08
+    jnz .do_read_i
+    test al, 0x01
+    jnz .fail_i
+    test al, al
+    jz .fail_i
+    dec ecx
+    jnz .wait_drq_i
+    jmp .fail_i
+
+.do_read_i:
+    mov edi, [ebp + 12]
+    mov ecx, 256
+    lea edx, [ebx + 0]
+    rep insw
+    mov dword [esp + 32], 0
+    jmp .exit_i
+
+.fail_i:
+    ; 调试: 把失败时的状态寄存器记到 buf[0]
+    in al, dx
+    mov edi, [ebp + 12]
+    mov [edi], al
+    call ide_soft_reset
+    dec dword [esp]
+    jnz .retry_i
+    mov dword [esp + 32], -1
+
+.exit_i:
+    add esp, 4
+    popad
+    popfd
     pop ebp
     ret

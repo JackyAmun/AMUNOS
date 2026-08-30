@@ -19,6 +19,14 @@ static inline unsigned short io_in16(unsigned short port) {
  __asm__ volatile ("inw %1, %0" : "=a"(data) : "nd"(port));
  return data;
 }
+static inline void io_out32(unsigned short port, unsigned int data) {   /* v6.5.6: PCI conf */
+ __asm__ volatile ("outl %0, %1" : : "a"(data), "nd"(port));
+}
+static inline unsigned int io_in32(unsigned short port) {
+ unsigned int data;
+ __asm__ volatile ("inl %1, %0" : "=a"(data) : "nd"(port));
+ return data;
+}
 
 // --- 2. FAT12 结构定义 ---
 typedef struct {
@@ -65,7 +73,12 @@ extern int read_sector_asm(unsigned int lba, void* buf, int drive_idx);
 extern int write_sector_asm(unsigned int lba, void* buf, int drive_idx);
 
 // --- 5. 文件系统接口 (fs.c) ---
-void fs_init();
+int fs_init();     /* v6.5.6: 返回 0=成功/-1=失败 (dev_automount 判定挂载) */
+void dev_scan(void);       /* v6.5.6 阶段B: IDE IDENTIFY 自动发现 (dev.c) */
+void dev_automount(void);  /* 引导盘恒 A:, 其余按槽序补位 */
+void pci_scan(void);       /* PCI bus0 枚举 (仅列出 01xx/02xx) */
+void devs_list(void);      /* shell DEVS 命令 */
+#include "dev.h"           /* blkdev_t devs[4] 声明在 dev.h */
 void fs_sync();
 int fs_find_entry(char* name, FAT12Entry* out_entry);
 int fs_find_entry_in_dir(int dir_cluster, char* name, FAT12Entry* out_entry);

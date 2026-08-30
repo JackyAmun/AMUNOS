@@ -555,6 +555,7 @@ void exec_cmd(char* line){
 
     if(!strcmp(cmd,"DIR"))cmd_dir(a1);else if(!strcmp(cmd,"CD"))cmd_cd(a1);
     else if(!strcmp(cmd,"CLS"))cls();else if(!strcmp(cmd,"VER"))cmd_ver();
+    else if(!strcmp(cmd,"DEVS"))devs_list();   /* v6.5.6 阶段B: 设备清单 */
     else if(!strcmp(cmd,"HELP"))cmd_help(a1);else if(!strcmp(cmd,"ECHO"))cmd_echo(a1);
     else if(!strcmp(cmd,"SER"))cmd_ser(a1);else if(!strcmp(cmd,"LPT"))cmd_lpt(a1);
     else if(!strcmp(cmd,"TIME"))cmd_time();else if(!strcmp(cmd,"TYPE"))cmd_type(a1);

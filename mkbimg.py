@@ -133,6 +133,15 @@ EDIT /EDIT.ELF
 '''
 add_to(root, 'CMDS', 'BIN', CMDS_BIN)
 
+# ── 字库 (v6.5.6 阶段B): 软盘引导时 A: 运行时不可读, fb_font_init 跨盘搜索
+#    会从数据盘根目录加载 HZK16 / U2GB → GUI 中文在 -fda 模式不退化 ──
+if os.path.exists('HZK16'):
+    add_file('HZK16', '   ', 'HZK16')
+if os.path.exists('U2GB.BIN'):
+    add_file('U2GB', 'BIN', 'U2GB.BIN')
+elif os.path.exists('u2gb.bin'):
+    add_file('U2GB', 'BIN', 'u2gb.bin')
+
 # ── 落盘 ──
 for i, e in enumerate(root.entries):
     d[ROOT + i * 32:ROOT + i * 32 + 32] = e

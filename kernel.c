@@ -80,7 +80,9 @@ void kmain(){
     init_idt();
     mem_init();
     timer_init();
-    fs_init();
+    dev_scan();           /* v6.5.6 阶段B: IDE IDENTIFY 自动发现 4 槽 */
+    dev_automount();      /* 引导盘恒 A:, 其余按槽序补位 (内含 fs_init) */
+    pci_scan();           /* PCI bus0 枚举, 串口列 01xx/02xx */
     fb_init();            /* 读 boot.asm 的 VBE fb 参数; 图形模式切软件文本缓冲 */
     cls();                /* 清当前 vram (图形=软件缓冲 / 文本=0xB8000) */
     fb_font_init();       /* 从 C:HZK16 加载字库 (v6.8 中文) */

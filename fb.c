@@ -232,33 +232,44 @@ void fb_init(void) {
  * (v6.8) — 文件不落 C 盘。 */
 void fb_font_init(void) {
     if (!fb_on) return;
-    drive_ctx_t c = fs_drive_enter(0);                    /* 临时切到 A: */
-    FAT12Entry e;
-    int idx = fs_find_entry("HZK16", &e);
-    if (idx >= 0 && e.size > 0) {
-        hzk16 = (unsigned char *)mem_alloc((unsigned)e.size);
-        if (hzk16) {
-            fs_read_file(&e, (char *)hzk16, (int)e.size);
-            put_str("fb: HZK16 loaded\n");
-        } else {
-            put_str("fb: no mem for HZK16\n");
+    /* v6.5.6 阶段B: 字库跨盘搜索 — 按盘符 A..D 逐盘找 HZK16 / U2GB.BIN
+     * (软盘引导时 A: 运行时不可读, 字库落在 IDE 数据盘上) */
+    int d;
+    for (d = 0; d < 4 && !hzk16; d++) {
+        if (!fs_drive_present(d)) continue;
+        drive_ctx_t c = fs_drive_enter(d);
+        FAT12Entry e;
+        int idx = fs_find_entry("HZK16", &e);
+        if (idx >= 0 && e.size > 0) {
+            hzk16 = (unsigned char *)mem_alloc((unsigned)e.size);
+            if (hzk16) {
+                fs_read_file(&e, (char *)hzk16, (int)e.size);
+                put_str("fb: HZK16 loaded\n");
+            } else {
+                put_str("fb: no mem for HZK16\n");
+            }
         }
-    } else {
-        put_str("fb: A:HZK16 not found (Latin only)\n");
+        fs_drive_restore(c);
     }
+    if (!hzk16) put_str("fb: HZK16 not found on any drive (Latin only)\n");
+
     /* Unicode→GB2312 映射表 (UTF-8 支持): 每 4 字节 [uni u16][gb u16], 按 uni 升序 */
-    idx = fs_find_entry("U2GB.BIN", &e);
-    if (idx >= 0 && e.size > 0) {
-        u2gb = (unsigned int *)mem_alloc((unsigned)e.size);
-        if (u2gb) {
-            fs_read_file(&e, (char *)u2gb, (int)e.size);
-            u2gb_n = (int)(e.size / 4);
-            put_str("fb: U2GB loaded\n");
-        } else {
-            put_str("fb: no mem for U2GB\n");
+    for (d = 0; d < 4 && !u2gb; d++) {
+        if (!fs_drive_present(d)) continue;
+        drive_ctx_t c = fs_drive_enter(d);
+        FAT12Entry e;
+        int idx = fs_find_entry("U2GB.BIN", &e);
+        if (idx >= 0 && e.size > 0) {
+            u2gb = (unsigned int *)mem_alloc((unsigned)e.size);
+            if (u2gb) {
+                fs_read_file(&e, (char *)u2gb, (int)e.size);
+                u2gb_n = (int)(e.size / 4);
+                put_str("fb: U2GB loaded\n");
+            } else {
+                put_str("fb: no mem for U2GB\n");
+            }
         }
-    } else {
-        put_str("fb: A:U2GB.BIN not found (GB2312 only)\n");
+        fs_drive_restore(c);
     }
-    fs_drive_restore(c);
+    if (!u2gb) put_str("fb: U2GB.BIN not found on any drive (GB2312 only)\n");
 }

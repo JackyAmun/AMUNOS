@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-r"""A.img for AMUNOS v6.6 — boot + kernel (sectors 1..192) + FAT12 system disk
+r"""A.img for AMUNOS — boot + kernel (sectors 1..384) + FAT12 system disk
 with a two-level directory tree (BOOT\ BIN\ USR\LIB USR\INCLUDE USR\SRC).
 
-Geometry (matches boot.asm BPB: reserved=193 sectors for boot+kernel):
-  sector 0       boot.bin
-  sector 1..192  kernel.bin (must stay < 192 sectors = 96KB)
-  sector 129..137  FAT1 (9 sectors)
-  sector 138..146  FAT2 (9 sectors)
-  sector 147..160  root dir (224 entries = 14 sectors)
-  sector 161..     data area (root files + subdirectories)
+Geometry (matches boot.asm BPB: reserved=385 sectors for boot+kernel):
+  sector 0        boot.bin
+  sector 1..384   kernel.bin (must stay < 384 sectors = 192KB)
+  sector 385..393  FAT1 (9 sectors)
+  sector 394..402  FAT2 (9 sectors)
+  sector 403..416  root dir (224 entries = 14 sectors)
+  sector 417..     data area (root files + subdirectories)
 
 Tree:
   A:\
@@ -25,13 +25,13 @@ import struct, sys, os
 path = sys.argv[1] if len(sys.argv) > 1 else 'A.img'
 d = bytearray(2880 * 512)
 
-RESV   = 193              # reserved sectors (1 boot + 192 kernel, kernel<=96KB)
+RESV   = 385              # reserved sectors (1 boot + 384 kernel, kernel<=192KB)
 FATSEC = 9                # sectors per FAT
 ROOTENT= 224              # root directory entries
 FAT1   = RESV * 512       # offset of FAT1
 FAT2   = FAT1 + FATSEC * 512
-ROOT   = FAT2 + FATSEC * 512              # = sector 147
-DATA   = ROOT + (ROOTENT * 32)            # = sector 161
+ROOT   = FAT2 + FATSEC * 512              # = sector 403
+DATA   = ROOT + (ROOTENT * 32)            # = sector 417
 
 # ── boot + kernel preamble ──
 with open('boot.bin', 'rb') as f:
