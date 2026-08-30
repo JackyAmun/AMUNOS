@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-r"""A.img for AMUNOS v6.6 — boot + kernel (sectors 0..128) + FAT12 system disk
+r"""A.img for AMUNOS v6.6 — boot + kernel (sectors 1..192) + FAT12 system disk
 with a two-level directory tree (BOOT\ BIN\ USR\LIB USR\INCLUDE USR\SRC).
 
-Geometry (matches boot.asm BPB: reserved=129 sectors for boot+kernel):
+Geometry (matches boot.asm BPB: reserved=193 sectors for boot+kernel):
   sector 0       boot.bin
-  sector 1..128  kernel.bin (must stay < 128 sectors = 65536 bytes)
+  sector 1..192  kernel.bin (must stay < 192 sectors = 96KB)
   sector 129..137  FAT1 (9 sectors)
   sector 138..146  FAT2 (9 sectors)
   sector 147..160  root dir (224 entries = 14 sectors)

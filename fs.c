@@ -7,6 +7,7 @@
 #define FAT_CACHE_CAP    0x18000    /* 缓存容量上限 96KB (192 扇). 盘均为 1.44MB, FAT 远小于此 */
 static unsigned char *fat_cache = (unsigned char *)FAT_CACHE_ADDR; /* FAT 镜像 (RAM 缓存) */
 static int fat_cached = 0;          /* fat_cache 是否已装载当前盘 FAT */
+static int fat_cache_bytes = 0;     /* 已装载的 FAT 字节数 (B1 边界保护用) */
 
 // 全局变量
 int fs_root_lba = 0;
@@ -63,6 +64,16 @@ void fs_init() {
     fs_root_entries = *(unsigned short*)(bpb + 17);
     { int spc = bpb[13]; fs_spc = (spc >= 1 && spc <= 128) ? spc : 1; }
 
+    /* B10: BPB 几何合理性校验 — 非 FAT 盘/垃圾 BPB 不再照单全收
+     * (防 0 扇区 FAT 死循环、缓存越界、root_entries=0 类破坏) */
+    if (reserved_sectors < 1 || fat_count < 1 || fat_count > 4 ||
+        sectors_per_fat < 1 || sectors_per_fat > FAT_CACHE_CAP / 512 ||
+        fs_root_entries < 1) {
+        put_str("Error: Invalid BPB geometry\n");
+        fat_cached = 0;
+        return;
+    }
+
     fs_fat_lba = reserved_sectors;
     fs_root_lba = fs_fat_lba + (fat_count * sectors_per_fat);
     fs_data_lba = fs_root_lba + ((fs_root_entries * 32 + 511) / 512);
@@ -92,7 +103,7 @@ int parse_drive(char **pp) {
 }
 
 /* 临时切到目标盘: 记住原盘与 cwd; fs_init() 重载该盘 BPB 几何
- * (A: reserved=105, B:/C: =1, 不同!), 并把 cwd_cluster 清 0 → 天然得到 X:path==X:\path */
+ * (A: rsvd=193 (1 引导+192 内核), B:/C: 数据盘几何不同), 并把 cwd_cluster 清 0 → 天然得到 X:path==X:\path */
 drive_ctx_t fs_drive_enter(int drive) {
     drive_ctx_t c = { current_drive_idx, cwd_cluster };
     current_drive_idx = drive;
@@ -142,7 +153,13 @@ static void load_fat_cache(void) {
     if (n <= 0) { fat_cached = 0; return; }
     if (n * 512 > FAT_CACHE_CAP) n = FAT_CACHE_CAP / 512;   /* 超限只缓前段兜底 */
     for (int i = 0; i < n; i++)
-        read_sector_asm(fs_fat_lba + i, fat_cache + i * 512, current_drive_idx);
+        if (read_sector_asm(fs_fat_lba + i, fat_cache + i * 512,
+                            current_drive_idx) != 0) {
+            fat_cached = 0;      /* B2: 读失败 → 缓存视为未装载, 走保护路径 */
+            fat_cache_bytes = 0;
+            return;
+        }
+    fat_cache_bytes = n * 512;
     fat_cached = 1;
 }
 
@@ -164,6 +181,9 @@ static void flush_fat_sector(unsigned int s) {
 /* 读取簇 c 的 FAT 条目值 (FAT12/16), 基于缓存 */
 static unsigned fat_get_entry(unsigned int c) {
     unsigned char lo, hi;
+    /* B1: 条目超出已装载缓存 → 按 EOC 处理 (读链提前终止, 不越界取垃圾) */
+    { unsigned int need = (fs_fat_bits == 16) ? ((c + 1) * 2u) : (c + c / 2 + 2);
+      if (!fat_cached || need > (unsigned)fat_cache_bytes) return fat_eoc_marker(); }
     if (fs_fat_bits == 16) {
         unsigned int off = (unsigned int)c * 2;
         lo = fat_cache[off]; hi = fat_cache[off + 1];
@@ -176,6 +196,9 @@ static unsigned fat_get_entry(unsigned int c) {
 
 /* 写入簇 c 的 FAT 条目值, 更新缓存 + 写透两张 FAT */
 static void fat_set_entry(unsigned int c, unsigned int value) {
+    /* B1: 越界拒绝写 (只缓前段的大盘不写超界条目) */
+    { unsigned int need = (fs_fat_bits == 16) ? ((c + 1) * 2u) : (c + c / 2 + 2);
+      if (!fat_cached || need > (unsigned)fat_cache_bytes) return; }
     if (fs_fat_bits == 16) {
         unsigned int off = (unsigned int)c * 2;
         fat_cache[off] = value & 0xFF;
@@ -331,7 +354,9 @@ int fs_resolve_path(char* path) {
             if (seg[0] == '.' && seg[1] == '.' && !seg[2]) {   /* .. 上一级 */
                 if (dir != 0) {
                     unsigned char d[512];
-                    read_sector_asm(fs_cluster_lba(dir), d, current_drive_idx);
+                    /* B6: 读失败不得把未初始化栈缓冲当目录解析 */
+                    if (read_sector_asm(fs_cluster_lba(dir), d, current_drive_idx) != 0)
+                        return -1;
                     dir = ((FAT12Entry*)d)[1].start_cluster;
                 }
             } else if (seg[0] == '.' && !seg[1]) {
@@ -353,23 +378,35 @@ int fs_resolve_path(char* path) {
     return dir;
 }
 
-/* ── 读取文件内容 (v6.5.1: 每簇 fs_spc 扇都读, FAT16 数据盘用) ── */
-void fs_read_file(FAT12Entry* entry, char* buffer) {
+/* ── 读取文件内容 (v6.5.6: 有界读 + 读失败检测)
+ * v6.5.1: 每簇 fs_spc 扇都读, FAT16 数据盘用。
+ * v6.5.6 修 B4: 无 bufsize 参数时 buffer[entry->size]=0 可越界写 (字库等
+ * 二进制按 cap=size 读时曾越界 1 字节); 修 B2: 读盘失败曾把栈垃圾当数据。
+ * 语义: 读 min(size, bufsize) 字节; 仅当 size < bufsize 时在尾部写 NUL
+ * (字符串调用方传 size+1, 二进制调用方传 size)。返回字节数, 读失败 -1。 */
+int fs_read_file(FAT12Entry* entry, char* buffer, int bufsize) {
     unsigned short cluster = entry->start_cluster;
     int bytes_read = 0;
+    int ok = 1;
     unsigned char sec[512];
-    while (cluster >= 2 && !fat_is_eoc(cluster) && bytes_read < entry->size) {
+    if (bufsize < 0) bufsize = 0;
+    while (cluster >= 2 && !fat_is_eoc(cluster) && bytes_read < entry->size
+           && bytes_read < bufsize) {
         unsigned int lba = fs_cluster_lba(cluster);
-        for (int s = 0; s < fs_spc && bytes_read < entry->size; s++) {
-            read_sector_asm(lba + s, sec, current_drive_idx);
+        for (int s = 0; s < fs_spc && bytes_read < entry->size
+             && bytes_read < bufsize; s++) {
+            if (read_sector_asm(lba + s, sec, current_drive_idx) != 0) { ok = 0; break; }
             int remain = entry->size - bytes_read;
+            if (remain > bufsize - bytes_read) remain = bufsize - bytes_read;
             int n = (remain > 512) ? 512 : remain;
             for (int i = 0; i < n; i++) buffer[bytes_read + i] = sec[i];
             bytes_read += n;
         }
+        if (!ok) break;
         cluster = fat12_get_next_cluster(cluster);
     }
-    buffer[entry->size] = 0;
+    if (entry->size < bufsize) buffer[entry->size] = 0;
+    return ok ? bytes_read : -1;
 }
 
 /* ── 在指定目录中找空闲条目 ── */
@@ -382,7 +419,7 @@ static int find_free_entry(int dir_cluster, int* out_lba, int max_sectors) {
     for (int s = 0; s < n; s++) {
         int lba = fs_dir_lba(dir_cluster, s);
         if (lba < 0) break;
-        read_sector_asm(lba, buf, current_drive_idx);
+        if (read_sector_asm(lba, buf, current_drive_idx) != 0) break;  /* B2 */
         for (int i = 0; i < 16; i++) {
             if (buf[i].name[0] == 0 || (unsigned char)buf[i].name[0] == 0xE5) {
                 *out_lba = lba;
@@ -401,7 +438,7 @@ static int name_exists(int dir_cluster, char* fat_name) {
     for (int s = 0; s < n; s++) {
         int lba = fs_dir_lba(dir_cluster, s);
         if (lba < 0) break;
-        read_sector_asm(lba, buf, current_drive_idx);
+        if (read_sector_asm(lba, buf, current_drive_idx) != 0) break;  /* B2 */
         for (int i = 0; i < 16; i++) {
             if (buf[i].name[0] == 0) return 0;  // 未到结尾
             if ((unsigned char)buf[i].name[0] == 0xE5) continue;
@@ -459,24 +496,29 @@ static int fs_create_file_in_dir_inner(int dir_cluster, char* name, char* data, 
         for (int s = 0; s < fs_spc; s++) {
             int n = remain - s * 512;
             if (n >= 512) {
-                write_sector_asm(lba + s, data + off + s * 512, current_drive_idx);
+                if (write_sector_asm(lba + s, data + off + s * 512,
+                                     current_drive_idx) != 0)
+                    { put_str("Disk write error\n"); return -1; }
             } else if (n > 0) {
                 /* 最后一段: 部分扇区, 剩余字节清零 */
                 char tmp[512];
                 for (int k = 0; k < 512; k++) tmp[k] = 0;
                 for (int k = 0; k < n; k++) tmp[k] = data[off + s * 512 + k];
-                write_sector_asm(lba + s, tmp, current_drive_idx);
+                if (write_sector_asm(lba + s, tmp, current_drive_idx) != 0)
+                    { put_str("Disk write error\n"); return -1; }
             } else {
                 /* 簇内超出数据部分: 清零 */
                 char zero[512]; for (int k = 0; k < 512; k++) zero[k] = 0;
-                write_sector_asm(lba + s, zero, current_drive_idx);
+                if (write_sector_asm(lba + s, zero, current_drive_idx) != 0)
+                    { put_str("Disk write error\n"); return -1; }
             }
         }
     }
 
     // 填写目录条目
     FAT12Entry dir_buf[16];
-    read_sector_asm(lba, dir_buf, current_drive_idx);
+    if (read_sector_asm(lba, dir_buf, current_drive_idx) != 0)
+        { put_str("Disk read error\n"); return -1; }
     to_fat12_name(name, dir_buf[entry_idx].name);
     dir_buf[entry_idx].attr = 0x20;
     dir_buf[entry_idx].start_cluster = clusters[0];
@@ -484,7 +526,8 @@ static int fs_create_file_in_dir_inner(int dir_cluster, char* name, char* data, 
     for (int k = 0; k < 10; k++) dir_buf[entry_idx].reserved[k] = 0;
     dir_buf[entry_idx].time = 0;
     dir_buf[entry_idx].date = 0;
-    write_sector_asm(lba, dir_buf, current_drive_idx);
+    if (write_sector_asm(lba, dir_buf, current_drive_idx) != 0)
+        { put_str("Disk write error\n"); return -1; }
     return 0;
 }
 
@@ -520,7 +563,7 @@ void fs_create_directory(char* dirname) {
 
     // 填写父目录条目
     FAT12Entry dir_buf[16];
-    read_sector_asm(lba, dir_buf, current_drive_idx);
+    if (read_sector_asm(lba, dir_buf, current_drive_idx) != 0) return; /* B2 */
     to_fat12_name(dirname, dir_buf[entry_idx].name);
     dir_buf[entry_idx].attr = 0x10;
     dir_buf[entry_idx].start_cluster = clus;
@@ -528,7 +571,7 @@ void fs_create_directory(char* dirname) {
     for (int k = 0; k < 10; k++) dir_buf[entry_idx].reserved[k] = 0;
     dir_buf[entry_idx].time = 0;
     dir_buf[entry_idx].date = 0;
-    write_sector_asm(lba, dir_buf, current_drive_idx);
+    if (write_sector_asm(lba, dir_buf, current_drive_idx) != 0) return; /* B2 */
 
     // 在子目录中创建 . 和 .. 条目
     FAT12Entry sub[16];
@@ -546,7 +589,8 @@ void fs_create_directory(char* dirname) {
     sub[1].attr = 0x10;
     sub[1].start_cluster = cwd_cluster;  // 父目录簇 (0=根)
 
-    write_sector_asm(fs_cluster_lba(clus), sub, current_drive_idx);
+    if (write_sector_asm(fs_cluster_lba(clus), sub, current_drive_idx) != 0)
+        return;  /* B2 */
     put_str("Directory created.\n");
 }
 
@@ -560,7 +604,7 @@ int fs_write_file_in_dir(int dir_cluster, char* name, char* data, int size) {
         int sector_off = fs_dir_lba(dir_cluster, idx / 16);
         int entry_off  = idx % 16;
         FAT12Entry buf[16];
-        read_sector_asm(sector_off, buf, current_drive_idx);
+        if (read_sector_asm(sector_off, buf, current_drive_idx) != 0) return -1; /* B2 */
         buf[entry_off].name[0] = 0xE5;
         write_sector_asm(sector_off, buf, current_drive_idx);
         /* 释放簇链 */
@@ -594,7 +638,7 @@ int fs_delete_file_in_dir(int dir_cluster, char* name) {
     entry_off  = idx % 16;
 
     FAT12Entry buf[16];
-    read_sector_asm(sector_off, buf, current_drive_idx);
+    if (read_sector_asm(sector_off, buf, current_drive_idx) != 0) return -1; /* B2 */
     buf[entry_off].name[0] = 0xE5;
     write_sector_asm(sector_off, buf, current_drive_idx);
 
@@ -631,7 +675,7 @@ void fs_delete_directory(char* dirname) {
     for (int s = 0; s < n && !non_empty; s++) {
         int lba = fs_dir_lba(entry.start_cluster, s);
         if (lba < 0) break;
-        read_sector_asm(lba, buf, current_drive_idx);
+        if (read_sector_asm(lba, buf, current_drive_idx) != 0) break;  /* B2 */
         for (int i = 2; i < 16; i++) {  // 跳过 . 和 ..
             if (buf[i].name[0] == 0) break;
             if ((unsigned char)buf[i].name[0] == 0xE5) continue;
@@ -643,7 +687,7 @@ void fs_delete_directory(char* dirname) {
     // 删除父目录条目
     int plba = fs_dir_lba(cwd_cluster, idx / 16);
     FAT12Entry pbuf[16];
-    read_sector_asm(plba, pbuf, current_drive_idx);
+    if (read_sector_asm(plba, pbuf, current_drive_idx) != 0) return; /* B2 */
     pbuf[idx % 16].name[0] = 0xE5;
     write_sector_asm(plba, pbuf, current_drive_idx);
 

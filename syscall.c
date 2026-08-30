@@ -171,7 +171,7 @@ static int sys_open(char *path, int flags) {
  if (cap < 512) cap = 512;
  f->buf = (unsigned char*)mem_alloc((unsigned)cap + 1); /* +1 容纳 fs_read_file 的 '\0' 终止符 */
  f->capacity = cap;
- fs_read_file(&e, (char*)f->buf);
+ fs_read_file(&e, (char*)f->buf, (int)cap + 1);
  f->size = e.size;
  if (writable && trunc) f->size = 0;
  }

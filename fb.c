@@ -238,7 +238,7 @@ void fb_font_init(void) {
     if (idx >= 0 && e.size > 0) {
         hzk16 = (unsigned char *)mem_alloc((unsigned)e.size);
         if (hzk16) {
-            fs_read_file(&e, (char *)hzk16);
+            fs_read_file(&e, (char *)hzk16, (int)e.size);
             put_str("fb: HZK16 loaded\n");
         } else {
             put_str("fb: no mem for HZK16\n");
@@ -251,7 +251,7 @@ void fb_font_init(void) {
     if (idx >= 0 && e.size > 0) {
         u2gb = (unsigned int *)mem_alloc((unsigned)e.size);
         if (u2gb) {
-            fs_read_file(&e, (char *)u2gb);
+            fs_read_file(&e, (char *)u2gb, (int)e.size);
             u2gb_n = (int)(e.size / 4);
             put_str("fb: U2GB loaded\n");
         } else {

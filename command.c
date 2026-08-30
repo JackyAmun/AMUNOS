@@ -137,7 +137,7 @@ void cmd_type(char* arg){
     FAT12Entry e;if(fs_find_entry_in_dir(dc,arg,&e)<0){if(od>=0)fs_drive_restore(octx);put_str("Not found.\n");return;}
     char *b=(char*)mem_alloc((unsigned)e.size+1);      /* fs_read_file 写 NUL → size+1 */
     if(!b){if(od>=0)fs_drive_restore(octx);put_str("No memory.\n");return;}
-    fs_read_file(&e,b);
+    fs_read_file(&e,b,(int)(e.size+1));
     if(od>=0)fs_drive_restore(octx);
     put_cjk_str((const unsigned char*)b,0x07);   /* GB2312 感知: 中文文件也能显示 (v6.8) */
     put_char('\n',0x07);
@@ -174,8 +174,12 @@ void cmd_ren(char* arg){
     if(is_cmds_file(oldnm)||is_cmds_file(newnm)){if(od>=0)fs_drive_restore(octx);put_str("CMDS.BIN is protected.\n");return;}
     FAT12Entry e;int idx=fs_find_entry_in_dir(dc,arg,&e);if(idx<0){if(od>=0)fs_drive_restore(octx);put_str("Not found.\n");return;}
     int lba=fs_dir_lba(dc, idx/16);   /* v6.5.1: 统一目录寻址 (FAT16 每簇多扇也正确) */
-    FAT12Entry b[16];read_sector_asm(lba,b,current_drive_idx);
-    to_fat12_name(sp,b[idx%16].name);write_sector_asm(lba,b,current_drive_idx);
+    FAT12Entry b[16];
+    if (read_sector_asm(lba, b, current_drive_idx) != 0) {
+        if (od >= 0) fs_drive_restore(octx);
+        put_str("Disk read error.\n"); return;
+    }
+    to_fat12_name(sp, b[idx % 16].name); write_sector_asm(lba, b, current_drive_idx);
     if(od>=0)fs_drive_restore(octx);
     put_str("Renamed.\n");
 }
@@ -192,7 +196,7 @@ void cmd_copy(char* arg){
     FAT12Entry e;if(fs_find_entry_in_dir(dc_src,arg,&e)<0){if(sd>=0)fs_drive_restore(sctx);put_str("Src not found.\n");return;}
     if(e.attr&0x10){if(sd>=0)fs_drive_restore(sctx);put_str("Cannot copy dir.\n");return;}
     char *b=(char*)mem_alloc((unsigned)e.size+1);if(!b){if(sd>=0)fs_drive_restore(sctx);put_str("No memory.\n");return;}
-    fs_read_file(&e,b);int sz=e.size;
+    fs_read_file(&e,b,(int)(e.size+1));int sz=e.size;
     if(sd>=0)fs_drive_restore(sctx);
 
     /* 目标: 独立盘符; 裸盘 "B:" → 去前缀后空串 → 该盘根 + 源文件名 */
@@ -218,7 +222,7 @@ void cmd_mov(char* arg){
     FAT12Entry e;if(fs_find_entry_in_dir(dc_src,arg,&e)<0){if(sd>=0)fs_drive_restore(sctx);put_str("Src not found.\n");return;}
     if(e.attr&0x10){if(sd>=0)fs_drive_restore(sctx);put_str("Cannot move dir.\n");return;}
     char *b=(char*)mem_alloc((unsigned)e.size+1);if(!b){if(sd>=0)fs_drive_restore(sctx);put_str("No memory.\n");return;}
-    fs_read_file(&e,b);int sz=e.size;
+    fs_read_file(&e,b,(int)(e.size+1));int sz=e.size;
     if(sd>=0)fs_drive_restore(sctx);
 
     drive_ctx_t dctx; int dd=fs_drive_open(sp,&dctx);
@@ -390,7 +394,7 @@ void cmd_elf(char* arg){
     /* 从内核堆暂存 (去掉 32KB 限制, 支持 ~300KB 的 tcc.elf) */
     char *ebuf = (char*)mem_alloc((unsigned)e.size + 1);
     if(!ebuf){if(od>=0)fs_drive_restore(octx);put_str("No memory.\n");return;}
-    fs_read_file(&e, ebuf);
+    fs_read_file(&e, ebuf, (int)(e.size+1));
     if(od>=0)fs_drive_restore(octx);     /* 还原: 让程序跑在用户当前盘 */
 
     int entry = elf_load((unsigned char*)ebuf, e.size);
@@ -463,7 +467,7 @@ static int cmd_custom(char* cmd, char* a1) {
         if (fs_find_entry_in_dir(0, "CMDS.BIN", &ce) >= 0) {
             char *cbuf = (char*)mem_alloc((unsigned)ce.size + 1);
             if (cbuf) {
-                fs_read_file(&ce, cbuf);
+                fs_read_file(&ce, cbuf, (int)(ce.size+1));
                 char* p = cbuf;
                 while (*p) {
                     char* ln = p;

@@ -67,11 +67,23 @@ boot_code:
     mov cl, 2             ; LBA1 → cyl0 head0 sector2 (已验证起点)
     mov ch, 0
     mov dh, 0
-    mov dl, 0x80          ; 第一硬盘
+    ; v6.5.6 (B9): 保存 BIOS 传入的真实 DL (软盘引导 DL<0x80 也正确);
+    ; 读失败 → AH=00h 复位磁盘后重试, 共 3 次 (原来一错就挂死)。
+    mov [bpb_drive_num], dl
+    mov byte [retry_cnt], 3
+.stage1:
+    mov dl, [bpb_drive_num]
     mov al, 128           ; 第 1 段: 128 扇区
     mov ah, 0x02
     int 0x13
-    jc .err
+    jnc .stage1_ok
+    dec byte [retry_cnt]
+    jz .err
+    mov ah, 0             ; AH=00h 复位磁盘控制器后重试
+    mov dl, [bpb_drive_num]
+    int 0x13
+    jmp .stage1
+.stage1_ok:
     ; 第 2 段: AH=42h, DAP@0x7E00 (16 字节: size/count/offset/segment/LBA)
     mov si, 0x7E00
     mov byte [si], 0x10
@@ -81,9 +93,19 @@ boot_code:
     mov word [si+6], 0x1800   ; 段 0x1800 (0x18000)
     mov dword [si+8], 129     ; LBA 低
     mov dword [si+12], 0      ; LBA 高
+    mov byte [retry_cnt], 3
+.stage2:
+    mov dl, [bpb_drive_num]
     mov ah, 0x42
     int 0x13
-    jc .err
+    jnc .stage2_ok
+    dec byte [retry_cnt]
+    jz .err
+    mov ah, 0
+    mov dl, [bpb_drive_num]
+    int 0x13
+    jmp .stage2
+.stage2_ok:
     jmp .load_ok
 .err:
     mov si, msg_err
@@ -191,6 +213,7 @@ print:
 msg_boot db 'AMUNOS Boot...', 13, 10, 0
 msg_ok   db 'Kernel OK', 13, 10, 0
 msg_err  db 'Disk Error!', 13, 10, 0
+retry_cnt db 0
 
 ; ── GDT ──
 align 8

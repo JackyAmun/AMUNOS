@@ -69,7 +69,7 @@ void fs_init();
 void fs_sync();
 int fs_find_entry(char* name, FAT12Entry* out_entry);
 int fs_find_entry_in_dir(int dir_cluster, char* name, FAT12Entry* out_entry);
-void fs_read_file(FAT12Entry* entry, char* buffer);
+int fs_read_file(FAT12Entry* entry, char* buffer, int bufsize); /* v6.5.6 B4: 有界读 */
 void fs_create_directory(char* dirname);
 void fs_delete_directory(char* dirname);
 int fs_create_file_in_dir(int dir_cluster, char* name, char* data, int size);
