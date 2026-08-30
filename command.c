@@ -50,32 +50,23 @@ void cmd_dir(char* arg){
     char f[2];arg=fparse(arg,f);
     int wide=(f[0]=='w'||f[0]=='W');
     int page=(f[0]=='p'||f[0]=='P');
-    int max=fs_dir_secs(cwd_cluster);
-    FAT12Entry b[16];int cnt=0,line=0;
+    FAT12Entry b[80];int cnt=fs_list_dir(cwd_cluster,b,80);int shown=0,line=0;
     put_str("\n ");put_char(drive_letter(),0x0E);
     put_str(":/");if(*cwd_path)put_str(cwd_path);
     put_str("\n\n");
-    for(int s=0;s<max;s++){
-        int lba=fs_dir_lba(cwd_cluster,s);
-        if(lba<0)break;
-        read_sector_asm(lba,b,current_drive_idx);
-        for(int i=0;i<16;i++){
-            if(b[i].name[0]==0)goto ed;
-            if((unsigned char)b[i].name[0]==0xE5)continue;
-            if(b[i].attr==0x0F)continue;
-            if(b[i].name[0]=='.'&&(b[i].attr&0x10)){put_str(b[i].name[1]==' '?".  <DIR>\n":".. <DIR>\n");cnt++;line++;continue;}
-            put_fatname(b[i].name, b[i].ext);
-            if(!wide){put_str("  ");if(b[i].attr&0x10)put_str("<DIR>         ");else{put_str("      ");put_num(b[i].size);put_str(" B");}}
-            put_char('\n',0x07);cnt++;line++;
-
-            if(page && line >= 21){
-                put_str("-- Press any key to continue (Ctrl+C to stop) --\n");
-                if(!wait_key_or_abort()) goto ed;
-                line = 0;
-            }
+    for(int i=0;i<cnt;i++){
+        if(b[i].attr==0x0F||b[i].attr==0x08)continue;   /* LFN/卷标 */
+        if(b[i].name[0]=='.'&&(b[i].attr&0x10)){put_str(b[i].name[1]==' '?".  <DIR>\n":".. <DIR>\n");shown++;line++;continue;}
+        put_fatname(b[i].name, b[i].ext);
+        if(!wide){put_str("  ");if(b[i].attr&0x10)put_str("<DIR>         ");else{put_str("      ");put_num(b[i].size);put_str(" B");}}
+        put_char('\n',0x07);shown++;line++;
+        if(page && line >= 21){
+            put_str("-- Press any key to continue (Ctrl+C to stop) --\n");
+            if(!wait_key_or_abort()) goto ed;
+            line = 0;
         }
     }
-ed: put_str("\n ");put_num(cnt);put_str(" file(s)\n\n");
+ed: put_str("\n ");put_num(shown);put_str(" file(s)\n\n");
 }
 
 /* ── CD — 多级目录导航 (支持盘符限定绝对路径 "A:/xxx" v6.5.1) ── */
@@ -103,10 +94,10 @@ void cmd_cd(char* arg){
         if (*p) {
             if ((p[0]=='.'&&p[1]=='.'&&!p[2])||(p[0]=='<'&&!p[1])) {
                 // 上一级
-                if (cur != 0) {
+                if (!fs_is_root_dir(cur)) {   /* v6.5.6 P2: FAT32 根=root_cluster 也不上溯 */
                     unsigned char d[512];
-                    read_sector_asm(fs_cluster_lba(cur),d,current_drive_idx);
-                    cur = ((FAT12Entry*)d)[1].start_cluster;
+                    blk_read(fs_cluster_lba(cur),d,current_drive_idx);
+                    cur = (int)fat_entry_cluster(&((FAT12Entry*)d)[1]);
                     p_pop();
                 }
             } else if (p[0]=='.'&&!p[1]) {
@@ -118,7 +109,7 @@ void cmd_cd(char* arg){
                     strcpy(cwd_path, orig_path);           /* 还原原路径显示 */
                     put_str("Not found.\n"); return;
                 }
-                cur = e.start_cluster;
+                cur = (int)fat_entry_cluster(&e);
                 p_add(p);
             }
         }
@@ -175,11 +166,11 @@ void cmd_ren(char* arg){
     FAT12Entry e;int idx=fs_find_entry_in_dir(dc,arg,&e);if(idx<0){if(od>=0)fs_drive_restore(octx);put_str("Not found.\n");return;}
     int lba=fs_dir_lba(dc, idx/16);   /* v6.5.1: 统一目录寻址 (FAT16 每簇多扇也正确) */
     FAT12Entry b[16];
-    if (read_sector_asm(lba, b, current_drive_idx) != 0) {
+    if (blk_read(lba, b, current_drive_idx) != 0) {
         if (od >= 0) fs_drive_restore(octx);
         put_str("Disk read error.\n"); return;
     }
-    to_fat12_name(sp, b[idx % 16].name); write_sector_asm(lba, b, current_drive_idx);
+    to_fat12_name(sp, b[idx % 16].name); blk_write(lba, b, current_drive_idx);
     if(od>=0)fs_drive_restore(octx);
     put_str("Renamed.\n");
 }
@@ -460,7 +451,7 @@ static int cmd_custom(char* cmd, char* a1) {
     int n = 0, j = 0;
 
     /* 1) 全盘 CMDS.BIN */
-    for (int d = 0; d < 4; d++) {
+    for (int d = 0; d < 6; d++) {
         if (d != current_drive_idx && !fs_drive_present(d)) continue;
         drive_ctx_t octx = fs_drive_enter(d);
         FAT12Entry ce;
@@ -541,7 +532,7 @@ void exec_cmd(char* line){
     while(line[i]==' ')i++;if(!line[i])return;
     if(line[i+1]==':'){
         char d=to_upper(line[i]);
-        if(d>='A'&&d<='D'){current_drive_idx=d-'A';cwd_path[0]=0;cwd_cluster=0;fs_init();}
+        if(d>='A'&&d<='F'){current_drive_idx=dev_slot_from_letter(d-'A');cwd_path[0]=0;cwd_cluster=0;fs_init();}
         return;
     }
     while(line[i]&&line[i]!=' '&&j<15)cmd[j++]=to_upper(line[i++]);cmd[j]=0;

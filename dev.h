@@ -8,9 +8,11 @@ typedef struct {
     char model[21];    /* 型号截 20 字符 + NUL */
 } blkdev_t;
 
-extern blkdev_t devs[4];   /* 0=A(主) 1=B(从) 2=C(次主) 3=D(次从) */
+extern blkdev_t devs[7];   /* 0-3=IDE, 4=软盘, 5=ATAPI, 6=AHCI (P4) */   /* 0-3=IDE 槽, 4=软盘(FDC), 5=ATAPI (P3) */
 extern int boot_drive_slot;/* 引导盘 IDE 槽 (DL>=0x80 时 = DL-0x80); 软盘 = -1 */
 
+int  dev_slot_from_letter(int li);   /* 盘符序号 → 槽号 (查挂载表) */
+int  dev_letter_from_slot(int slot); /* 槽号 → 盘符序号 (提示符/DIR 头) */
 int  identify_drive_asm(int drive_idx, void *buf512); /* disk_io.asm */
 void dev_scan(void);       /* 4 槽 IDENTIFY → devs[] */
 void dev_automount(void);  /* 逐盘验签挂载 → 盘符 A..D */

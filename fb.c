@@ -235,7 +235,7 @@ void fb_font_init(void) {
     /* v6.5.6 阶段B: 字库跨盘搜索 — 按盘符 A..D 逐盘找 HZK16 / U2GB.BIN
      * (软盘引导时 A: 运行时不可读, 字库落在 IDE 数据盘上) */
     int d;
-    for (d = 0; d < 4 && !hzk16; d++) {
+    for (d = 0; d < 6 && !hzk16; d++) {
         if (!fs_drive_present(d)) continue;
         drive_ctx_t c = fs_drive_enter(d);
         FAT12Entry e;
@@ -254,7 +254,7 @@ void fb_font_init(void) {
     if (!hzk16) put_str("fb: HZK16 not found on any drive (Latin only)\n");
 
     /* Unicode→GB2312 映射表 (UTF-8 支持): 每 4 字节 [uni u16][gb u16], 按 uni 升序 */
-    for (d = 0; d < 4 && !u2gb; d++) {
+    for (d = 0; d < 6 && !u2gb; d++) {
         if (!fs_drive_present(d)) continue;
         drive_ctx_t c = fs_drive_enter(d);
         FAT12Entry e;

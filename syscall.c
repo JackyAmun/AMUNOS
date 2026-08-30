@@ -355,7 +355,7 @@ static int sys_readdir(char *path, int idx, char *name_out) {
  FAT12Entry e;
  if (fs_find_entry_in_dir(d, full, &e) < 0 || !(e.attr & 0x10))
  goto fail; /* 不存在或不是目录 */
- dc = e.start_cluster;
+ dc = (int)fat_entry_cluster(&e);
  }
 
  /* 列出目录, 取第 idx 项 */

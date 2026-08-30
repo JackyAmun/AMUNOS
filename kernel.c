@@ -12,7 +12,7 @@ int strcmp(const char*a,const char*b){while(*a&&*a==*b){a++;b++;}return*(unsigne
 void strcpy(char*d,const char*s){while((*d++=*s++));}
 void put_num(unsigned n){if(!n){put_char('0',0x07);return;}char b[12];int i=0;while(n){b[i++]='0'+n%10;n/=10;}while(--i>=0)put_char(b[i],0x07);}
 char to_upper(char c){return(c>='a'&&c<='z')?c-32:c;}
-char drive_letter(void){return (char)('A'+current_drive_idx);}
+char drive_letter(void){return (char)('A'+dev_letter_from_slot(current_drive_idx));}
 
 void print_prompt(){
     cur_x=0;

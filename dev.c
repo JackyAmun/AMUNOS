@@ -7,11 +7,27 @@
 #include "common.h"
 #include "dev.h"
 
-blkdev_t devs[4];
+blkdev_t devs[7];   /* 0-3=IDE 槽, 4=软盘 (FDC), 5=ATAPI 光驱, 6=AHCI SATA (P4) */
 int boot_drive_slot = -1;
 
 /* 挂载表: mount_letter[d] = 分到的盘符序号 (0='A'), -1 = 未挂载 */
-static int mount_letter[4];
+static int mount_letter[7];
+
+/* 盘符序号 → 槽号: 查挂载表 (软盘引导时盘符≠槽号), 未挂载回退恒等映射 */
+int dev_slot_from_letter(int li)
+{
+    int d;
+    for (d = 0; d < 6; d++)
+        if (mount_letter[d] == li) return d;
+    return (li >= 0 && li < 7) ? li : 0;
+}
+
+/* 槽号 → 盘符序号 (drive_letter/提示符用; 未挂载回退旧恒等映射) */
+int dev_letter_from_slot(int slot)
+{
+    if (slot >= 0 && slot < 6 && mount_letter[slot] >= 0) return mount_letter[slot];
+    return (slot >= 0 && slot < 4) ? slot : 0;
+}
 
 /* PCI 发现记录 (本轮只列出, 不编程 BAR) */
 #define PCI_MAX 16
@@ -46,6 +62,28 @@ static void put_hex2(unsigned v)
     put_char(h[v & 0xF], 0x07);
 }
 
+/* 块设备统一入口: 0-3=IDE (PIO asm), 4=软盘 (FDC 轮询, 只读), 其余未接 */
+int blk_read(unsigned int lba, void *buf, int drive_idx)
+{
+    if (drive_idx == 4) {
+        if (lba >= 2880) return -1;
+        return fdc_read_sectors(lba, 1, buf);
+    }
+    if (drive_idx == 5)
+        return atapi_read_sectors(lba, 1, buf);   /* 512 窗口读 */
+    if (drive_idx == 6)
+        return ahci_read_sectors(ahci_port(), lba, 1, buf);
+    if (drive_idx < 0 || drive_idx > 3) return -1;
+    return read_sector_asm(lba, buf, drive_idx);
+}
+
+int blk_write(unsigned int lba, const void *buf, int drive_idx)
+{
+    if (drive_idx == 4 || drive_idx == 5 || drive_idx == 6) return -1;  /* 只读盘 */
+    if (drive_idx < 0 || drive_idx > 3) return -1;
+    return write_sector_asm(lba, (void *)buf, drive_idx);
+}
+
 void dev_scan(void)
 {
     int d, found = 0;
@@ -53,6 +91,35 @@ void dev_scan(void)
     if (dl >= 0x80) boot_drive_slot = dl - 0x80;
     unsigned char serials[4][20];   /* word 10-19, 用于空槽别名去重 */
 
+    /* 槽 4 = 软盘: FDC 复位/校准成功即认为控制器在, 介质在挂载时验签 */
+    for (d = 0; d < 6; d++) { devs[d].present = 0; devs[d].sectors = 0;
+                              devs[d].model[0] = 0; mount_letter[d] = -1; }
+    if (fdc_init() == 0) {
+        unsigned char fb0[512];
+        if (fdc_read_sectors(0, 1, fb0) == 0) {
+            devs[4].present = 1;
+            devs[4].sectors = 2880;
+            strcpy(devs[4].model, "FLOPPY 1.44M");
+        }
+    }
+    /* 槽 5 = ATAPI 光驱 (IDE1 从属) */
+    if (atapi_probe() == 0) {
+        devs[5].present = 1;
+        devs[5].sectors = atapi_capacity() * 4;   /* 2048B 扇 → 512B 扇 */
+        strcpy(devs[5].model, "ATAPI CD-ROM");
+        serial_puts("[DEVS] atapi cdrom present, cap2048=");
+        ser_dec(atapi_capacity());
+        serial_puts("\n");
+    }
+    /* 槽 6 = AHCI SATA (q35 + ich9-ahci) */
+    /* 槽 6 = AHCI SATA (q35 + ich9-ahci) */
+    devs[6].present = 0;
+    devs[6].sectors = 0;
+    devs[6].model[0] = 0;
+    if (ahci_scan() == 0) {
+        devs[6].present = 1;
+        strcpy(devs[6].model, "AHCI SATA");
+    }
     for (d = 0; d < 4; d++) {
         devs[d].present = 0;
         devs[d].sectors = 0;
@@ -120,15 +187,24 @@ void dev_scan(void)
 void dev_automount(void)
 {
     int i, next = 0;
-    int order[4];
+    int order[6];
     int n = 0;
 
+    /* 软盘引导 (DL<0x80) → 软盘槽 4 恒 A:, IDE 数据盘随后补位 */
+    if (boot_drive_slot == -1 && devs[4].present)
+        order[n++] = 4;
     if (boot_drive_slot >= 0 && boot_drive_slot < 4 &&
         devs[boot_drive_slot].present)
         order[n++] = boot_drive_slot;
     for (i = 0; i < 4; i++)
         if (i != boot_drive_slot && devs[i].present)
             order[n++] = i;
+    if (boot_drive_slot >= 0 && devs[4].present)   /* HDD 引导: 软盘排最后 */
+        order[n++] = 4;
+    if (devs[5].present)                            /* 光驱排最末 */
+        order[n++] = 5;
+    if (devs[6].present)                            /* AHCI 盘其后 */
+        order[n++] = 6;
 
     for (i = 0; i < n; i++) {
         int slot = order[i];
@@ -144,6 +220,10 @@ void dev_automount(void)
         }
     }
     if (next == 0) current_drive_idx = 0;   /* 裸软盘引导: 维持默认 A: */
+    else {                                   /* shell 初始盘 = 挂载到 A: 的槽 */
+        for (i = 0; i < 6; i++)
+            if (mount_letter[i] == 0) { current_drive_idx = i; break; }
+    }
 }
 
 void pci_scan(void)
@@ -175,16 +255,18 @@ void pci_scan(void)
 
 void devs_list(void)
 {
-    static const char *slotname[4] = { "0:0", "0:1", "1:0", "1:1" };
+    static const char *slotname[7] = { "0:0", "0:1", "1:0", "1:1", "FD0", "CD0", "SA0" };
     int d;
     put_str("IDE devices:\r\n");
-    for (d = 0; d < 4; d++) {
+    for (d = 0; d < 7; d++) {
         if (!devs[d].present) {
-            put_str("  ATA "); put_str((char *)slotname[d]);
+            put_str(d == 4 ? "  FD  " : (d == 6 ? "  SA  " : "  ATA "));
+            put_str((char *)slotname[d]);
             put_str("  -- empty --\r\n");
             continue;
         }
-        put_str("  ATA "); put_str((char *)slotname[d]);
+        put_str(d == 4 ? "  FD  " : (d == 6 ? "  SA  " : "  ATA "));
+        put_str((char *)slotname[d]);
         put_str("  "); put_str(devs[d].model);
         put_str("  "); put_num(devs[d].sectors / 2048); put_str(" MB");
         put_str("  ");

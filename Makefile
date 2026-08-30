@@ -9,7 +9,7 @@ BOOTFLAGS   = -f bin
 CFLAGS      = -m32 -c -fno-builtin -ffreestanding -fno-pie -std=gnu99 -I.
 LDFLAGS     = -m elf_i386 -T linker.ld
 
-OBJS = head.o kernel.o command.o fault.o mem.o syscall.o task.o vga.o kbd.o idt.o mouse.o fs.o disk_io.o dev.o elf.o serial.o fb.o gui.o
+OBJS = head.o kernel.o command.o fault.o mem.o syscall.o task.o vga.o kbd.o idt.o mouse.o fs.o disk_io.o dev.o fdc.o atapi.o iso9660.o ahci.o elf.o serial.o fb.o gui.o
 
 BOOT_BIN   = boot.bin
 KERNEL_BIN = kernel.bin
@@ -149,6 +149,17 @@ run-trio-serial: $(A_IMG) $(B_IMG) $(C_IMG)
 	  -serial tcp:127.0.0.1:5555,server,nowait \
 	  -parallel file:lpt.log
 
+# ── FAT32 数据盘 (v6.5.6 P2): D32.img (36MB FAT32) 挂次从盘 D: ──
+D32_IMG = D32.img
+$(D32_IMG): mkd32.py
+	@echo "[IMG] Building FAT32 D32.img..."
+	python3 mkd32.py $(D32_IMG)
+
+run-fat32: $(A_IMG) $(B_IMG) $(C_IMG) $(D32_IMG)
+	qemu-system-i386 -nographic -rtc base=localtime -hda $(A_IMG) -hdb $(B_IMG) -hdc $(C_IMG) -hdd $(D32_IMG) \
+	  -monitor unix:/tmp/mon.sock,server,nowait \
+	  -serial file:/tmp/ser.log -display none
+
 # ── 软盘引导 (v6.5.6 阶段A): A.img 作软盘 (-fda) 启动, IDE 上挂 B:/C: 数据盘。
 #    注意: 内核无 FDC 驱动, 运行时读不了 A: 自身 (无 TCC/BIN) — 数据与字库
 #    由 B:/C: 提供 (fb_font_init 跨盘搜索)。CHS 分块引导路径在此模式生效。
@@ -164,3 +175,21 @@ floppy: $(A_IMG)
 clean:
 	rm -f *.o *.bin *.img
 	@echo "[CLEAN] Done"
+
+# ── ATAPI 光驱 (v6.5.6 P3): CD.iso 挂 -cdrom (IDE1 从属, CD0), ISO9660 只读 ──
+CD_IMG = CD.iso
+$(CD_IMG): mkiso.py
+	@echo "[IMG] Building ISO9660 $(CD_IMG)..."
+	python3 mkiso.py $(CD_IMG)
+
+run-cdrom: $(A_IMG) $(B_IMG) $(C_IMG) $(D32_IMG) $(CD_IMG)
+	qemu-system-i386 -nographic -rtc base=localtime -hda $(A_IMG) -hdb $(B_IMG) -hdc $(C_IMG) -hdd $(D32_IMG) 	  -cdrom $(CD_IMG) 	  -monitor unix:/tmp/mon.sock,server,nowait 	  -serial file:/tmp/ser.log -display none
+
+# ── AHCI SATA (v6.5.6 P4): q35 + ich9-ahci, D32.img 挂 AHCI (SA0) ──
+run-ahci: $(A_IMG) $(B_IMG) $(C_IMG) $(D32_IMG)
+	qemu-system-i386 -nographic -rtc base=localtime -M q35 -device ich9-ahci,id=ahci \
+	  -hda $(A_IMG) -hdb $(B_IMG) -hdc $(C_IMG) \
+	  -drive if=none,id=s0,file=$(D32_IMG),format=raw \
+	  -device ide-hd,drive=s0,bus=ahci.0 \
+	  -monitor unix:/tmp/mon.sock,server,nowait \
+	  -serial file:/tmp/ser.log -display none

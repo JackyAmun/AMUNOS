@@ -71,6 +71,27 @@ extern void update_cursor();
 // 修改：增加 drive_idx 参数
 extern int read_sector_asm(unsigned int lba, void* buf, int drive_idx);
 extern int write_sector_asm(unsigned int lba, void* buf, int drive_idx);
+// v6.5.6 P1: 块设备统一入口 — drive_idx 0-3=IDE 槽, 4=软盘(FDC), 其余按 dev.c 表分发
+int blk_read(unsigned int lba, void* buf, int drive_idx);
+int blk_write(unsigned int lba, const void* buf, int drive_idx);
+int  fdc_init(void);
+int  fdc_read_sectors(unsigned lba, unsigned count, void *buf);
+/* v6.5.6 P3: ATAPI 光驱 + ISO9660 只读 */
+int  atapi_probe(void);
+int  atapi_ready(void);
+unsigned int atapi_capacity(void);              /* 2048B 扇数 */
+int  atapi_read_sectors_2048(unsigned lba, unsigned count, void *buf);
+int  atapi_read_sectors(unsigned lba512, unsigned count, void *buf);
+int  iso_mount(void);
+int  iso_root_lba(void);
+int  iso_root_size(void);
+int  iso_list(int dir_lba512, int dir_size512, FAT12Entry *out, int max);
+int  iso_find(int dir_lba512, int dir_size512, char *name, FAT12Entry *out);
+/* v6.5.6 P4: AHCI (SATA) poll 只读 */
+int  ahci_scan(void);
+int  ahci_ready(void);
+int  ahci_port(void);
+int  ahci_read_sectors(int portidx, unsigned lba, unsigned count, void *buf);
 
 // --- 5. 文件系统接口 (fs.c) ---
 int fs_init();     /* v6.5.6: 返回 0=成功/-1=失败 (dev_automount 判定挂载) */
@@ -91,7 +112,9 @@ int fs_delete_file_in_dir(int dir_cluster, char* name);
 int fs_resolve_path(char* path);
 int fs_write_file_in_dir(int dir_cluster, char* name, char* data, int size);
 int fs_list_dir(int dir_cluster, FAT12Entry* out_buf, int max_entries);
-unsigned short fat12_get_next_cluster(unsigned short cluster);
+unsigned int fat12_get_next_cluster(unsigned int cluster);
+unsigned int fat_entry_cluster(FAT12Entry* e); /* v6.5.6 P2: 32 位起始簇 (FAT32) */
+int fs_is_root_dir(int dc);   /* v6.5.6 P2: FAT32 根有两种表示 (0 / root_cluster) */
 int fs_dir_secs(int dc);
 int fs_dir_lba(int dc, int idx);
 unsigned int fs_cluster_lba(unsigned int c); // 簇 → 数据区首扇 LBA (FAT16 每簇多扇)
