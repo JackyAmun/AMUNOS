@@ -1,6 +1,6 @@
 # AMUNOS Classic
 
-![language](https://img.shields.io/badge/language-C%20%2F%20x86%20ASM-blue) ![kernel](https://img.shields.io/badge/kernel-v6.5.5-8A2BE2) ![gui](https://img.shields.io/badge/GUI-0.3-008080) ![license](https://img.shields.io/badge/license-MIT--style%20%2B%20third--party-lightgrey)
+![language](https://img.shields.io/badge/language-C%20%2F%20x86%20ASM-blue) ![kernel](https://img.shields.io/badge/kernel-v6.5.6-8A2BE2) ![gui](https://img.shields.io/badge/GUI-0.3-008080) ![license](https://img.shields.io/badge/license-MIT--style%20%2B%20third--party-lightgrey)
 
 > **一个从零编写的 x86 32 位保护模式操作系统 · 自举 · 中文原生**
 
@@ -25,7 +25,8 @@ AMUNOS 从一段 FAT12 引导扇区启动，进入 **x86 32 位保护模式**（
 | **引导** | FAT12 引导扇区 → 双段加载内核（AH=02h 128 扇 + AH=42h LBA 扩展读 64 扇）→ 保护模式 |
 | **调度** | PIT 100Hz 抢占式轮转多任务，后台演示任务证明并发 |
 | **内存** | 内核堆 `mem.c`（0x400000 起 4MB）+ 用户 brk 堆 2MB + ELF 载入 0x100000 |
-| **文件系统** | FAT12/16 自动识别（按簇数判定），三盘制 A:/B:/C:，跨盘路径，`/` 分隔 |
+| **文件系统** | FatFs R0.16b 后端：FAT12/16/32 自动识别，多盘制，跨盘路径，`/` 分隔；ISO9660 只读 |
+| **存储与设备** | 统一块设备层 7 槽：IDE ATA ×4、FDC 软盘（非 DMA 运行时驱动）、ATAPI 光驱（PIO READ10）、AHCI SATA（poll 只读）；`DEVS` 设备列表、PCI 枚举、自动挂载 |
 | **ELF** | 标准 ELF32 加载器，PT_LOAD 段 → `0x100000`，跳 `e_entry` |
 | **编译器** | TinyCC 0.9.27（`TCC.ELF`），任意盘/目录 `TCC x.c -o x.exe` 编译→链接→运行闭环 |
 | **Shell** | REPL、行编辑（←→/Home/End/Del）、`DIR -P` 分页、按名运行 `XXX.ELF/.EXE/...` |
@@ -77,8 +78,12 @@ cd /mnt/c/Users/XU/Desktop/OSdev
 make kernel.bin       # 构建内核（双段引导，<96KB）
 python3 mka_img.py A.img   # 打包 A: 系统盘（boot + kernel + TCC + 字库 + 样本）
 make B.img C.img      # B: FAT12 / C: FAT16 数据盘
+python3 mkd32.py D32.img   # D: FAT32 数据盘
+python3 mkiso.py CD.iso    # ISO9660 测试光盘
 
 make run-trio-gui     # 三盘图形运行（A: 引导 + B:/C: 数据）
+make run-cdrom        # ATAPI 光驱 + ISO9660（-drive ide-cd）
+make run-ahci         # AHCI SATA（q35 + ICH9，D32 挂 AHCI 端口）
 make run-serial       # 串口远程控制台（另开终端 ./serial-console.sh）
 ```
 
@@ -88,6 +93,8 @@ make run-serial       # 串口远程控制台（另开终端 ./serial-console.sh
 A:/> GUI        ← 控件演示（窗口/菜单/编辑器/复选/列表）
 A:/> EDIT       ← FreeDOS EDIT 风格编辑器（中文显示）
 A:/> TCC USR/SRC/HELLO.C -o HELLO.EXE && HELLO
+A:/> DEVS       ← 设备列表（IDE/软盘/光驱/SATA + PCI）
+D:/> DIR / TYPE ← FAT32 数据盘、ISO9660 光盘同一套命令
 ```
 
 ### 回归测试（QEMU 像素级断言）
@@ -97,6 +104,7 @@ python3 validate_gui.py      # GUI 16 项：渲染/弹窗复原/列表/输入/�
 python3 validate_zh.py       # HZK16 加载 / 汉字渲染
 python3 validate_editzh.py   # DIR 中文文件名 / EDIT 中文 / 退格整字删
 python3 validate_box.py      # 框线字形
+python3 validate_storage2.py # 存储栈 3 项：IDE/FAT 多盘、ATAPI+ISO9660、AHCI(q35)
 ```
 
 `validate_gui.py` 全自动：启动 QEMU（`-display none -monitor tcp`），`sendkey`/`mouse_move`
@@ -115,7 +123,13 @@ OSDev/
 ├── gui/gui-demo.c         控件演示程序（GUI.ELF）
 ├── fb.c / vga.c           VBE 帧缓冲 + Latin/CJK 点阵绘制 / 文本模式中文渲染
 ├── latin_font.h           内嵌 Latin 点阵字库（不依赖 BIOS INT 10h/1130h）
-├── fs.c / disk_io.asm     FAT12/16 文件系统 / 磁盘 I/O
+├── fs.c / disk_io.asm     文件系统（FatFs 后端 + ISO9660） / 磁盘 I/O
+├── fatfs/                 FatFs R0.16b vendor（BSD-1clause）
+├── dev.c/h                块设备层（7 槽）+ 设备枚举 / 自动挂载 / PCI 扫描
+├── fdc.c/h                软盘运行时驱动（非 DMA 模式，IRQ6 字节中断）
+├── atapi.c/h              ATAPI 光驱 PIO 驱动（IDENTIFY PACKET / READ10）
+├── iso9660.c/h            ISO9660 只读文件系统（PVD / 目录记录 / extent 读）
+├── ahci.c/h               AHCI SATA poll 只读驱动（PCI 0106 → BAR5，READ DMA EXT）
 ├── kbd.c / mouse.c        PS/2 键盘 / 鼠标（IRQ 中断门 + 排干循环，GUI 鼠标三层修复）
 ├── idt.c / task.c         中断描述符表 / 抢占式多任务
 ├── mem.c                  内核堆分配器（0x400000 起 4MB）
@@ -124,9 +138,11 @@ OSDev/
 ├── edit-fdos/             FreeDOS EDIT 0.7d 移植（EDIT.ELF）
 ├── libc/                  用户态 minilibc + syscall 内联封装
 ├── mka_img.py / mkbimg.py / mkcimg.py / mkfat16.py   镜像构建器
+├── mkd32.py / mkiso.py    FAT32 数据盘 / 最小 ISO9660 光盘构建器
+├── qtest.py               QEMU 冒烟测试驱动（串口日志 + monitor sendkey）
 ├── build-tcc.sh / build-libc.sh                      交叉编译 TinyCC / minilibc
 ├── HZK16                  GB2312 简体点阵字库（A: 盘装入）
-├── validate_*.py          QEMU 像素级回归测试
+├── validate_*.py          QEMU 像素级回归测试（GUI/中文/存储栈）
 └── docs/                  设计文档（GUI 规划 / 输入法 / 生态 / 路线）
 ```
 
@@ -137,7 +153,7 @@ OSDev/
 | 地址 | 用途 |
 |------|------|
 | `0x07C00 .. 0x08000` | 引导扇区 |
-| `0x08000 .. ~0x20000` | 内核（双段加载，<96KB；rsvd 193 扇 = 1 boot + 192 kernel） |
+| `0x08000 .. ~0x25000` | 内核（双段加载，<192KB；rsvd 385 扇 = 1 boot + 384 kernel） |
 | `0x90000`            | 内核栈顶（向下生长） |
 | `0x70000`            | FAT 缓存 |
 | `0x100000 ..`        | ELF 载入地址 |
