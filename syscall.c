@@ -58,6 +58,8 @@ typedef struct {
 
 static fd_t fds[MAX_FD];
 static unsigned user_break = USER_BRK_BASE;
+static char sys_clipboard[2048];
+static int sys_clipboard_len = 0;
 
 /* ── 旧 syscall ── */
 static int sys_putchar(int c) { put_char((char)c, 0x0F); return 0; }
@@ -170,8 +172,13 @@ static int sys_open(char *path, int flags) {
  int cap = (e.size + 511) & ~511;
  if (cap < 512) cap = 512;
  f->buf = (unsigned char*)mem_alloc((unsigned)cap + 1); /* +1 容纳 fs_read_file 的 '\0' 终止符 */
+ if (!f->buf) goto fail;
  f->capacity = cap;
- fs_read_file(&e, (char*)f->buf, (int)cap + 1);
+ if (fs_read_file(&e, (char*)f->buf, (int)cap + 1) < 0) {
+  mem_free(f->buf);
+  f->buf = 0;
+  goto fail;
+ }
  f->size = e.size;
  if (writable && trunc) f->size = 0;
  }
@@ -193,8 +200,9 @@ static int sys_close(int fd) {
  if (f->dirty) {
  int sd = current_drive_idx, sc = cwd_cluster;
  current_drive_idx = f->drive; fs_init(); /* 写回目标盘 */
- fs_write_file_in_dir(f->dir, f->name, (char*)f->buf, f->size);
+ int wr = fs_write_file_in_dir(f->dir, f->name, (char*)f->buf, f->size);
  current_drive_idx = sd; fs_init(); cwd_cluster = sc;
+ if (wr < 0) return -1;
  }
  mem_free(f->buf);
  f->used = 0;
@@ -425,6 +433,49 @@ static int sys_getkey(void) {
  return 0;
 }
 
+int sys_collect_info(sysinfo_t *out) {
+ if (!out) return -1;
+ out->ticks = task_ticks();
+ out->current_drive = current_drive_idx;
+ out->drive_letter = drive_letter();
+ out->cwd_cluster = cwd_cluster;
+ out->fs_fat_bits = fs_fat_bits;
+ out->fs_spc = fs_spc;
+ out->fs_root_lba = fs_root_lba;
+ out->fs_data_lba = fs_data_lba;
+ out->fb_active = fb_active();
+ out->gui_active = gui_active;
+ for (int i = 0; i < 7; i++) {
+  out->dev_present[i] = devs[i].present;
+  out->dev_sectors[i] = devs[i].sectors;
+  for (int j = 0; j < 20; j++) out->dev_model[i][j] = devs[i].model[j];
+  out->dev_model[i][20] = 0;
+ }
+ return 0;
+}
+
+static int sys_clip_set(const char *s, int len) {
+ if (!s || len <= 0) {
+  sys_clipboard[0] = 0;
+  sys_clipboard_len = 0;
+  return 0;
+ }
+ if (len > (int)sizeof(sys_clipboard) - 1) len = (int)sizeof(sys_clipboard) - 1;
+ for (int i = 0; i < len; i++) sys_clipboard[i] = s[i];
+ sys_clipboard[len] = 0;
+ sys_clipboard_len = len;
+ return len;
+}
+
+static int sys_clip_get(char *buf, int max) {
+ if (!buf || max <= 0) return sys_clipboard_len;
+ int n = sys_clipboard_len;
+ if (n > max - 1) n = max - 1;
+ for (int i = 0; i < n; i++) buf[i] = sys_clipboard[i];
+ buf[n] = 0;
+ return n;
+}
+
 /* ── 分发器 (由 head.asm 的 asm_syscall_handler 调用) ──
  * frame: [4]=edi [5]=esi [6]=ebp [7]=esp [8]=ebx [9]=edx [10]=ecx [11]=eax */
 void syscall_handler(unsigned *frame) {
@@ -521,6 +572,12 @@ void syscall_handler(unsigned *frame) {
  case 35: result = gui_lbl(a1, a2 & 0xFFFF, (a2 >> 16) & 0xFFFF, (const char*)a3); break;
  case 55: result = gui_statusbar(a1 & 0xFFFF, a2 & 0xFFFF, (a2 >> 16) & 0xFFFF,
   (a1 >> 16) & 0xFFFF, (const char*)a3); break;
+ case 56: result = gui_scrollbar(a1, a2 & 0xFFFF, (a2 >> 16) & 0xFFFF, a3 & 0xFFFF); break;
+ case 57: result = gui_scrollbar_set(a1 & 0xFF, (a1 >> 8) & 0xFF,
+  a2 & 0xFFFF, (a2 >> 16) & 0xFFFF, a3 & 0xFFFF, (a3 >> 16) & 0xFFFF); break;
+ case 58: result = gui_tarea_info(a1 & 0xFF, (a1 >> 8) & 0xFF, (int*)a2); break;
+ case 59: result = sys_clip_set((const char*)a1, a2); break;
+ case 60: result = sys_clip_get((char*)a1, a2); break;
  case 36: result = gui_edit(a1, a2 & 0xFFFF, (a2 >> 16) & 0xFFFF, a3 & 0xFFFF); break;
  case 37: result = gui_list(a1, a2 & 0xFFFF, (a2 >> 16) & 0xFFFF,
  a3 & 0xFFFF, (a3 >> 16) & 0xFFFF); break;
@@ -562,6 +619,7 @@ void syscall_handler(unsigned *frame) {
  case 52: result = gui_menubar(a1); break;
  case 53: result = gui_menu_add(a1 & 0xFFFF, a2, (const char*)a3); break;
  case 54: result = gui_menu_item(a1, a2 & 0xFFFF, (a2 >> 16) & 0xFFFF, (const char*)a3); break;
+ case 61: result = sys_collect_info((sysinfo_t*)a1); break;
  case 27: { /* SYS_CJKWCHAR: 在绝对格 (x,y) 放一个汉字 (占两格).
  * a1=x a2=y; packed 低16=GB 码 (0=替换框□), 高位=attr.
  * EDIT 文本行渲染用它把中文字节画成真实汉字。 */

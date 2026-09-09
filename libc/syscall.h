@@ -72,6 +72,12 @@
 #define SYS_GUI_MENU_ADD 53 /* 加菜单 (win, ctl, title) → 菜单索引 */
 #define SYS_GUI_MENU_ITEM 54 /* 加项 (win, (menu<<16)|ctl, item) → 项索引; "-" 分隔 */
 #define SYS_GUI_STATUSBAR 55 /* 建状态栏 (win|(w<<16), pack(x,y), text) → ctl */
+#define SYS_GUI_SCROLLBAR 56 /* 建垂直滚动条(win, pack(x,y), h) → ctl */
+#define SYS_GUI_SCROLLBAR_SET 57 /* 设置滚动条(win|ctl<<8, pack(min,max), pack(page,val)) */
+#define SYS_GUI_TAREA_INFO 58 /* TextArea 信息(win|ctl<<8, out[6]) */
+#define SYS_CLIP_SET 59 /* 设置系统剪贴板(buf,len) */
+#define SYS_CLIP_GET 60 /* 读取系统剪贴板(buf,max) → bytes; buf NULL 返回长度 */
+#define SYS_SYSINFO 61 /* 读取内核/FS/设备摘要到 sysinfo_t */
 
 /* 事件类型 (gui_ev_t.type) */
 #define GEV_CLICK 1
@@ -85,6 +91,22 @@ typedef struct {
  int ctl; /* 控件 id (列表点击: ch 为选中项索引) */
  int ch; /* GEV_KEY: 键入字符; GEV_CLICK 列表: 项索引 */
 } gui_ev_t;
+
+typedef struct {
+ unsigned int ticks;
+ int current_drive;
+ char drive_letter;
+ int cwd_cluster;
+ int fs_fat_bits;
+ int fs_spc;
+ int fs_root_lba;
+ int fs_data_lba;
+ int fb_active;
+ int gui_active;
+ int dev_present[7];
+ unsigned int dev_sectors[7];
+ char dev_model[7][21];
+} sysinfo_t;
 
 /* ── 内联汇编封装 ── */
 static inline long syscall0(long nr) {
@@ -241,6 +263,9 @@ static inline void sys_cjkwchar(int x, int y, unsigned gb, int fg, int bg) {
  unsigned attr = (unsigned)((fg & 0x0F) | ((bg & 0x07) << 4));
  syscall3(SYS_CJKWCHAR, x, y, (long)(gb | (attr << 16)));
 }
+static inline int sys_sysinfo(sysinfo_t *out) {
+ return (int)syscall1(SYS_SYSINFO, (long)out);
+}
 
 /* ── GUI 窗口服务器包装 (v6.9) ── */
 static inline int sys_gui_enter(void) { return (int)syscall0(SYS_GUI_ENTER); }
@@ -270,6 +295,15 @@ static inline int sys_gui_edit(int win, int cx, int cy, int w) {
 static inline int sys_gui_list(int win, int x, int y, int w, int h) {
  return (int)syscall3(SYS_GUI_LIST, win, (long)((x & 0xFFFF) | ((unsigned)y << 16)),
  (long)((w & 0xFFFF) | ((unsigned)h << 16)));
+}
+static inline int sys_gui_scrollbar(int win, int x, int y, int h) {
+ return (int)syscall3(SYS_GUI_SCROLLBAR, win,
+ (long)((x & 0xFFFF) | ((unsigned)y << 16)), h);
+}
+static inline int sys_gui_scrollbar_set(int win, int ctl, int minv, int maxv, int page, int val) {
+ return (int)syscall3(SYS_GUI_SCROLLBAR_SET, (long)((win & 0xFF) | ((unsigned)ctl << 8)),
+ (long)((minv & 0xFFFF) | ((unsigned)maxv << 16)),
+ (long)((page & 0xFFFF) | ((unsigned)val << 16)));
 }
 static inline int sys_gui_list_set(int win, int ctl, const char *str) {
  return (int)syscall3(SYS_GUI_LIST_SET, win, ctl, (long)str);
@@ -303,6 +337,16 @@ static inline int sys_gui_tarea_set(int win, int ctl, const char *str, int len) 
 static inline int sys_gui_tarea_get(int win, int ctl, char *buf, int max) {
  return (int)syscall3(SYS_GUI_TAREA_GET, (long)((win & 0xFF) | ((unsigned)ctl << 8)),
  (long)buf, max);
+}
+static inline int sys_gui_tarea_info(int win, int ctl, int out[6]) {
+ return (int)syscall2(SYS_GUI_TAREA_INFO, (long)((win & 0xFF) | ((unsigned)ctl << 8)),
+ (long)out);
+}
+static inline int sys_clip_set(const char *buf, int len) {
+ return (int)syscall2(SYS_CLIP_SET, (long)buf, len);
+}
+static inline int sys_clip_get(char *buf, int max) {
+ return (int)syscall2(SYS_CLIP_GET, (long)buf, max);
 }
 /* : List 读回 + 复选/单选/菜单栏 */
 static inline int sys_gui_list_get(int win, int ctl, char *buf, int max) {

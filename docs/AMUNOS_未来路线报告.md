@@ -2,20 +2,26 @@
 
 > 基于《AMUNOS_操作逻辑_生产工具_应用生态规划.md》(GPT 分析) 与当前代码库实测状态，给出面向未来的可行性报告。
 > 原则：**保留 GPT 规划的"个人电脑创作精神"，但用本项目的真实约束校准优先级与实现路径。**
+>
+> **2026-08-31 更新**：v6.5.6 后 Studio 三大件（WRITE / SHEET / DRAW / PAINT）+ IME 规划与
+> 图形 syscall 补齐方案已转到独立文件
+> [AMUNOS_Studio_规划_WRITE_SHEET_DRAW_IME.md](AMUNOS_Studio_规划_WRITE_SHEET_DRAW_IME.md)。
+> 本文件保留历史路线与原则对照。
 
 ---
 
-## 1. 现状盘点（实测，2026-08）
+## 1. 现状盘点（实测，2026-08-31 / v6.5.6）
 
 | 维度 | 当前状态 | 说明 |
 |---|---|---|
-| 内核大小 | **50924 B / 上限 53248 B** | 仅剩 ≈2.3KB 余量 → **新功能必须放用户态 ELF，勿进内核** |
-| 图形 | VBE 640×480×16bpp + 软渲染器 | 渲染通路是 **80×25 字符格 + 汉字格**，**缺通用像素/画线/矩形 API**（PLOT/DRAW/游戏的前置） |
-| 中文 | UTF-8 + GB2312 + HZK16(16×16 点阵) + U2GB 映射 + 替换框 | **已超额完成** GPT 规划第 4 优先级；下一步自然是**中文输入** |
-| 用户程序 | 内核平坦加载 ELF，可访问内核 RAM | 能直写 softbuf 做 GUI（EDIT 已验证），但**无进程隔离**（架构特性，非缺陷） |
-| 命令 | cd copy dir echo elf help install mov ren ser tcc time type ver zh cls lpt | 含 `CMDS.BIN` 命令→ELF 映射、`-?` 帮助、`/` 统一分隔符、大小写不敏感 |
-| 生态 | BIN 只有 **TCC.ELF + EDIT.ELF** | 盘符 A/B/C(串口/并口/C: 字库)、CFD、DEVICE 已有底层 |
-| 任务/GUI | 单前台任务 + 后台调度；EDIT 是真 GUI(鼠标/窗口) | 单窗口 GUI 已被证实可行；**多窗口尚需窗口管理** |
+| 内核大小 | **112,604 B / 上限 192 KB** | 余量 ≈ 80 KB；v6.5.6 引导扩 96KB（rsvd 193 扇 = 1 boot + 192 kernel） |
+| 存储 | FAT12/16/32(FatFs R0.16b) + ISO9660 + IDE×4 / FDC / ATAPI / AHCI | 7 槽统一块设备层；DEVS+PCI 枚举+自动挂载 |
+| 图形 | VBE 640×480×16bpp + 软渲染器 + GUI 0.5 内核窗服 | 含 chrome/拖动快路径/菜单弹层/文本选中/TAREA/滚动条/局部刷新/剪贴板；**仍缺通用像素/线/矩形 API** |
+| 中文 | UTF-8 + GB2312 + HZK16(16×16) + U2GB 28KB + 替换框 | **已超额完成** GPT 规划第 4 优先级；下一步是**中文输入** |
+| 用户程序 | TCC 0.9.27 + minilibc，ELF 链入 0x100000 | 现有 ELF：TCC、EDIT、GUI-DEMO、WRITE、SYSINFO、INP、HELLO；可访问内核 RAM 做 GUI |
+| 命令 | cd copy dir echo elf help install mov ren ser tcc time type ver zh cls lpt cmds | CMDS.BIN 命令→ELF 映射、`-?` 帮助、`/` 统一分隔、大小写不敏感 |
+| 任务 | 单前台 + 后台多任务，10ms tick | 多任务协作机制齐全，缺音频/网络驱动 |
+| 任务/GUI | 单前台 + 后台调度；EDIT 是真 GUI(鼠标/窗口/菜单/TAREA) | 单窗口 GUI 已被证实可行；**多窗口尚需窗口管理** |
 
 **一句话现状**：AMUNOS 已经拥有"能跑 C 程序"之外的一整层——中文、软渲染 GUI、真实鼠标、三盘 FAT、串口/并口。缺的不是"能不能画"，而是**把现有能力整理成稳定 API + 一批小而美的用户态工具**。
 
@@ -37,7 +43,7 @@
 | SYSINFO / CALC / VIEW / HEX / SIZE | ⬜ 未做 | 数据全在内核，**1~2 天/个** 用户态即可 |
 | BUILD.ELF（封装 TCC） | ⬜ 未做 | TCC+crt+CMDS 已就绪，纯编排层 |
 | PACK/INSTALL(.AMN) | ◐ 部分 | INSTALL+CMDS.BIN 已存在，．AMN 容器在此上加 |
-| AMUN WRITE / SHEET / DRAW / PAINT | ⬜ 未做 | 依赖图形 API；EDIT 可演化成 WRITE |
+| AMUN WRITE / SHEET / DRAW / PAINT | ⬜ 未做 | 依赖图形 API；规划见 [Studio 规划](AMUNOS_Studio_规划_WRITE_SHEET_DRAW_IME.md) |
 | BASIC | ⬜ 未做 | 解释器，独立工作量 |
 | SYNTH / MUSIC / TRACKER | ⬜ 未做 | 需音频驱动（PC 喇叭即 Ul 级可启动，再用 SoundBlaster/DMA） |
 | DATABASE / MATH / PLOT | ⬜ 未做 | PLOT 依赖图形 API；DATABASE 依赖文件系统（已有） |

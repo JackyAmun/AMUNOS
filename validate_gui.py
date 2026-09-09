@@ -33,7 +33,6 @@ def mon_cmd(s, cmd, wait=0.5):
 def ch(s, txt, per=0.07):
     for c in txt: mon_cmd(s, 'sendkey ' + c, wait=per)
 
-os.system("ps aux | grep qemu | grep -v grep | awk '{print $2}' | xargs -r kill -9 2>/dev/null; sleep 0.5")
 qemu = subprocess.Popen(['qemu-system-i386', '-rtc', 'base=localtime',
     '-hda', ROOT + '/A.img', '-hdb', ROOT + '/B.img', '-hdc', ROOT + '/C.img',
     '-display', 'none', '-monitor', 'tcp:127.0.0.1:%d,server,nowait' % MON,

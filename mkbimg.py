@@ -113,6 +113,12 @@ if os.path.exists('edit.elf'):
 else:
     print('WARN: edit.elf not found (run: make edit.elf)')
 
+if os.path.exists('sysinfo.elf'):
+    n = add_file('SYSINFO', 'ELF', 'sysinfo.elf')
+    print(f'sysinfo.elf: {n} cluster(s)')
+else:
+    print('WARN: sysinfo.elf not found (run: make sysinfo.elf)')
+
 # ── C 测试源码 (USR\SRC\) ──
 C_FILES = {
     'HW':      'int main(){printf(42);printf(123);return 0;}\n',
@@ -125,11 +131,15 @@ C_FILES = {
 }
 for name, content in C_FILES.items():
     add_to(USR_SRC, name, 'C  ', content)
+if os.path.exists('amunrun.c'):
+    with open('amunrun.c', 'rb') as f:
+        add_to(USR_SRC, 'AMUNRUN', 'C  ', f.read())
 
 # ── 命令对照表 (v6.5.1): CMDS.BIN, 全盘搜索可用 ──
 CMDS_BIN = '''\
 ; AMUNOS 命令→ELF 对照表 (v6.5.1)
 EDIT /EDIT.ELF
+SYSINFO /SYSINFO.ELF
 '''
 add_to(root, 'CMDS', 'BIN', CMDS_BIN)
 

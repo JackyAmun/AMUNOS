@@ -20,6 +20,9 @@ HELLO_ELF  = hello.elf
 INP_ELF    = inp.elf
 EDIT_ELF   = edit.elf
 GUI_ELF    = gui-demo.elf
+SYSINFO_ELF = sysinfo.elf
+WRITE_ELF = write.elf
+CRT_OBJS   = libc/crt1.o libc/crti.o libc/crtn.o
 
 .PHONY: all clean run run-gui run-dual run-dual-gui run-serial \
         run-trio run-trio-gui run-trio-serial run-floppy floppy
@@ -41,7 +44,7 @@ $(KERNEL_BIN): $(OBJS) linker.ld
 # 避免内核 fb_font_init 加载不到 U2GB → UTF-8 汉字全画成 □。
 u2gb.bin: gen_u2gb.py
 	python3 gen_u2gb.py
-$(A_IMG): $(BOOT_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) $(GUI_ELF) mka_img.py u2gb.bin
+$(A_IMG): $(BOOT_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) $(GUI_ELF) $(SYSINFO_ELF) $(WRITE_ELF) $(CRT_OBJS) mka_img.py u2gb.bin
 	@echo "[IMG] Building A.img..."
 	python3 mka_img.py $@
 
@@ -59,6 +62,15 @@ $(C_IMG): mkcimg.py $(HELLO_ELF)
 tcc.elf: build-tcc.sh
 	@echo "[TCC] Cross-building TinyCC..."
 	sh build-tcc.sh
+
+libc/crt1.o: libc/crt0.o
+	cp libc/crt0.o libc/crt1.o
+
+libc/crti.o:
+	echo '.section .init' | as --32 -o libc/crti.o
+
+libc/crtn.o:
+	echo '.section .fini' | as --32 -o libc/crtn.o
 
 # ── 交叉编译 ELF 测试程序 (host gcc -m32; tcc 亦可用同参数) ──
 $(HELLO_ELF): hello.c
@@ -105,6 +117,26 @@ $(GUI_ELF): gui/gui-demo.c libc/libc.a libc/crt0.o
 	    libc/crt0.o .gui-obj/gui-demo.o libc/libc.a $$LIBGCC -o gui-demo.elf
 	rm -rf .gui-obj
 	@echo "[GUI.ELF] size: $$(wc -c < gui-demo.elf) bytes"
+
+$(SYSINFO_ELF): sysinfo.c libc/libc.a libc/crt0.o
+	@echo "[ELF] Building sysinfo.c -> sysinfo.elf (libc-linked)"
+	gcc -m32 -ffreestanding -fno-builtin -fno-pie -fno-stack-protector \
+	    -fno-asynchronous-unwind-tables -fno-unwind-tables -nostdinc \
+	    -I libc -c sysinfo.c -o sysinfo.o
+	LIBGCC=$$(gcc -m32 -print-libgcc-file-name); \
+	ld -m elf_i386 -no-pie -T libc/link.ld -nostdlib -static \
+	    libc/crt0.o sysinfo.o libc/libc.a $$LIBGCC -o sysinfo.elf
+	@echo "[SYSINFO.ELF] size: $$(wc -c < sysinfo.elf) bytes"
+
+$(WRITE_ELF): write.c libc/libc.a libc/crt0.o
+	@echo "[ELF] Building write.c -> write.elf (libc-linked)"
+	gcc -m32 -ffreestanding -fno-builtin -fno-pie -fno-stack-protector \
+	    -fno-asynchronous-unwind-tables -fno-unwind-tables -nostdinc \
+	    -I libc -c write.c -o write.o
+	LIBGCC=$$(gcc -m32 -print-libgcc-file-name); \
+	ld -m elf_i386 -no-pie -T libc/link.ld -nostdlib -static \
+	    libc/crt0.o write.o libc/libc.a $$LIBGCC -o write.elf
+	@echo "[WRITE.ELF] size: $$(wc -c < write.elf) bytes"
 
 # ── Compile rules ──
 %.o: %.c common.h

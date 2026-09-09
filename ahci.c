@@ -153,8 +153,8 @@ int ahci_read_sectors(int portidx, unsigned lba, unsigned count, void *buf)
     fis[6] = (unsigned char)(lba >> 16);
     fis[7] = 0x40;                 /* device: LBA 模式 */
     fis[8] = (unsigned char)(lba >> 24);
-    fis[9] = (unsigned char)(lba >> 32);
-    fis[10] = (unsigned char)(lba >> 40);
+    fis[9] = 0;                    /* 当前接口是 32-bit LBA, 高 16 位清零 */
+    fis[10] = 0;
     fis[12] = (unsigned char)(count);
     fis[13] = (unsigned char)(count >> 8);
 

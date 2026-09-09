@@ -40,6 +40,22 @@ typedef struct {
  unsigned int size;
 } __attribute__((packed)) FAT12Entry;
 
+typedef struct {
+ unsigned int ticks;
+ int current_drive;
+ char drive_letter;
+ int cwd_cluster;
+ int fs_fat_bits;
+ int fs_spc;
+ int fs_root_lba;
+ int fs_data_lba;
+ int fb_active;
+ int gui_active;
+ int dev_present[7];
+ unsigned int dev_sectors[7];
+ char dev_model[7][21];
+} sysinfo_t;
+
 // --- 3. 全局变量 ---
 extern volatile int is_shift;
 extern volatile int caps_lock;
@@ -136,6 +152,7 @@ void strcpy(char *dst, const char *src);
 char to_upper(char c); // 添加这一行
 char drive_letter(void);
 void cmd_ver(); // 添加这一行
+int sys_collect_info(sysinfo_t *out);
 
 void put_char(char c, char color);
 void put_str(char *s);
@@ -247,11 +264,14 @@ int gui_lbl(int win, int x, int y, const char *text);
 int gui_statusbar(int win, int x, int y, int w, const char *text); // 状态栏控件
 int gui_edit(int win, int cx, int cy, int w);
 int gui_list(int win, int x, int y, int w, int h);
+int gui_scrollbar(int win, int x, int y, int h); // 垂直滚动条 → ctl
+int gui_scrollbar_set(int win, int ctl, int minv, int maxv, int page, int val); // 设置滚动条
 int gui_list_set(int win, int ctl, const char *str); // 追加/替换项, 空串清空
 int gui_wnd_text(int win, int ctl, const char *str); // 设控件文本 (按钮/标签/输入框)
 int gui_tarea(int win, int x, int y, int w, int h); // 建多行文本区 → ctl
 int gui_tarea_set(int win, int ctl, const char *str, int len); // 设文本区内容 (len 字节)
 int gui_tarea_get(int win, int ctl, char *buf, int max); // 读回文本区内容 → 字节数
+int gui_tarea_info(int win, int ctl, int *out); // out[0]=line out[1]=col out[2]=byte out[3]=lines out[4]=top out[5]=bytes
 int gui_list_get(int win, int ctl, char *buf, int max); // 读回 list 选中项文本 → 选中索引
 int gui_list_n(int win, int ctl); // list 项数
 int gui_check(int win, int x, int y, const char *label); // 复选框 → ctl

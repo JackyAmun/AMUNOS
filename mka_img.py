@@ -140,6 +140,8 @@ add_opt_to(BOOT, 'KERNEL', 'BIN', 'kernel.bin')
 add_opt_to(BIN, 'TCC',  'ELF', 'tcc.elf')
 add_opt_to(BIN, 'EDIT', 'ELF', 'edit.elf')
 add_opt_to(BIN, 'GUI',  'ELF', 'gui-demo.elf')   # GUI 控件演示 (v6.9)
+add_opt_to(BIN, 'SYSINFO', 'ELF', 'sysinfo.elf')
+add_opt_to(BIN, 'WRITE', 'ELF', 'write.elf')
 
 # ── USR\LIB\ : TCC 链接库 (cmd_tcc 注入 -L/-B) ──
 add_opt_to(USR_LIB, 'LIBC',    'A  ', 'libc/libc.a')
@@ -174,6 +176,7 @@ int main(int argc, char **argv)
 '''
 add_to(USR_SRC, 'HELLO', 'C  ', HELLO_C)
 add_opt_to(USR_SRC, 'INP', 'C  ', 'inp.c')     # 输入测试源码 (可在 OS 内 TCC 编译)
+add_opt_to(USR_SRC, 'AMUNRUN', 'C  ', 'amunrun.c')
 
 # ── HZK16 汉字点阵字库 (v6.8 中文渲染): 内核 fb_font_init 从 A:HZK16 加载 ──
 add_opt_to(root, 'HZK16', '   ', 'HZK16')
@@ -192,6 +195,8 @@ CMDS_BIN = '''\
 ; 注释以 ; 或 # 开头; 用 EDIT CMDS.BIN 编辑或 INSTALL 命令追加
 EDIT /BIN/EDIT.ELF
 GUI /BIN/GUI.ELF
+SYSINFO /BIN/SYSINFO.ELF
+WRITE /BIN/WRITE.ELF
 '''
 add_to(root, 'CMDS', 'BIN', CMDS_BIN)
 

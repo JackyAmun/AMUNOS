@@ -338,6 +338,19 @@ static unsigned int fat12_alloc_cluster() {
     return 0;  // 盘满
 }
 
+static void fat_free_chain(unsigned int clus) {
+    while (clus >= 2 && !fat_is_eoc(clus)) {
+        unsigned int nx = fat12_get_next_cluster(clus);
+        fat_set_cluster(clus, 0);
+        clus = nx;
+    }
+}
+
+static void fat_free_list(unsigned int *clusters, int n) {
+    for (int i = 0; i < n; i++)
+        if (clusters[i] >= 2) fat_set_cluster(clusters[i], 0);
+}
+
 /* ── 目录遍历辅助 ── */
 #define MAX_DIR_SECTORS 256  // 目录最大扇区数 (安全上限)
 
@@ -606,13 +619,20 @@ static int fs_create_file_in_dir_inner(int dir_cluster, char* name, char* data, 
     int clus_bytes = 512 * fs_spc;
     int need = (size + clus_bytes - 1) / clus_bytes;
     if (need == 0) need = 1;
-    if (need > MAX_FILE_CLUSTERS) need = MAX_FILE_CLUSTERS;
+    if (need > MAX_FILE_CLUSTERS) {
+        put_str("File too large.\n");
+        return -1;
+    }
 
     // 分配 need 个簇
     unsigned int clusters[MAX_FILE_CLUSTERS];
     for (int i = 0; i < need; i++) {
         clusters[i] = fat12_alloc_cluster();
-        if (clusters[i] == 0) { put_str("Disk full!\n"); return -1; }
+        if (clusters[i] == 0) {
+            fat_free_list(clusters, i);
+            put_str("Disk full!\n");
+            return -1;
+        }
     }
 
     // 链接 FAT 链: 簇[i] → 簇[i+1], 最后一个 → EOC (FAT16 为 0xFFFF)
@@ -632,19 +652,19 @@ static int fs_create_file_in_dir_inner(int dir_cluster, char* name, char* data, 
             if (n >= 512) {
                 if (blk_write(lba + s, data + off + s * 512,
                                      current_drive_idx) != 0)
-                    { put_str("Disk write error\n"); return -1; }
+                    { fat_free_chain(clusters[0]); put_str("Disk write error\n"); return -1; }
             } else if (n > 0) {
                 /* 最后一段: 部分扇区, 剩余字节清零 */
                 char tmp[512];
                 for (int k = 0; k < 512; k++) tmp[k] = 0;
                 for (int k = 0; k < n; k++) tmp[k] = data[off + s * 512 + k];
                 if (blk_write(lba + s, tmp, current_drive_idx) != 0)
-                    { put_str("Disk write error\n"); return -1; }
+                    { fat_free_chain(clusters[0]); put_str("Disk write error\n"); return -1; }
             } else {
                 /* 簇内超出数据部分: 清零 */
                 char zero[512]; for (int k = 0; k < 512; k++) zero[k] = 0;
                 if (blk_write(lba + s, zero, current_drive_idx) != 0)
-                    { put_str("Disk write error\n"); return -1; }
+                    { fat_free_chain(clusters[0]); put_str("Disk write error\n"); return -1; }
             }
         }
     }
@@ -652,18 +672,18 @@ static int fs_create_file_in_dir_inner(int dir_cluster, char* name, char* data, 
     // 填写目录条目
     FAT12Entry dir_buf[16];
     if (blk_read(lba, dir_buf, current_drive_idx) != 0)
-        { put_str("Disk read error\n"); return -1; }
+        { fat_free_chain(clusters[0]); put_str("Disk read error\n"); return -1; }
+    for (int k = 0; k < 10; k++) dir_buf[entry_idx].reserved[k] = 0;
     to_fat12_name(name, dir_buf[entry_idx].name);
     dir_buf[entry_idx].attr = 0x20;
     dir_buf[entry_idx].start_cluster = clusters[0] & 0xFFFF;            /* 簇号低 16 位 */
     dir_buf[entry_idx].reserved[8] = (unsigned char)((clusters[0] >> 16) & 0xFF);  /* FAT32 簇号高 16 位 */
     dir_buf[entry_idx].reserved[9] = (unsigned char)((clusters[0] >> 24) & 0xFF);
     dir_buf[entry_idx].size = size;
-    for (int k = 0; k < 10; k++) dir_buf[entry_idx].reserved[k] = 0;
     dir_buf[entry_idx].time = 0;
     dir_buf[entry_idx].date = 0;
     if (blk_write(lba, dir_buf, current_drive_idx) != 0)
-        { put_str("Disk write error\n"); return -1; }
+        { fat_free_chain(clusters[0]); put_str("Disk write error\n"); return -1; }
     return 0;
 }
 
@@ -703,9 +723,11 @@ void fs_create_directory(char* dirname) {
     if (blk_read(lba, dir_buf, current_drive_idx) != 0) return; /* B2 */
     to_fat12_name(dirname, dir_buf[entry_idx].name);
     dir_buf[entry_idx].attr = 0x10;
-    dir_buf[entry_idx].start_cluster = clus;
-    dir_buf[entry_idx].size = 0;
     for (int k = 0; k < 10; k++) dir_buf[entry_idx].reserved[k] = 0;
+    dir_buf[entry_idx].start_cluster = clus & 0xFFFF;
+    dir_buf[entry_idx].reserved[8] = (unsigned char)((clus >> 16) & 0xFF);
+    dir_buf[entry_idx].reserved[9] = (unsigned char)((clus >> 24) & 0xFF);
+    dir_buf[entry_idx].size = 0;
     dir_buf[entry_idx].time = 0;
     dir_buf[entry_idx].date = 0;
     if (blk_write(lba, dir_buf, current_drive_idx) != 0) return; /* B2 */
@@ -747,14 +769,9 @@ int fs_write_file_in_dir(int dir_cluster, char* name, char* data, int size) {
         FAT12Entry buf[16];
         if (blk_read(sector_off, buf, current_drive_idx) != 0) return -1; /* B2 */
         buf[entry_off].name[0] = 0xE5;
-        blk_write(sector_off, buf, current_drive_idx);
+        if (blk_write(sector_off, buf, current_drive_idx) != 0) return -1;
         /* 释放簇链 */
-        unsigned int clus = fat_entry_cluster(&e);
-        while (clus >= 2 && !fat_is_eoc(clus)) {
-            unsigned int nx = fat12_get_next_cluster(clus);
-            fat_set_cluster(clus, 0);
-            clus = nx;
-        }
+        fat_free_chain(fat_entry_cluster(&e));
     }
     /* 走 inner: EDIT/INSTALL 需能改写 CMDS.BIN; 千万别改回公开入口! */
     return fs_create_file_in_dir_inner(dir_cluster, name, data, size);
@@ -782,15 +799,10 @@ int fs_delete_file_in_dir(int dir_cluster, char* name) {
     FAT12Entry buf[16];
     if (blk_read(sector_off, buf, current_drive_idx) != 0) return -1; /* B2 */
     buf[entry_off].name[0] = 0xE5;
-    blk_write(sector_off, buf, current_drive_idx);
+    if (blk_write(sector_off, buf, current_drive_idx) != 0) return -1;
 
     // 释放簇链
-    unsigned int clus = fat_entry_cluster(&entry);
-    while (clus >= 2 && !fat_is_eoc(clus)) {
-        unsigned int next = fat12_get_next_cluster(clus);
-        fat_set_cluster(clus, 0);
-        clus = next;
-    }
+    fat_free_chain(fat_entry_cluster(&entry));
     return 0;
 }
 

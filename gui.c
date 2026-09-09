@@ -40,6 +40,7 @@ static unsigned ggb(const unsigned char *s); /* LFB 文本用 */
 #define GW_RADIO 6 /* 单选钮: chk/grp=选中+互斥组 */
 #define GW_MENU 7 /* 菜单栏 (gui_mb 全局) */
 #define GW_STATUSBAR 8 /* 状态栏: 窗底横条显示状态文本 */
+#define GW_SCROLLBAR 9 /* 垂直滚动条: val/min/max/page */
 
 /* 多行文本区: 内容放独立固定槽池 (每槽 TX_SIZE 字节), 而非塞进 gui_wid_t 的
  * txt[64] — 避免结构体阵列被放大几百 KB。槽由 gw_new 分配, 关闭/替换时释放。 */
@@ -53,11 +54,10 @@ static int gui_txused[GW_TXPOOL];
 #define GEV_ENTER 3
 #define GEV_CLOSE 4 /* 标题栏 ✕ 关闭: 内核已关窗, 通知程序 (主窗→退) */
 
-/* GUI (内核窗口服务器) 版本 — AMUNOS Classic GUI 0.3
- * 对应 docs/AMUNOS_Classic_GUI_设计与实现规划.md 的 GUI 0.3 里程碑:
- * Window/Button/Label/Edit/Textarea/List/中文 + 多窗口叠放 + 拖动chrome(最小/最大/关) + 文本选中。
- * 增: Checkbox / Radio / Menu(Alt+字母) / TAB 焦点循环 / List 读回。 */
-#define GUI_VERSION "0.3"
+/* GUI (内核窗口服务器) 版本 — AMUNOS Classic GUI 0.5
+ * Window/Button/Label/Edit/Textarea/List/Scrollbar/中文 + 多窗口叠放
+ * + 控件级局部刷新 + 剪贴板/TextArea 查询 ABI。 */
+#define GUI_VERSION "0.5"
 #define GUI_VERSION_FULL "AMUNOS Classic GUI " GUI_VERSION
 
 /* 窗口状态 () */
@@ -77,6 +77,9 @@ static int gui_txused[GW_TXPOOL];
 #define C_TITLEFG 0xFFFF
 #define C_BTNBG 0xC618 /* 控件 FACE #C0C0C0 银 (docs#22) */
 #define C_BTNBDR 0x4A49 /* SHADOW 暗边 */
+#define C_LIGHT 0xFFFF
+#define C_SHADOW 0x8410
+#define C_DARK 0x0000
 #define C_EDBG 0xFFFF
 #define C_EDBDR 0x4A49
 #define C_SELBG 0x0010 /* 选中/高亮 #000080 (docs#21 HIGHLIGHT) */
@@ -103,6 +106,7 @@ typedef struct {
  /* 复选框/单选钮 */
  int chk; /* CHECK/RADIO: 是否选中 (0 未勾/1 勾选) */
  int grp; /* RADIO: 互斥组号 (同窗同组互斥) */
+ int minv, maxv, page, val; /* SCROLLBAR: 范围/页长/当前位置 */
 } gui_wid_t;
 
 typedef struct {
@@ -129,8 +133,11 @@ static int prev_lbutton = 0;
 static int gui_buf_h = 480; /* 帧缓冲高 */
 static int gui_dirty = 1; /* 有待重合成 (状态变更或指针移动) */
 static int dirty_win = -1; /* >=0: 仅需重blit该窗口 (widget 变更, 不全屏) */
+static int force_full_clear = 0; /* 下一次全量合成前先铺桌面底色 */
 static int last_mx = -1, last_my = -1; /* 上次合成时的指针位置 */
 static int desktop_init = 0; /* 首次合成铺桌面底色, 之后免整屏清 → 抗闪 */
+static unsigned last_full_tick = 0;
+static int gfull_force = 0; /* 拖动结束兜底: 忽略 30Hz 限流整屏一次 */
 
 /* 拖动/活动选择状态 (按住跨 poll) */
 static int drag_win = -1; /* 正在被拖的窗, -1=无 */
@@ -138,6 +145,8 @@ static int drag_offx = 0; /* 按下时 鼠标x - 窗x */
 static int drag_offy = 0; /* 按下时 鼠标y - 窗y */
 static int sel_drag_w = -1; /* 鼠标拖选中的窗, -1=无 */
 static int sel_drag_k = -1; /* 鼠标拖选中的控件 */
+static int scroll_drag_w = -1; /* 正在拖动滚动条的窗 */
+static int scroll_drag_k = -1; /* 正在拖动滚动条的控件 */
 
 /* ── 菜单栏: 单一全局 (同一时刻一个活跃窗口用菜单栏) ──
  * 每个菜单一个标题 (title) + 至多 GMW_ITEMS 项 (项 = items[i][.])。
@@ -261,6 +270,17 @@ static int gstr_px(const unsigned char *s) {
  int px = 0, cl, cj;
  while (s[0]) { px += gadv(s, &cl, &cj); s += cl; }
  return px;
+}
+
+static int gfit_bytes(const unsigned char *s, int maxpx) {
+ int px = 0, n = 0;
+ while (s[n]) {
+ int cl, cj, w = gadv(s + n, &cl, &cj);
+ if (cl < 1) cl = 1;
+ if (px + w > maxpx) break;
+ px += w; n += cl;
+ }
+ return n;
 }
 
 /* 光标像素 x: 字节位置 caret 在字符串中的像素偏移 (caret 恒在字形边界) */
@@ -536,7 +556,8 @@ static void gdraw_chrome(unsigned short *b, int bw, int bh, int winw, int isfoc)
 
 /* 该控件是否聚焦 (TAB/点击后的键盘路由目标; LBL/MENU 恒假) */
 static inline int gw_isfoc(const gui_win_t *w, const gui_wid_t *wd) {
- return (foc_win >= 0 && w == &GUW[foc_win] && wd == &w->wd[w->foc_wid]);
+ return (foc_win >= 0 && foc_win < GW_MAXWIN && w == &GUW[foc_win] &&
+ w->foc_wid >= 0 && w->foc_wid < w->nwid && wd == &w->wd[w->foc_wid]);
 }
 
 /* 复选框盒: 14×14 边框盒; 勾选画 2px 宽的 √ (下折→上挑), 顶点≈(5,10),
@@ -580,15 +601,106 @@ static void grad_box(unsigned short *b, int bw, int bh,
 /* docs#22 凹陷边缘: 左/上=SHADOW, 右/下=LIGHT (输入框/列表/文本区) */
 static void gsunken(unsigned short *b, int bw, int bh,
  int x, int y, int w, int h) {
+ if (w <= 1 || h <= 1) return;
  gfill(b, bw, bh, x, y, w, 1, C_BTNBDR);
  gfill(b, bw, bh, x, y, 1, h, C_BTNBDR);
- gfill(b, bw, bh, x, y + h - 1, w, 1, 0xFFFF);
- gfill(b, bw, bh, x + w - 1, y, 1, h, 0xFFFF);
+ if (w > 2 && h > 2) {
+ gfill(b, bw, bh, x + 1, y + 1, w - 2, 1, C_SHADOW);
+ gfill(b, bw, bh, x + 1, y + 1, 1, h - 2, C_SHADOW);
+ }
+ gfill(b, bw, bh, x, y + h - 1, w, 1, C_LIGHT);
+ gfill(b, bw, bh, x + w - 1, y, 1, h, C_LIGHT);
+}
+
+static void graised(unsigned short *b, int bw, int bh,
+ int x, int y, int w, int h) {
+ if (w <= 1 || h <= 1) return;
+ gfill(b, bw, bh, x, y, w, h, C_BTNBG);
+ gfill(b, bw, bh, x, y, w, 1, C_LIGHT);
+ gfill(b, bw, bh, x, y, 1, h, C_LIGHT);
+ if (w > 3 && h > 3) {
+ gfill(b, bw, bh, x + 1, y + 1, w - 2, 1, C_BTNBG);
+ gfill(b, bw, bh, x + 1, y + 1, 1, h - 2, C_BTNBG);
+ }
+ gfill(b, bw, bh, x, y + h - 1, w, 1, C_DARK);
+ gfill(b, bw, bh, x + w - 1, y, 1, h, C_DARK);
+ if (w > 2 && h > 2) {
+ gfill(b, bw, bh, x + 1, y + h - 2, w - 2, 1, C_BTNBDR);
+ gfill(b, bw, bh, x + w - 2, y + 1, 1, h - 2, C_BTNBDR);
+ }
+}
+
+static void gtext_fit(unsigned short *b, int bw, int bh,
+ int px, int py, const unsigned char *s, int maxpx,
+ unsigned short fg, unsigned short bg, int withbg) {
+ int n = gfit_bytes(s, maxpx);
+ if (n > 0) gtx_line(b, bw, bh, px, py, (const char*)s, 0, n, fg, bg, withbg);
+}
+
+static void garrow(unsigned short *b, int bw, int bh,
+ int x, int y, int dir, unsigned short c) {
+ for (int r = 0; r < 5; r++) {
+ int n = dir < 0 ? r : 4 - r;
+ for (int i = 0; i <= n; i++) {
+ int px = x + 4 - n + i * 2;
+ gpx(b, bw, bh, px, y + r, c);
+ gpx(b, bw, bh, px + 1, y + r, c);
+ }
+ }
+}
+
+static void gscrollbar_at(unsigned short *b, int bw, int bh,
+ int x, int y, int w, int h, int minv, int maxv, int page, int val) {
+ if (w < 12 || h < 28) return;
+ int btn = w;
+ if (btn > 18) btn = 18;
+ if (btn * 2 > h) btn = h / 2;
+ graised(b, bw, bh, x, y, w, btn);
+ graised(b, bw, bh, x, y + h - btn, w, btn);
+ garrow(b, bw, bh, x + (w - 9) / 2, y + (btn - 5) / 2, -1, C_TEXT);
+ garrow(b, bw, bh, x + (w - 9) / 2, y + h - btn + (btn - 5) / 2, 1, C_TEXT);
+ int ty = y + btn, th = h - btn * 2;
+ gfill(b, bw, bh, x, ty, w, th, C_BTNBG);
+ gsunken(b, bw, bh, x, ty, w, th);
+ if (th <= 2) return;
+ if (page < 1) page = 1;
+ if (maxv < minv) maxv = minv;
+ if (val < minv) val = minv;
+ if (val > maxv) val = maxv;
+ int range = maxv - minv + page;
+ int knob = (range > 0) ? (th * page) / range : th;
+ if (knob < 12) knob = 12;
+ if (knob > th) knob = th;
+ int travel = th - knob;
+ int ky = ty;
+ if (maxv > minv && travel > 0)
+ ky += ((val - minv) * travel) / (maxv - minv);
+ graised(b, bw, bh, x + 1, ky, w - 2, knob);
+}
+
+static int gscroll_value_from_y(int ly, int w, int h, int minv, int maxv, int page) {
+ if (w < 12 || h < 28) return minv;
+ int btn = w; if (btn > 18) btn = 18;
+ if (btn * 2 > h) btn = h / 2;
+ int ty = btn, th = h - btn * 2;
+ if (page < 1) page = 1;
+ if (maxv < minv || th <= 1) return minv;
+ int range = maxv - minv + page;
+ int knob = (range > 0) ? (th * page) / range : th;
+ if (knob < 12) knob = 12;
+ if (knob > th) knob = th;
+ int travel = th - knob;
+ if (travel <= 0) return minv;
+ int y = ly - ty - knob / 2;
+ if (y < 0) y = 0;
+ if (y > travel) y = travel;
+ return minv + (y * (maxv - minv) + travel / 2) / travel;
 }
 
 static void gfocus_ring(gui_win_t *w, gui_wid_t *wd) { /* 非文字控件聚焦描边 */
  unsigned short *b = w->buf; int bw = w->w, bh = w->h;
- gborder(b, bw, bh, wd->x - 1, wd->y - 1, wd->w + 2, wd->h + 2, C_TITLEFX);
+ int x = wd->x + 2, y = wd->y + 2, ww = wd->w - 4, hh = wd->h - 4;
+ if (ww > 2 && hh > 2) gborder(b, bw, bh, x, y, ww, hh, C_TITLEFX);
 }
 
 static void gw_draw(gui_win_t *w, gui_wid_t *wd) {
@@ -596,15 +708,12 @@ static void gw_draw(gui_win_t *w, gui_wid_t *wd) {
  int gfoc = gw_isfoc(w, wd);
  switch (wd->type) {
  case GW_BTN: {
- gfill(b, bw, bh, wd->x, wd->y, wd->w, wd->h, C_BTNBG);
- /* docs#22 凸起: 左/上 2px 亮, 右/下 2px 暗 */
- gfill(b, bw, bh, wd->x, wd->y, wd->w, 2, 0xFFFF);
- gfill(b, bw, bh, wd->x, wd->y, 2, wd->h, 0xFFFF);
- gfill(b, bw, bh, wd->x, wd->y + wd->h - 2, wd->w, 2, C_BTNBDR);
- gfill(b, bw, bh, wd->x + wd->w - 2, wd->y, 2, wd->h, C_BTNBDR);
+ graised(b, bw, bh, wd->x, wd->y, wd->w, wd->h);
  int tw = gstr_px((const unsigned char*)wd->txt);
+ int maxw = wd->w - 10; if (maxw < 0) maxw = 0;
+ if (tw > maxw) tw = maxw;
  int tx = wd->x + (wd->w - tw) / 2, ty = wd->y + (wd->h - 16) / 2;
- gtext(b, bw, bh, tx, ty, (const unsigned char*)wd->txt, C_TEXT, C_BTNBG, 1);
+ gtext_fit(b, bw, bh, tx, ty, (const unsigned char*)wd->txt, maxw, C_TEXT, C_BTNBG, 1);
  (void)bh;
  if (gfoc) gfocus_ring(w, wd); /* 聚焦亮框 */
  break;
@@ -613,37 +722,42 @@ static void gw_draw(gui_win_t *w, gui_wid_t *wd) {
  /* 透明背景: 显式清掉文字所占矩形, 防止"新短文覆盖在旧长文后面"残影。
  * gw_redraw 虽已整窗清 C_WINBG, 但保险: 按文字实际像素宽清一次。 */
  int tw = gstr_px((const unsigned char*)wd->txt);
+ int maxw = bw - wd->x - 4; if (maxw < 0) maxw = 0;
+ if (tw > maxw) tw = maxw;
  if (tw > 0) gfill(b, bw, bh, wd->x, wd->y, tw, 16, C_WINBG);
- gtext(b, bw, bh, wd->x, wd->y, (const unsigned char*)wd->txt, C_TEXT, 0, 0);
+ gtext_fit(b, bw, bh, wd->x, wd->y, (const unsigned char*)wd->txt, maxw, C_TEXT, 0, 0);
  break;
  }
  case GW_STATUSBAR: {
  /* 状态栏: 窗底凹陷横条 — 灰底 + 顶部暗分隔线 + 黑字 (工业计算机质感) */
  gfill(b, bw, bh, wd->x, wd->y, wd->w, wd->h, C_BTNBG);
- gfill(b, bw, bh, wd->x, wd->y, wd->w, 1, C_BTNBDR); /* 顶部暗分隔线 */
- int tw = gstr_px((const unsigned char*)wd->txt);
- if (tw > 0) gtext(b, bw, bh, wd->x + 4, wd->y + (wd->h - 16) / 2,
-  (const unsigned char*)wd->txt, C_TEXT, C_BTNBG, 1);
+ gfill(b, bw, bh, wd->x, wd->y, wd->w, 1, C_SHADOW); /* 顶部暗分隔线 */
+ int maxw = wd->w - 8;
+ if (maxw > 0) gtext_fit(b, bw, bh, wd->x + 4, wd->y + (wd->h - 16) / 2,
+  (const unsigned char*)wd->txt, maxw, C_TEXT, C_BTNBG, 1);
  break;
  }
  case GW_EDIT: {
  gfill(b, bw, bh, wd->x, wd->y, wd->w, wd->h, C_EDBG);
  gsunken(b, bw, bh, wd->x, wd->y, wd->w, wd->h); /* docs#22 凹陷 */
- gtext(b, bw, bh, wd->x + 3, wd->y + 1, (const unsigned char*)wd->txt, C_TEXT, C_EDBG, 1);
+ int edit_max = wd->w - 6; if (edit_max < 0) edit_max = 0;
+ gtext_fit(b, bw, bh, wd->x + 3, wd->y + 1, (const unsigned char*)wd->txt,
+ edit_max, C_TEXT, C_EDBG, 1);
  if (wd->sel_anchor != wd->sel_active) { /* 选区高亮 (先于光标) */
  int slo, shi; sel_range(wd, &slo, &shi);
  int x0 = wd->x + 3 + gcaret_px(wd->txt, slo);
  int x1 = wd->x + 3 + gcaret_px(wd->txt, shi);
+ if (x0 < wd->x + 3) x0 = wd->x + 3;
+ if (x1 > wd->x + wd->w - 3) x1 = wd->x + wd->w - 3;
  if (x1 > x0) {
  gfill(b, bw, bh, x0, wd->y + 1, x1 - x0, 14, C_SELBG);
- gtx_line(b, bw, bh, x0, wd->y + 1, wd->txt, slo, shi,
- C_SELFG, C_SELBG, 1);
+ gtext_fit(b, bw, bh, x0, wd->y + 1, (const unsigned char*)wd->txt + slo,
+ x1 - x0, C_SELFG, C_SELBG, 1);
  }
  }
- int isfoc = (w == &GUW[foc_win >= 0 ? foc_win : 0] && wd == &w->wd[w->foc_wid]
- && w->foc_wid >= 0);
- if (isfoc) { /* 块状光标 (在光标字节处, 非恒在串尾), 2px 宽更醒目 */
+ if (gfoc) { /* 块状光标 (在光标字节处, 非恒在串尾), 2px 宽更醒目 */
  int cx = wd->x + 3 + gcaret_px(wd->txt, wd->caret);
+ if (cx > wd->x + wd->w - 4) cx = wd->x + wd->w - 4;
  for (int r = 0; r < 14; r++) {
  gpx(b, bw, bh, cx, wd->y + 1 + r, 0xFC30);
  gpx(b, bw, bh, cx + 1, wd->y + 1 + r, 0xFC30);
@@ -655,16 +769,22 @@ static void gw_draw(gui_win_t *w, gui_wid_t *wd) {
  gfill(b, bw, bh, wd->x, wd->y, wd->w, wd->h, C_EDBG);
  gsunken(b, bw, bh, wd->x, wd->y, wd->w, wd->h); /* docs#22 凹陷 */
  int visible = (wd->h - 2) / 16; if (visible < 1) visible = 1;
+ int has_sb = (wd->nitems > visible);
+ int textw = wd->w - 6 - (has_sb ? 15 : 0); if (textw < 0) textw = 0;
  if (wd->scroll > wd->nitems - visible) wd->scroll = wd->nitems - visible;
  if (wd->scroll < 0) wd->scroll = 0;
  for (int i = 0; i < visible; i++) {
  int item = wd->scroll + i; if (item >= wd->nitems) break;
  int sel = (wd->sel == item);
  int iy = wd->y + 1 + i * 16;
- gfill(b, bw, bh, wd->x + 1, iy, wd->w - 2, 16, sel ? C_SELBG : C_EDBG);
- gtext(b, bw, bh, wd->x + 3, iy, (const unsigned char*)wd->items[item],
- sel ? C_SELFG : C_TEXT, sel ? C_SELBG : C_EDBG, 1);
+ gfill(b, bw, bh, wd->x + 1, iy, wd->w - 2 - (has_sb ? 15 : 0), 16,
+ sel ? C_SELBG : C_EDBG);
+ gtext_fit(b, bw, bh, wd->x + 3, iy, (const unsigned char*)wd->items[item],
+ textw, sel ? C_SELFG : C_TEXT, sel ? C_SELBG : C_EDBG, 1);
  }
+ if (has_sb) gscrollbar_at(b, bw, bh, wd->x + wd->w - 15, wd->y + 1, 14,
+ wd->h - 2, 0, wd->nitems - visible, visible, wd->scroll);
+ if (gfoc) gfocus_ring(w, wd);
  break;
  }
  case GW_TEXTAREA: {
@@ -675,9 +795,14 @@ static void gw_draw(gui_win_t *w, gui_wid_t *wd) {
  gsunken(b, bw, bh, wd->x, wd->y, wd->w, wd->h); /* docs#22 凹陷 */
  int visible = (wd->h - 2) / 16; if (visible < 1) visible = 1;
  int crow = gtx_row(buf, len, wd->txc);
+ int total_rows = gtx_row(buf, len, len) + 1;
+ int has_sb = (total_rows > visible);
+ int bodyw = wd->w - 4 - (has_sb ? 15 : 0); if (bodyw < 0) bodyw = 0;
  if (wd->txsc < 0) wd->txsc = 0;
  if (crow < wd->txsc) wd->txsc = crow; /* 光标上卷 */
  if (crow >= wd->txsc + visible) wd->txsc = crow - visible + 1;
+ if (wd->txsc > total_rows - visible) wd->txsc = total_rows - visible;
+ if (wd->txsc < 0) wd->txsc = 0;
  int ls = gtx_row_start(buf, len, wd->txsc);
  int has_sel = (wd->sel_anchor != wd->sel_active);
  int slo = 0, shi = 0; if (has_sel) sel_range(wd, &slo, &shi);
@@ -685,44 +810,59 @@ static void gw_draw(gui_win_t *w, gui_wid_t *wd) {
  int le = ls;
  while (le < len && buf[le] != '\n') le++;
  int iy = wd->y + 1 + r * 16;
- gtx_line(b, bw, bh, wd->x + 2, iy, buf, ls, le, C_TEXT, C_EDBG, 1);
+ int line_max = bodyw;
+ int le_fit = ls + gfit_bytes((const unsigned char*)buf + ls, line_max);
+ if (le_fit > le) le_fit = le;
+ gtx_line(b, bw, bh, wd->x + 2, iy, buf, ls, le_fit, C_TEXT, C_EDBG, 1);
  if (has_sel) { /* 选区高亮 (逐行交叠) */
  int s0 = slo > ls ? slo : ls;
  int s1 = shi < le ? shi : le;
  if (s0 < s1) {
  int x0 = wd->x + 2 + gtx_px(buf, ls, s0, le);
  int x1 = wd->x + 2 + gtx_px(buf, ls, s1, le);
+ if (x0 < wd->x + 2) x0 = wd->x + 2;
+ if (x1 > wd->x + 2 + bodyw) x1 = wd->x + 2 + bodyw;
+ if (x1 <= x0) { if (le >= len) break; ls = le + 1; continue; }
  gfill(b, bw, bh, x0, iy, x1 - x0, 16, C_SELBG);
- gtx_line(b, bw, bh, x0, iy, buf, s0, s1, C_SELFG, C_SELBG, 1);
+ int sfit = s0 + gfit_bytes((const unsigned char*)buf + s0, x1 - x0);
+ if (sfit > s1) sfit = s1;
+ gtx_line(b, bw, bh, x0, iy, buf, s0, sfit, C_SELFG, C_SELBG, 1);
  }
  }
  if (le >= len) break; /* 内容最后一行 */
  ls = le + 1;
  }
- int isfoc = (w == &GUW[foc_win >= 0 ? foc_win : 0] && w->foc_wid >= 0
- && wd == &w->wd[w->foc_wid]);
- if (isfoc && crow >= wd->txsc && crow < wd->txsc + visible) {
+ if (gfoc && crow >= wd->txsc && crow < wd->txsc + visible) {
  int cls = gtx_line_start(buf, len, wd->txc);
  int clp = gtx_px(buf, cls, wd->txc, gtx_line_end(buf, len, wd->txc));
  int cx = wd->x + 2 + clp, cy = wd->y + 1 + (crow - wd->txsc) * 16;
+ if (cx > wd->x + 2 + bodyw - 2) cx = wd->x + 2 + bodyw - 2;
  /* 2px 宽块光标 */
  for (int r = 0; r < 14; r++) {
  gpx(b, bw, bh, cx, cy + r, 0xFC30);
  gpx(b, bw, bh, cx + 1, cy + r, 0xFC30);
  }
  }
+ if (has_sb) gscrollbar_at(b, bw, bh, wd->x + wd->w - 15, wd->y + 1, 14,
+ wd->h - 2, 0, total_rows - visible, visible, wd->txsc);
  break;
  }
  case GW_CHECK: { /* 复选框: [x] 文本 () */
  gchk_box(b, bw, bh, wd->x, wd->y + 1, wd->chk, gfoc);
- gtext(b, bw, bh, wd->x + 18, wd->y + 1,
- (const unsigned char*)wd->txt, C_TEXT, 0, 0);
+ gtext_fit(b, bw, bh, wd->x + 18, wd->y + 1,
+ (const unsigned char*)wd->txt, wd->w - 20, C_TEXT, C_WINBG, 0);
  break;
  }
  case GW_RADIO: { /* 单选钮: (o) 文本 () */
  grad_box(b, bw, bh, wd->x, wd->y + 1, wd->chk, gfoc);
- gtext(b, bw, bh, wd->x + 18, wd->y + 1,
- (const unsigned char*)wd->txt, C_TEXT, 0, 0);
+ gtext_fit(b, bw, bh, wd->x + 18, wd->y + 1,
+ (const unsigned char*)wd->txt, wd->w - 20, C_TEXT, C_WINBG, 0);
+ break;
+ }
+ case GW_SCROLLBAR: {
+ gscrollbar_at(b, bw, bh, wd->x, wd->y, wd->w, wd->h,
+ wd->minv, wd->maxv, wd->page, wd->val);
+ if (gfoc) gfocus_ring(w, wd);
  break;
  }
  case GW_MENU: /* 菜单栏条 (Win9x 风: 两端+底部外框 + 右下阴影) */
@@ -795,12 +935,64 @@ static void gw_redraw(gui_win_t *w) {
  for (int i = 0; i < w->nwid; i++) gw_draw(w, &w->wd[i]);
 }
 
+static void gw_ctl_rect(gui_win_t *w, int ctl, int *rx, int *ry, int *rw, int *rh) {
+ int x = 0, y = 0, ww = 0, hh = 0;
+ if (!w || ctl < 0 || ctl >= w->nwid) goto out;
+ gui_wid_t *wd = &w->wd[ctl];
+ x = wd->x - 3; y = wd->y - 3; ww = wd->w + 6; hh = wd->h + 6;
+ if (wd->type == GW_MENU) { x = 0; y = wd->y - 1; ww = w->w; hh = 22; }
+ else if (wd->type == GW_LBL) {
+  ww = gstr_px((const unsigned char*)wd->txt) + 8;
+  if (ww < 12) ww = 12;
+  hh = 20;
+ }
+ if (x < 0) { ww += x; x = 0; }
+ if (y < 0) { hh += y; y = 0; }
+ if (x + ww > w->w) ww = w->w - x;
+ if (y + hh > w->h) hh = w->h - y;
+out:
+ if (ww < 0) ww = 0; if (hh < 0) hh = 0;
+ *rx = x; *ry = y; *rw = ww; *rh = hh;
+}
+
+static void gw_redraw_ctl_buf(gui_win_t *w, int ctl) {
+ int x, y, ww, hh;
+ if (!w || ctl < 0 || ctl >= w->nwid) return;
+ gw_ctl_rect(w, ctl, &x, &y, &ww, &hh);
+ if (ww <= 0 || hh <= 0) return;
+ gfill(w->buf, w->w, w->h, x, y, ww, hh, C_WINBG);
+ gw_draw(w, &w->wd[ctl]);
+}
+
+static void gw_redraw_ctl_expose(gui_win_t *w, int ctl) {
+ int x, y, ww, hh;
+ if (!w || ctl < 0 || ctl >= w->nwid) return;
+ gw_ctl_rect(w, ctl, &x, &y, &ww, &hh);
+ gw_redraw_ctl_buf(w, ctl);
+ if (ww > 0 && hh > 0) gcompose_expose(w->x + x, w->y + y, ww, hh);
+}
+
+static void gw_redraw_ctl_pair(gui_win_t *w, int a, int b) {
+ int ax, ay, aw, ah, bx, by, bw, bh;
+ if (!w) return;
+ if (a < 0 || a >= w->nwid) { gw_redraw_ctl_expose(w, b); return; }
+ if (b < 0 || b >= w->nwid) { gw_redraw_ctl_expose(w, a); return; }
+ gw_ctl_rect(w, a, &ax, &ay, &aw, &ah);
+ gw_ctl_rect(w, b, &bx, &by, &bw, &bh);
+ gw_redraw_ctl_buf(w, a);
+ if (b != a) gw_redraw_ctl_buf(w, b);
+ int x0 = ax < bx ? ax : bx, y0 = ay < by ? ay : by;
+ int x1 = ax + aw > bx + bw ? ax + aw : bx + bw;
+ int y1 = ay + ah > by + bh ? ay + ah : by + bh;
+ if (x1 > x0 && y1 > y0) gcompose_expose(w->x + x0, w->y + y0, x1 - x0, y1 - y0);
+}
+
 /* ── 交互助手 ── */
 
 /* 可聚焦控件? (LBL/MENU 不可; EDIT/TAREA/BTN/CHECK/RADIO/LIST 可) */
 static int gw_focusable(int type) {
  return type == GW_EDIT || type == GW_TEXTAREA || type == GW_BTN ||
- type == GW_CHECK || type == GW_RADIO || type == GW_LIST;
+ type == GW_CHECK || type == GW_RADIO || type == GW_LIST || type == GW_SCROLLBAR;
 }
 
 /* TAB/方向键在窗内循环聚焦 (dir=+1 下一, -1 上一)。聚焦到控件并重画。 */
@@ -810,7 +1002,7 @@ static int gw_focus_step(gui_win_t *w, int dir) {
  for (int s = 1; s <= w->nwid; s++) {
  int k = (cur + dir * s + w->nwid) % w->nwid;
  if (gw_focusable(w->wd[k].type)) {
- w->foc_wid = k; gw_redraw(w); return k;
+ w->foc_wid = k; gw_redraw_ctl_pair(w, cur, k); return k;
  }
  }
  return -1;
@@ -903,7 +1095,9 @@ static void gdraw_menu_popup(void) {
 
 static void gui_mb_redraw(void) {
  if (gui_mb.win >= 0 && gui_mb.win < GW_MAXWIN && GUW[gui_mb.win].used) {
- gw_redraw(&GUW[gui_mb.win]); gcompose();
+ gw_redraw(&GUW[gui_mb.win]);
+ if (force_full_clear) dirty_win = -1;
+ gcompose();
  }
 }
 static void gui_mb_close(void) {
@@ -915,19 +1109,38 @@ static void gui_mb_close(void) {
  gw_redraw(&GUW[gui_mb.win]); /* 标题条去高亮 */
  /* 弹层矩形区域暴露: 弹层可能伸出窗沿压到桌面, 全量 blit 不清桌面
  * (desktop_init 优化) → 须显式擦弹层矩形再补相交窗 */
- gcompose_expose(px, py, pw, ph);
+ gcompose_expose(px, py, pw + 2, ph + 2);
  }
 }
 static void gui_mb_open_menu(int m) {
  if (m < 0 || m >= gui_mb.nmenu) return;
+ int had = (gui_mb.open >= 0);
+ int oldx = gui_mb.pop_x, oldy = gui_mb.pop_y;
+ int oldw = gui_mb.pop_w, oldh = gui_mb.pop_h;
  int px, py, pw, ph;
  if (!gui_mb_compute_popup(m, &px, &py, &pw, &ph)) return;
  gui_mb.pop_x = px; gui_mb.pop_y = py;
  gui_mb.pop_w = pw; gui_mb.pop_h = ph;
  gui_mb.open = m; gui_mb.hilite = 0;
- /* 整屏: 标题条高亮 + 弹层覆在 LFB 顶层 */
- gui_dirty = 1; dirty_win = -1;
- gui_mb_redraw();
+ if (gui_mb.win >= 0 && gui_mb.win < GW_MAXWIN && GUW[gui_mb.win].used)
+ gw_redraw(&GUW[gui_mb.win]);
+ if (had) {
+ int x0 = oldx < px ? oldx : px;
+ int y0 = oldy < py ? oldy : py;
+ int x1 = oldx + oldw + 2; if (px + pw + 2 > x1) x1 = px + pw + 2;
+ int y1 = oldy + oldh + 2; if (py + ph + 2 > y1) y1 = py + ph + 2;
+ if (gui_mb.win >= 0 && gui_mb.win < GW_MAXWIN && GUW[gui_mb.win].used) {
+ gui_win_t *w = &GUW[gui_mb.win];
+ if (w->x < x0) x0 = w->x;
+ if (w->y + 18 < y0) y0 = w->y + 18;
+ if (w->x + w->w > x1) x1 = w->x + w->w;
+ if (w->y + 36 > y1) y1 = w->y + 36;
+ }
+ gcompose_expose(x0, y0, x1 - x0, y1 - y0);
+ } else {
+ gui_dirty = 1; dirty_win = -1; gfull_force = 1;
+ gcompose();
+ }
 }
 static void gui_mb_switch(int d) { /* ←/→ 切换菜单 */
  int n = gui_mb.nmenu; if (n < 1) return;
@@ -1018,42 +1231,34 @@ static void ptr_restore_region(void) {
  }
 }
 
-/* 整屏重合成: 桌面底 + 自底向上 blit 窗口 + 保存指针背景 + 画指针
- * 限流 ≤~33ms(30Hz): 若距上次 <3 tick(约 33ms)则跳过, 让 QEMU 有时间把
- * 上一帧完整显示出来, 否则以轮询速度狂写 LFB → 主机持续重绘 → 交互闪烁
- * (v6.9.3)。返回 1=已合成, 0=被限流(留待下轮)。 */
-static unsigned last_full_tick = 0;
-static int gfull_force = 0; /* 拖动结束兜底: 忽略 30Hz 限流整屏一次 */
+/* 整屏重合成: 每个像素直接取最终顶层颜色。
+ * 旧实现按 z 顺序先画底窗再画顶窗, 在 QEMU/慢 LFB 下会短暂露出底窗。
+ * 这里宁可多算一点, 也保证每个像素只写最终画面。 */
 static int gcompose_full(void) {
  if (!fb_active()) return 1;
  unsigned now = task_ticks();
- if (!gfull_force && now - last_full_tick < 3) return 0;
  gfull_force = 0; last_full_tick = now;
+ ptr_bg_valid = 0;
  unsigned fb = fb_vbe_base(); int fbw = fb_vbe_w(), fbh = fb_vbe_h();
  int bpl = fb_vbe_bpl();
- /* 抗闪: 只在首帧铺桌面底色; 之后按 z 全量 blit 本身幂等, 无需整屏清
- * (整屏清与重 blit 分帧可见 → 点击/切活跃整屏闪烁) */
- if (!desktop_init) {
- for (int y = 0; y < fbh; y++)
- for (int x = 0; x < fbw; x++) {
- unsigned char *p = (unsigned char *)(fb + (unsigned)y * bpl + (unsigned)x * 2);
- p[0] = (unsigned char)(C_DESKTOP & 0xFF); p[1] = (unsigned char)(C_DESKTOP >> 8);
- }
+ (void)force_full_clear;
+ force_full_clear = 0;
  desktop_init = 1;
- }
- for (int z = 1; z <= gui_zmax; z++) {
+ for (int y = 0; y < fbh; y++) {
+ for (int x = 0; x < fbw; x++) {
+ unsigned short c = C_DESKTOP;
+ int bestz = -1;
  for (int k = 0; k < GW_MAXWIN; k++) {
  gui_win_t *w = &GUW[k];
- if (!w->used || w->z != z) continue;
- for (int y = 0; y < w_draw_h(w); y++) {
- int yy = w->y + y; if (yy < 0 || yy >= fbh) continue;
- for (int x = 0; x < w->w; x++) {
- int xx = w->x + x; if (xx < 0 || xx >= fbw) continue;
- unsigned char *p = (unsigned char *)(fb + (unsigned)yy * bpl + (unsigned)xx * 2);
- unsigned short c = w->buf[(unsigned)y * w->w + (unsigned)x];
+ if (!w->used) continue;
+ if (x >= w->x && x < w->x + w->w &&
+ y >= w->y && y < w->y + w_draw_h(w) && w->z > bestz) {
+ c = w->buf[(unsigned)(y - w->y) * w->w + (unsigned)(x - w->x)];
+ bestz = w->z;
+ }
+ }
+ unsigned char *p = (unsigned char *)(fb + (unsigned)y * bpl + (unsigned)x * 2);
  p[0] = (unsigned char)(c & 0xFF); p[1] = (unsigned char)(c >> 8);
- }
- }
  }
  }
  /* : 菜单弹层永远在 z 顶, 画在所有窗口之上 (指针之下) */
@@ -1079,32 +1284,26 @@ static void gcompose_expose(int ex, int ey, int ew, int eh) {
  int x1 = ex + ew, y1 = ey + eh;
  if (ex < 0) ex = 0; if (ey < 0) ey = 0;
  if (x1 > fbw) x1 = fbw; if (y1 > fbh) y1 = fbh;
- for (int y = ey; y < y1; y++)
- for (int x = ex; x < x1; x++) {
- unsigned char *p = (unsigned char *)(fb + (unsigned)y * bpl + (unsigned)x * 2);
- p[0] = (unsigned char)(C_DESKTOP & 0xFF); p[1] = (unsigned char)(C_DESKTOP >> 8);
- }
+ if (ex >= x1 || ey >= y1) return;
+ ptr_bg_valid = 0;
  int mx = mouse_px_x(), my = mouse_px_y();
  int ptr_hit = (mx >= ex && mx < x1 && my >= ey && my < y1);
- for (int z = 1; z <= gui_zmax; z++)
+ for (int y = ey; y < y1; y++) {
+ for (int x = ex; x < x1; x++) {
+ unsigned short c = C_DESKTOP;
+ int bestz = -1;
  for (int k = 0; k < GW_MAXWIN; k++) {
  gui_win_t *w = &GUW[k];
- if (!w->used || w->z != z) continue;
- /* 暴露矩形相交窗必 blit; 活跃窗标题色可能已变, 也 blit */
- if (k != active_win &&
- !(w->x < x1 && w->x + w->w > ex && w->y < y1 && w->y + w_draw_h(w) > ey))
- continue;
- for (int y = 0; y < w_draw_h(w); y++) {
- int yy = w->y + y; if (yy < 0 || yy >= fbh) continue;
- for (int x = 0; x < w->w; x++) {
- int xx = w->x + x; if (xx < 0 || xx >= fbw) continue;
- unsigned char *p = (unsigned char *)(fb + (unsigned)yy * bpl + (unsigned)xx * 2);
- unsigned short c = w->buf[(unsigned)y * w->w + (unsigned)x];
+ if (!w->used) continue;
+ if (x >= w->x && x < w->x + w->w &&
+ y >= w->y && y < w->y + w_draw_h(w) && w->z > bestz) {
+ c = w->buf[(unsigned)(y - w->y) * w->w + (unsigned)(x - w->x)];
+ bestz = w->z;
+ }
+ }
+ unsigned char *p = (unsigned char *)(fb + (unsigned)y * bpl + (unsigned)x * 2);
  p[0] = (unsigned char)(c & 0xFF); p[1] = (unsigned char)(c >> 8);
  }
- }
- if (mx >= w->x && mx < w->x + w->w && my >= w->y && my < w->y + w_draw_h(w))
- ptr_hit = 1;
  }
  gdraw_menu_popup();
  if (mouse_installed_k()) {
@@ -1133,8 +1332,13 @@ static void gblit_win(int k) {
  /* 已保存的指针背景若覆盖本窗矩形, 先擦掉, 否则 blit 会盖掉指针下的
  * 已保存像素 → 指针移动后留残影 */
  if (ptr_bg_valid && ptr_bg_x < w->x + w->w && ptr_bg_x + 10 > w->x &&
- ptr_bg_y < w->y + w_draw_h(w) && ptr_bg_y + 10 > w->y)
+ ptr_bg_y < w->y + w_draw_h(w) && ptr_bg_y + 10 > w->y) {
+ if (ptr_bg_x < w->x || ptr_bg_y < w->y ||
+ ptr_bg_x + 10 > w->x + w->w || ptr_bg_y + 10 > w->y + w_draw_h(w))
  ptr_restore_region();
+ else
+ ptr_bg_valid = 0;
+ }
  for (int y = 0; y < w_draw_h(w); y++) {
  int yy = w->y + y; if (yy < 0 || yy >= fbh) continue;
  for (int x = 0; x < w->w; x++) {
@@ -1168,8 +1372,8 @@ static void gblit_win(int k) {
  }
  /* : 弹层在 z 顶 — 若弹层与被 blit 区域相交, blit 已盖掉弹层像素, 补画 */
  if (gui_mb.used && gui_mb.open >= 0
- && gui_mb.pop_x < w->x + w->w && gui_mb.pop_x + gui_mb.pop_w > w->x
- && gui_mb.pop_y < w->y + w_draw_h(w) && gui_mb.pop_y + gui_mb.pop_h > w->y)
+ && gui_mb.pop_x < w->x + w->w && gui_mb.pop_x + gui_mb.pop_w + 2 > w->x
+ && gui_mb.pop_y < w->y + w_draw_h(w) && gui_mb.pop_y + gui_mb.pop_h + 2 > w->y)
  gdraw_menu_popup();
  /* 指针落在被 blit 区域: 重存背景 + 重画 (弹层已在指针下) */
  if (ptr_hit) {
@@ -1277,8 +1481,8 @@ static void gcompose(void) {
  if (!fb_active()) return;
  int mx = mouse_px_x(), my = mouse_px_y();
  if (gui_dirty) {
- if (dirty_win >= 0) { gblit_win(dirty_win); dirty_win = -1; return; }
- if (gcompose_full()) return; /* 整屏 (新建/关闭/raise) */
+ dirty_win = -1;
+ if (gcompose_full()) return; /* 统一 z 序合成, 避免单窗快路径露出旧层级 */
  }
  if (mx == last_mx && my == last_my) return; /* 真无变化 */
  if (!mouse_installed_k()) { last_mx = mx; last_my = my; return; }
@@ -1305,13 +1509,14 @@ static int gw_new(gui_win_t *w, int type, int x, int y, int ww, int hh) {
  wd->txid = -1; wd->txlen = 0; wd->txc = 0; wd->txcol = 0; wd->txsc = 0;
  wd->sel_anchor = 0; wd->sel_active = 0;
  wd->chk = 0; wd->grp = 0;
+ wd->minv = 0; wd->maxv = 0; wd->page = 1; wd->val = 0;
  if (type == GW_TEXTAREA) { /* 分配多行内容槽 */
  for (int s = 0; s < GW_TXPOOL; s++)
  if (!gui_txused[s]) { wd->txid = s; gui_txused[s] = 1; gui_txpool[s][0] = 0; break; }
  }
  int id = w->nwid++;
  if (type == GW_EDIT) w->foc_wid = id;
- gw_redraw(w); gcompose();
+ gw_redraw(w);
  return id;
 }
 
@@ -1444,7 +1649,7 @@ int gui_win_raise(int id) {
 int gui_btn(int win, int cx, int cy, const char *label) {
  if (!gui_active || win < 0 || win >= GW_MAXWIN || !GUW[win].used) return -1;
  int tw = label ? gstr_px((const unsigned char*)label) : 0;
- int ww = 16 + tw; if (ww < 48) ww = 48;
+ int ww = 24 + tw; if (ww < 56) ww = 56;
  int id = gw_new(&GUW[win], GW_BTN, cx, cy, ww, 26);
  if (id >= 0) gcopy(GUW[win].wd[id].txt, label ? label : "", 64);
  return id;
@@ -1460,7 +1665,7 @@ int gui_lbl(int win, int x, int y, const char *text) {
 int gui_statusbar(int win, int x, int y, int w, const char *text) {
  if (!gui_active || win < 0 || win >= GW_MAXWIN || !GUW[win].used) return -1;
  if (w < 20) w = 20;
- int id = gw_new(&GUW[win], GW_STATUSBAR, x, y, w, 18);
+ int id = gw_new(&GUW[win], GW_STATUSBAR, x, y, w, 20);
  if (id >= 0) gcopy(GUW[win].wd[id].txt, text ? text : "", 64);
  return id;
 }
@@ -1468,13 +1673,32 @@ int gui_statusbar(int win, int x, int y, int w, const char *text) {
 int gui_edit(int win, int cx, int cy, int w) {
  if (!gui_active || win < 0 || win >= GW_MAXWIN || !GUW[win].used) return -1;
  if (w > 56 * 8) w = 56 * 8; if (w < 20) w = 20;
- return gw_new(&GUW[win], GW_EDIT, cx, cy, w, 18);
+ return gw_new(&GUW[win], GW_EDIT, cx, cy, w, 22);
 }
 
 int gui_list(int win, int x, int y, int w, int h) {
  if (!gui_active || win < 0 || win >= GW_MAXWIN || !GUW[win].used) return -1;
- if (w > 300) w = 300; if (h > 240) h = 240;
+ if (w < 40) w = 40; if (w > 620) w = 620;
+ if (h < 34) h = 34; if (h > 460) h = 460;
  return gw_new(&GUW[win], GW_LIST, x, y, w, h);
+}
+
+int gui_scrollbar(int win, int x, int y, int h) {
+ if (!gui_active || win < 0 || win >= GW_MAXWIN || !GUW[win].used) return -1;
+ if (h < 28) h = 28; if (h > 460) h = 460;
+ return gw_new(&GUW[win], GW_SCROLLBAR, x, y, 14, h);
+}
+
+int gui_scrollbar_set(int win, int ctl, int minv, int maxv, int page, int val) {
+ gui_wid_t *wd = gw_get(win, ctl);
+ if (!wd || wd->type != GW_SCROLLBAR) return -1;
+ if (page < 1) page = 1;
+ if (maxv < minv) maxv = minv;
+ if (val < minv) val = minv;
+ if (val > maxv) val = maxv;
+ wd->minv = minv; wd->maxv = maxv; wd->page = page; wd->val = val;
+ gw_redraw_ctl_expose(&GUW[win], ctl);
+ return wd->val;
 }
 
 /* 多行文本区 (): 内容存独立槽池 (TX_SIZE), 光标字节偏移 + ↑↓←→ 全编辑 */
@@ -1499,7 +1723,7 @@ int gui_tarea_set(int win, int ctl, const char *str, int len) {
  wd->txlen = gstrlen(b);
  wd->txc = 0; wd->txcol = 0; wd->txsc = 0;
  wd->sel_anchor = wd->sel_active = 0;
- gw_redraw(&GUW[win]); gcompose();
+ gw_redraw_ctl_expose(&GUW[win], ctl);
  return 0;
 }
 
@@ -1515,12 +1739,28 @@ int gui_tarea_get(int win, int ctl, char *buf, int max) {
  return n;
 }
 
+int gui_tarea_info(int win, int ctl, int *out) {
+ gui_wid_t *wd = gw_get(win, ctl);
+ if (!wd || wd->type != GW_TEXTAREA || wd->txid < 0 || !out) return -1;
+ const char *buf = gui_txpool[wd->txid];
+ int len = wd->txlen;
+ int row = gtx_row(buf, len, wd->txc);
+ int ls = gtx_line_start(buf, len, wd->txc);
+ out[0] = row + 1;
+ out[1] = wd->txc - ls + 1;
+ out[2] = wd->txc;
+ out[3] = gtx_row(buf, len, len) + 1;
+ out[4] = wd->txsc + 1;
+ out[5] = len;
+ return 0;
+}
+
 int gui_list_set(int win, int ctl, const char *str) {
  gui_wid_t *wd = gw_get(win, ctl);
  if (!wd || wd->type != GW_LIST) return -1;
  if (!str || !str[0]) wd->nitems = 0, wd->sel = -1, wd->scroll = 0;
  else if (wd->nitems < GW_MAXITEMS) gcopy(wd->items[wd->nitems++], str, 32);
- gw_redraw(&GUW[win]); gcompose();
+ gw_redraw(&GUW[win]);
  return wd->nitems;
 }
 
@@ -1544,7 +1784,7 @@ int gui_list_n(int win, int ctl) {
 /* 复选框 / 单选钮 / 菜单栏 */
 int gui_check(int win, int cx, int cy, const char *label) {
  if (!gui_active || win < 0 || win >= GW_MAXWIN || !GUW[win].used) return -1;
- int id = gw_new(&GUW[win], GW_CHECK, cx, cy, 14 + 18 + gstr_px((const unsigned char*)label), 18);
+ int id = gw_new(&GUW[win], GW_CHECK, cx, cy, 38 + gstr_px((const unsigned char*)label), 20);
  if (id >= 0) gcopy(GUW[win].wd[id].txt, label ? label : "", 64);
  return id;
 }
@@ -1552,12 +1792,12 @@ int gui_check_set(int win, int ctl, int state) {
  gui_wid_t *wd = gw_get(win, ctl);
  if (!wd || wd->type != GW_CHECK && wd->type != GW_RADIO) return -1;
  wd->chk = state ? 1 : 0;
- gw_redraw(&GUW[win]); gcompose();
+ gw_redraw_ctl_expose(&GUW[win], ctl);
  return 0;
 }
 int gui_radio(int win, int cx, int cy, const char *label) {
  if (!gui_active || win < 0 || win >= GW_MAXWIN || !GUW[win].used) return -1;
- int id = gw_new(&GUW[win], GW_RADIO, cx, cy, 14 + 18 + gstr_px((const unsigned char*)label), 18);
+ int id = gw_new(&GUW[win], GW_RADIO, cx, cy, 38 + gstr_px((const unsigned char*)label), 20);
  if (id >= 0) { gcopy(GUW[win].wd[id].txt, label ? label : "", 64);
  GUW[win].wd[id].grp = 0; } /* 同窗同位组 0 互斥 */
  return id;
@@ -1589,7 +1829,8 @@ int gui_menu_add(int win, int ctl, const char *title) {
  if (!lc) for (k = 0; t[k]; k++) if (t[k] >= 'A' && t[k] <= 'Z') { lc = t[k] + 32; break; }
  gui_mb.mnem[i] = lc;
  gui_mb.nmenu++;
- gui_mb_redraw();
+ if (gui_mb.win >= 0 && gui_mb.win < GW_MAXWIN && GUW[gui_mb.win].used)
+ gw_redraw(&GUW[gui_mb.win]);
  return i;
 }
 /* 给菜单 m 加一项 (id 内联): "-" 或空 = 分隔项; 返回项索引或 -1 */
@@ -1610,7 +1851,7 @@ int gui_wnd_text(int win, int ctl, const char *str) {
  wd->caret = gstrlen(wd->txt);
  wd->sel_anchor = wd->sel_active = wd->caret; /* 设文本 → 清选区 */
  }
- gw_redraw(&GUW[win]); gcompose();
+ gw_redraw_ctl_expose(&GUW[win], ctl);
  return 0;
 }
 
@@ -1674,7 +1915,7 @@ int gui_edit_char(int win, int ctl, int ch) {
  wd->txt[len + 1] = 0;
  }
  }
- gw_redraw(&GUW[win]); gcompose();
+ gw_redraw_ctl_expose(&GUW[win], ctl);
  return wd->caret;
 }
 
@@ -1774,7 +2015,7 @@ int gui_tarea_char(int win, int ctl, int ch) {
  }
 
  wd->txc = c; wd->txlen = len;
- gw_redraw(&GUW[win]); gcompose();
+ gw_redraw_ctl_expose(&GUW[win], ctl);
  return c;
 }
 
@@ -1812,6 +2053,7 @@ int gui_events(void *buf, int max) {
  int fbw = fb_vbe_w(), fbh = gui_buf_h;
  int was = prev_lbutton;
  prev_lbutton = lb;
+ if (lb && !was) ptr_bg_valid = 0;
 
  /* ── 按住跨 poll 1: 撞标题栏拖窗 → 整屏重合成 (擦移走旧区) ── */
  if (lb && drag_win >= 0 && drag_win < GW_MAXWIN && GUW[drag_win].used) {
@@ -1822,6 +2064,31 @@ int gui_events(void *buf, int max) {
  if (ny + w_draw_h(w) > fbh) ny = fbh - w_draw_h(w);
  if (nx != w->x || ny != w->y) {
  gdx_move(drag_win, nx, ny); /* 拖动快路径: 拷窗口+补暴露区+指针, 无整屏清 */
+ }
+ goto kbd;
+ }
+ if (lb && scroll_drag_w >= 0 && scroll_drag_w < GW_MAXWIN && GUW[scroll_drag_w].used) {
+ gui_win_t *w = &GUW[scroll_drag_w];
+ if (scroll_drag_k >= 0 && scroll_drag_k < w->nwid) {
+ gui_wid_t *g = &w->wd[scroll_drag_k];
+ int ly = my - (w->y + g->y);
+ if (g->type == GW_LIST) {
+ int visible = (g->h - 2) / 16; if (visible < 1) visible = 1;
+ if (g->nitems > visible) {
+ g->scroll = gscroll_value_from_y(ly, 14, g->h - 2, 0, g->nitems - visible, visible);
+ gw_redraw_ctl_expose(w, scroll_drag_k);
+ }
+ } else if (g->type == GW_TEXTAREA && g->txid >= 0) {
+ int visible = (g->h - 2) / 16; if (visible < 1) visible = 1;
+ int total = gtx_row(gui_txpool[g->txid], g->txlen, g->txlen) + 1;
+ if (total > visible) {
+ g->txsc = gscroll_value_from_y(ly, 14, g->h - 2, 0, total - visible, visible);
+ gw_redraw_ctl_expose(w, scroll_drag_k);
+ }
+ } else if (g->type == GW_SCROLLBAR) {
+ g->val = gscroll_value_from_y(ly, g->w, g->h, g->minv, g->maxv, g->page);
+ gw_redraw_ctl_expose(w, scroll_drag_k);
+ }
  }
  goto kbd;
  }
@@ -1844,8 +2111,7 @@ int gui_events(void *buf, int max) {
  g->txc = gtx_byte_px(tb, ls, le, pxx);
  g->sel_active = g->txc;
  }
- gw_redraw(w); /* 重画选区高亮+光标 进离屏buf (单选窗blit) */
- gcompose();
+ gw_redraw_ctl_expose(w, sel_drag_k); /* 只重画选区高亮+光标所在控件 */
  goto kbd;
  }
  /* ── 松开边沿 → 结束拖窗/拖选 (保留选区) ── */
@@ -1874,7 +2140,7 @@ int gui_events(void *buf, int max) {
  last_full_tick = 0; /* 强制下次 gcompose 走全量 (避免 30Hz 限流造成 1 帧延迟) */
  gui_dirty = 1; dirty_win = -1;
  }
- drag_win = -1; sel_drag_w = sel_drag_k = -1;
+ drag_win = -1; sel_drag_w = sel_drag_k = -1; scroll_drag_w = scroll_drag_k = -1;
  }
 
  /* ── 菜单栏 (, ): 弹层跟点击位置, 在所有窗之上 ── */
@@ -1956,10 +2222,8 @@ int gui_events(void *buf, int max) {
  if (top >= 0) {
  gui_win_t *w = &GUW[top];
  int in_title = (my >= w->y && my < w->y + 18);
- /* active 管理: 任何位置点击都只作用到活跃窗口 (哪怕下面有其他窗);
- * 例外: 点击到未被遮挡的标题栏 → 切换活跃窗口 */
- if (active_win != top && in_title) {
- /* 点到非活跃窗未遮挡的标题栏 → 切换活跃窗口 */
+ /* active 管理: 点击任意可见区域都激活该窗口, 与正统桌面系统一致。 */
+ if (active_win != top) {
  int olda = active_win;
  if (olda >= 0 && olda < GW_MAXWIN && GUW[olda].used)
  GUW[olda].active = 0;
@@ -1977,9 +2241,6 @@ int gui_events(void *buf, int max) {
  } else if (active_win == top) {
  /* 点在活跃窗口 → 正常处理 (raise), 绝不下落到下层窗 */
  w->z = ++gui_zmax;
- } else {
- /* 点在非活跃窗的本体 → 忽略, 不切换不透传 */
- goto kbd;
  }
  if (foc_win != active_win && active_win >= 0 && active_win < GW_MAXWIN
  && GUW[active_win].used) {
@@ -2134,6 +2395,12 @@ int gui_events(void *buf, int max) {
  }
  if (ctl >= 0) {
  gui_wid_t *g = &w->wd[ctl];
+ int old_focus = w->foc_wid;
+ for (int i = 0; i < w->nwid; i++) {
+ gui_wid_t *od = &w->wd[i];
+ if ((od->type == GW_EDIT || od->type == GW_TEXTAREA) && i != ctl)
+ od->sel_anchor = od->sel_active = 0;
+ }
  if (g->type == GW_EDIT) {
  w->foc_wid = ctl;
  g->caret = gcaret_from_px(g->txt,
@@ -2145,22 +2412,61 @@ int gui_events(void *buf, int max) {
  if (g->txid >= 0) {
  const char *tb = gui_txpool[g->txid];
  int tlen = g->txlen;
- int linepy = my - (w->y + g->y) - 1; if (linepy < 0) linepy = 0;
+ int visible = (g->h - 2) / 16; if (visible < 1) visible = 1;
+ int total = gtx_row(tb, tlen, tlen) + 1;
+ int lx = mx - (w->x + g->x), ly = my - (w->y + g->y);
+ if (total > visible && lx >= g->w - 15) {
+ scroll_drag_w = top; scroll_drag_k = ctl;
+ if (ly < 15) g->txsc--;
+ else if (ly >= g->h - 15) g->txsc++;
+ else if (ly < g->h / 2) g->txsc -= visible;
+ else g->txsc += visible;
+ if (g->txsc < 0) g->txsc = 0;
+ if (g->txsc > total - visible) g->txsc = total - visible;
+ ch = g->txsc;
+ } else {
+ int linepy = ly - 1; if (linepy < 0) linepy = 0;
  int r = linepy / 16;
  int ls = gtx_row_start(tb, tlen, g->txsc + r);
  int le = gtx_line_end(tb, tlen, ls);
- int pxx = mx - (w->x + g->x) - 2; if (pxx < 0) pxx = 0;
+ int pxx = lx - 2; if (pxx < 0) pxx = 0;
  g->txc = gtx_byte_px(tb, ls, le, pxx);
  g->txcol = gtx_px(tb, ls, g->txc, le);
  g->sel_anchor = g->sel_active = g->txc;
  sel_drag_w = top; sel_drag_k = ctl;
  }
+ }
  } else if (g->type == GW_LIST) {
- w->foc_wid = -1;
+ w->foc_wid = ctl;
  int visible = (g->h - 2) / 16; if (visible < 1) visible = 1;
- int item = g->scroll + ((my - (w->y + g->y)) - 1) / 16;
+ int has_sb = (g->nitems > visible);
+ int lx = mx - (w->x + g->x), ly = my - (w->y + g->y);
+ if (has_sb && lx >= g->w - 15) {
+ scroll_drag_w = top; scroll_drag_k = ctl;
+ if (ly < 15) g->scroll--;
+ else if (ly >= g->h - 15) g->scroll++;
+ else if (ly < g->h / 2) g->scroll -= visible;
+ else g->scroll += visible;
+ if (g->scroll < 0) g->scroll = 0;
+ if (g->scroll > g->nitems - visible) g->scroll = g->nitems - visible;
+ ch = g->sel;
+ } else {
+ int item = g->scroll + (ly - 1) / 16;
  if (item >= g->nitems) item = -1;
  if (item >= 0) { g->sel = item; ch = item; }
+ }
+ } else if (g->type == GW_SCROLLBAR) {
+ w->foc_wid = ctl;
+ scroll_drag_w = top; scroll_drag_k = ctl;
+ int ly = my - (w->y + g->y);
+ int step = 1;
+ if (ly < g->w) g->val -= step;
+ else if (ly >= g->h - g->w) g->val += step;
+ else if (ly < g->h / 2) g->val -= g->page;
+ else g->val += g->page;
+ if (g->val < g->minv) g->val = g->minv;
+ if (g->val > g->maxv) g->val = g->maxv;
+ ch = g->val;
  } else if (g->type == GW_CHECK) { /* 复选框: 点击切换 */
  w->foc_wid = ctl; g->chk = !g->chk; ch = g->chk;
  } else if (g->type == GW_RADIO) { /* 单选: 同组互斥 */
@@ -2170,12 +2476,24 @@ int gui_events(void *buf, int max) {
  } else {
  w->foc_wid = -1;
  }
- gw_redraw(w);
+ if (g->type == GW_RADIO && !need_full) {
+  gw_redraw(w);
+  gcompose_expose(w->x, w->y, w->w, w_draw_h(w));
+ } else if (need_full || g->type == GW_RADIO) gw_redraw(w);
+ else gw_redraw_ctl_pair(w, old_focus, w->foc_wid);
  } else {
- gw_redraw(w); /* 点空白: 仅 raise */
+ int old_focus = w->foc_wid;
+ w->foc_wid = -1;
+ for (int i = 0; i < w->nwid; i++) {
+ gui_wid_t *od = &w->wd[i];
+ if (od->type == GW_EDIT || od->type == GW_TEXTAREA)
+ od->sel_anchor = od->sel_active = 0;
+ }
+ if (need_full) gw_redraw(w); /* 跨窗激活仍需更新标题/遮挡 */
+ else gw_redraw_ctl_expose(w, old_focus); /* 同窗空白点击只清旧焦点 */
  }
  if (need_full) dirty_win = -1; /* 焦点变更塌扩了旧窗 → 整屏重合成 */
- gcompose();
+ if (need_full) gcompose();
  if (ctl >= 0 && n < max) {
  ev[0] = GEV_CLICK; ev[1] = top; ev[2] = ctl; ev[3] = ch;
  n += 4; ev += 4;
@@ -2247,12 +2565,12 @@ kbd:
  if (fk == 6) { /* ↑ */
  if (g->sel > 0) g->sel--;
  if (g->sel < g->scroll) g->scroll = g->sel;
- key_pressed = 0; fhk = 1; gw_redraw(w); gcompose();
+ key_pressed = 0; fhk = 1; gw_redraw_ctl_expose(w, fw);
  } else if (fk == 7) { /* ↓ */
  if (g->sel + 1 < g->nitems) g->sel++;
  int vis = (g->h - 2) / 16; if (vis < 1) vis = 1;
  if (g->sel >= g->scroll + vis) g->scroll = g->sel - vis + 1;
- key_pressed = 0; fhk = 1; gw_redraw(w); gcompose();
+ key_pressed = 0; fhk = 1; gw_redraw_ctl_expose(w, fw);
  } else if (fk == 2) { /* ENTER: 确认 */
  if (g->sel >= 0 && g->sel < g->nitems && n < max) {
  ev[0] = GEV_CLICK; ev[1] = foc_win; ev[2] = fw; ev[3] = g->sel;
@@ -2271,7 +2589,7 @@ kbd:
  if (g->type == GW_BTN) {
  if (fk == 1 && current_char == ' ') { /* 空格 = 按下按钮 */
  key_pressed = 0; fhk = 1;
- gw_redraw(w); gcompose();
+ gw_redraw_ctl_expose(w, fw);
  if (n < max) {
  ev[0] = GEV_CLICK; ev[1] = foc_win; ev[2] = fw; ev[3] = 0;
  n += 4; ev += 4;
@@ -2284,7 +2602,7 @@ kbd:
  if (fk == 1 && current_char == ' ') { /* 空格 = 切换 */
  key_pressed = 0; fhk = 1;
  g->chk = !g->chk;
- gw_redraw(w); gcompose();
+ gw_redraw_ctl_expose(w, fw);
  if (n < max) {
  ev[0] = GEV_CLICK; ev[1] = foc_win; ev[2] = fw; ev[3] = g->chk;
  n += 4; ev += 4;
@@ -2297,7 +2615,7 @@ kbd:
  if (fk == 1 && current_char == ' ') { /* 空格 = 互斥勾选 */
  key_pressed = 0; fhk = 1;
  gw_radio_check(w, g);
- gw_redraw(w); gcompose();
+ gw_redraw(w); gcompose_expose(w->x, w->y, w->w, w_draw_h(w));
  if (n < max) {
  ev[0] = GEV_CLICK; ev[1] = foc_win; ev[2] = fw; ev[3] = 1;
  n += 4; ev += 4;
@@ -2305,6 +2623,25 @@ kbd:
  } else if (fk == 4 || fk == 5 || fk == 6 || fk == 7) {
  key_pressed = 0; fhk = 1;
  gw_focus_step(w, (fk == 4 || fk == 6) ? -1 : 1);
+ }
+ } else if (g->type == GW_SCROLLBAR) {
+ if (fk == 6 || fk == 4) { /* ↑/← */
+ key_pressed = 0; fhk = 1; g->val--;
+ } else if (fk == 7 || fk == 5) { /* ↓/→ */
+ key_pressed = 0; fhk = 1; g->val++;
+ } else if (fk == 18) { /* PgUp */
+ key_pressed = 0; fhk = 1; g->val -= g->page;
+ } else if (fk == 19) { /* PgDn */
+ key_pressed = 0; fhk = 1; g->val += g->page;
+ }
+ if (fhk) {
+ if (g->val < g->minv) g->val = g->minv;
+ if (g->val > g->maxv) g->val = g->maxv;
+ gw_redraw_ctl_expose(w, fw);
+ if (n < max) {
+ ev[0] = GEV_CLICK; ev[1] = foc_win; ev[2] = fw; ev[3] = g->val;
+ n += 4; ev += 4;
+ }
  }
  }
  }

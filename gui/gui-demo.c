@@ -98,8 +98,8 @@ int main(void) {
  int li = sys_gui_list(win, 20, 170, 440, 150);
  for (int i = 0; i < NCITIES; i++) sys_gui_list_set(win, li, cities[i]);
 
- /* 状态标签 (反馈) */
- int st = sys_gui_lbl(win, 20, 332, "状态: TAB 切焦点 / Alt+F 开菜单 / 点标题弹层跟随");
+ /* 状态栏 (反馈, 可由事件实时刷新) */
+ int st = sys_gui_statusbar(win, 8, 332, 464, "状态: TAB 切焦点 / Alt+F 开菜单 / 点击任意窗口区域激活");
 
  int dlg = -1, dlg_ok = -1;
  gui_ev_t ev[16];
@@ -131,7 +131,7 @@ int main(void) {
  else if (it == 1) sys_gui_wnd_text(win, st, "视图: 状态栏 (待实现)");
  }
  if (m == mhelp) {
- if (it == 0) sys_gui_wnd_text(win, st, "关于: AMUNOS Classic GUI 0.3 (v6.5.5)");
+ if (it == 0) sys_gui_wnd_text(win, st, "关于: AMUNOS Classic GUI 0.5");
  else if (it == 2) sys_gui_wnd_text(win, st, "说明: TAB 切焦点, Alt+字母 开菜单, ↑↓ 列表");
  }
  if (ev[i].ch == ((mfile<<8)|4)) continue;
@@ -154,14 +154,16 @@ int main(void) {
  else if (c == b_txt) {
  if (ewin >= 0) sys_gui_win_raise(ewin);
  else {
- ewin = sys_gui_win(140, 60, 420, 360, "记事簿");
+ ewin = sys_gui_win(120, 50, 460, 390, "记事簿");
  /* v6.5.4: 先建控件再置顶+raise — raise 依赖 foc_wid 接管键盘焦点,
  * 顺序反了 foc_win 仍停在下层主窗, 打字全部落错窗 */
- ed_ta = sys_gui_tarea(ewin, 8, 30, 404, 260);
+ ed_ta = sys_gui_tarea(ewin, 8, 30, 444, 150);
  const char *init =
- "第一行 Hello 中文\n第二行 中英混合 abc 123\n第三行 你好, AMUNOS!\n";
+ "第一行 Hello 中文\n第二行 中英混合 abc 123\n第三行 你好, AMUNOS!\n"
+ "第四行 编辑器滚动条测试\n第五行 状态栏实时统计\n第六行 Classic GUI\n"
+ "第七行 输入回车会增加行数\n第八行 这一行用于撑出滚动条\n第九行 END\n";
  sys_gui_tarea_set(ewin, ed_ta, init, gstrlen(init));
- ed_sb = sys_gui_statusbar(ewin, 8, 330, 404, "UTF-8 | bytes=- | lines=-");
+ ed_sb = sys_gui_statusbar(ewin, 8, 358, 444, "UTF-8 | bytes=- | lines=-");
  sys_gui_win_raise(ewin); /* raise: 点击编辑器窗激活, 切换 active, 提到 z 顶 */
  ed_update_sb(); /* 初始即回读显示 */
  }
@@ -202,6 +204,7 @@ int main(void) {
  }
  if (s[0]) sys_gui_wnd_text(win, st, s);
  } else if (ev[i].type == GEV_ENTER) {
+ if (ev[i].win == ewin) { ed_update_sb(); continue; }
  if (ev[i].win == win) sys_gui_wnd_text(win, st, "回车 (确认列表/编辑)");
  } else if (ev[i].type == GEV_CLOSE) {
  if (ev[i].win == win) { sys_gui_leave(); return 0; }
