@@ -78,15 +78,23 @@ static void demo_clock_task() {
 void kmain(){
     serial_init();
     init_idt();
+    put_str("[IDT] ");
     mem_init();
+    put_str("[MEM] ");
     put_str("BOOT: S1>S2>KERNEL\n");
     serial_puts("BOOT: S1>S2>KERNEL\n");
     timer_init();
+    put_str("[TIMER] ");
     dev_scan();           /* v6.5.6 阶段B: IDE IDENTIFY 自动发现 4 槽 */
+    put_str("[DEV] ");
     dev_automount();      /* 引导盘恒 A:, 其余按槽序补位 (内含 fs_init) */
+    put_str("[MOUNT] ");
     pci_scan();           /* PCI bus0 枚举, 串口列 01xx/02xx */
+    put_str("[PCI] ");
     nic_init();           /* 可选 RTL8139 原始以太网轮询驱动 */
+    put_str("[NIC] ");
     fb_init();            /* 读 boot.asm 的 VBE fb 参数; 图形模式切软件文本缓冲 */
+    put_str("[FB] ");
     cls();                /* 清当前 vram (图形=软件缓冲 / 文本=0xB8000) */
     fb_font_init();       /* 从 C:HZK16 加载字库 (v6.8 中文) */
     put_str("AMUNOS 6.5.7(dev) (Multi-Drive)\n");
