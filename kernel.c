@@ -106,6 +106,8 @@ void kmain(){
     __asm__ volatile("sti");
 
     print_prompt();
+    /* Draw the first graphical frame immediately; do not wait for PIT tick. */
+    fb_render();
 
     while(1){
         input_poll();

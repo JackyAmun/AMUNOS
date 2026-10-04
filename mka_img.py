@@ -36,6 +36,9 @@ DATA   = ROOT + (ROOTENT * 32)            # = sector 417
 # ── stage1 + stage2 + kernel preamble ──
 with open('boot.bin', 'rb') as f:
     d[0:512] = f.read(512)
+# All generated boot volumes use the graphical text renderer.  The loader
+# checks this marker before requesting VBE mode.
+d[0x1F0:0x1F4] = b'VBE!'
 with open('stage2.bin', 'rb') as f:
     stage2 = f.read()
 if len(stage2) > STAGE2_SECTORS * 512:
@@ -275,8 +278,6 @@ add_long_to(root, 'A longer filename example.txt', 'LONGNAM1', 'TXT',
             'This file is addressed through a FAT long filename.\n')
 
 if install_mode:
-    # Mark the boot sector so the loader can select the VMware-safe VGA path.
-    d[0x1F0:0x1F4] = b'INST'  # offset inside the boot sector
     # Keep the installer medium small and deterministic: boot files, the
     # installer itself, MBR code, fonts, and the command map only.
     def short_name(entry):
