@@ -26,13 +26,17 @@ int SpinButtonProc(WINDOW wnd, MESSAGE msg, PARAM p1, PARAM p2)
                 SetFocusCursor(wnd);
                 break;
             case LEFT_BUTTON:
+                /* The upper glyph is the increment button. */
                 if (p1 == GetRight(wnd) + 1)
-                    SendMessage(wnd, KEYBOARD, UP, 0);
-                else if (p1 == GetRight(wnd) + 2)
                     SendMessage(wnd, KEYBOARD, DN, 0);
+                else if (p1 == GetRight(wnd) + 2)
+                    SendMessage(wnd, KEYBOARD, UP, 0);
                 if (wnd != inFocus)
                     SendMessage(wnd, SETFOCUS, TRUE, 0);
                 return TRUE;
+            case KEYBOARD:
+                /* Listbox order is ascending: DN increments, UP decrements. */
+                break;
             case LB_SETSELECTION:
                 rtn = BaseWndProc(SPINBUTTON, wnd, msg, p1, p2);
                 wnd->wtop = (int) p1;

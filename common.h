@@ -49,6 +49,7 @@ typedef struct {
  int fs_spc;
  int fs_root_lba;
  int fs_data_lba;
+ unsigned int current_sectors;
  int fb_active;
  int dev_present[7];
  unsigned int dev_sectors[7];
@@ -166,6 +167,7 @@ void fs_drive_restore(drive_ctx_t c);
 int fs_drive_open(char *path, drive_ctx_t *ctx);
 int is_cmds_file(char *fat11);
 int fs_drive_present(int d);
+int fs_format_device(int slot); /* FAT12/FAT16 format for physical FDC/IDE */
 
 // --- 6. 其他模块声明 ---
 int strcmp(const char *s1, const char *s2);

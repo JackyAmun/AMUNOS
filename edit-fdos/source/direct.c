@@ -159,6 +159,8 @@ static BOOL BuildList(WINDOW wnd, char *fspec, BOOL dirs)
         }
         free(dirlist);
     }
+    /* Keep long file and directory lists navigable without enlarging the dialog. */
+    SetScrollBars(lwnd);
     SendMessage(lwnd, SHOW_WINDOW, 0, 0);
     return TRUE;
 }

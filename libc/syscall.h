@@ -86,6 +86,9 @@
 #define SYS_NET_MAC 76
 #define SYS_NET_SEND 77
 #define SYS_NET_RECEIVE 78
+#define SYS_BLK_READ 79 /* installer: read sectors from a discovered device */
+#define SYS_BLK_WRITE 80 /* installer: write sectors to a physical IDE/FDC device */
+#define SYS_FORMAT 81 /* installer/user tool: format a physical FDC/IDE device */
 #if 0
 #define SYS_GUI_TAREA_INSERT 62 /* TextArea 光标/选区处替换插入 */
 #define SYS_GUI_TAREA_SELECTION_GET 63 /* 读取 TextArea 选区 */
@@ -125,6 +128,7 @@ typedef struct {
  int fs_spc;
  int fs_root_lba;
  int fs_data_lba;
+ unsigned int current_sectors;
  int fb_active;
  int dev_present[7];
  unsigned int dev_sectors[7];
@@ -309,6 +313,15 @@ static inline void sys_cjkclear(int x, int y) {
 }
 static inline int sys_sysinfo(sysinfo_t *out) {
  return (int)syscall1(SYS_SYSINFO, (long)out);
+}
+static inline int sys_blk_read(int slot, unsigned int lba, void *buf) {
+ return (int)syscall3(SYS_BLK_READ, slot, lba, (long)buf);
+}
+static inline int sys_blk_write(int slot, unsigned int lba, const void *buf) {
+ return (int)syscall3(SYS_BLK_WRITE, slot, lba, (long)buf);
+}
+static inline int sys_format(int slot) {
+ return (int)syscall1(SYS_FORMAT, slot);
 }
 static inline int sys_beep(unsigned frequency, unsigned duration_ms) {
  return (int)syscall2(SYS_BEEP, (long)frequency, (long)duration_ms);

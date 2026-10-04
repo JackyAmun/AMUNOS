@@ -24,9 +24,11 @@ SYSINFO_ELF = sysinfo.elf
 DFLAT_ELF = dflat-demo.elf
 SOUND_ELF = beep.elf
 NET_ELF = net.elf
+INSTALL_ELF = sysinstall/sysinstall.elf
+INSTALL_IMG = AMUNOS.flp
 CRT_OBJS   = libc/crt1.o libc/crti.o libc/crtn.o
 
-.PHONY: all clean run run-gui run-net run-net-gui run-dual run-serial run-trio run-trio-serial run-floppy floppy storage-test-images
+.PHONY: all clean run run-gui run-net run-net-gui run-flp-gui run-install run_install install-image run-dual run-serial run-trio run-trio-serial run-floppy floppy storage-test-images
 
 all: $(A_IMG)
 
@@ -57,12 +59,29 @@ u2gb.bin: gen_u2gb.py
 $(A_IMG): A.vol mbr_boot.bin mkmbr.py
 	python3 mkmbr.py A.vol $@ mbr_boot.bin
 
-A.vol: $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) $(SYSINFO_ELF) $(DFLAT_ELF) $(SOUND_ELF) $(NET_ELF) $(CRT_OBJS) mka_img.py u2gb.bin
+A.vol: $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) $(SYSINFO_ELF) $(DFLAT_ELF) $(SOUND_ELF) $(NET_ELF) $(INSTALL_ELF) $(CRT_OBJS) mka_img.py u2gb.bin
 	@echo "[IMG] Building A FAT boot volume..."
 	python3 mka_img.py $@ 2048
 
-A.flp: $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) $(SYSINFO_ELF) $(DFLAT_ELF) $(SOUND_ELF) $(NET_ELF) $(CRT_OBJS) mka_img.py u2gb.bin
+A.flp: $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) $(SYSINFO_ELF) $(DFLAT_ELF) $(SOUND_ELF) $(NET_ELF) $(INSTALL_ELF) $(CRT_OBJS) mka_img.py u2gb.bin
 	python3 mka_img.py $@ 0
+
+$(INSTALL_IMG): $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(INSTALL_ELF) mbr_boot.bin mka_img.py u2gb.bin
+	@echo "[IMG] Building minimal AMUNOS installation floppy..."
+	python3 mka_img.py $@ 0 install
+
+install-image: $(INSTALL_IMG)
+
+$(INSTALL_ELF): sysinstall/sysinstall.c libc/libc.a libc/crt0.o
+	@echo "[ELF] Building sysinstall/sysinstall.c -> $@"
+	gcc -m32 -ffreestanding -fno-builtin -fno-pie -fno-stack-protector \
+	    -fno-asynchronous-unwind-tables -fno-unwind-tables -nostdinc \
+	    -I libc -c sysinstall/sysinstall.c -o sysinstall/sysinstall.o
+	LIBGCC=$$(gcc -m32 -print-libgcc-file-name); \
+	ld -m elf_i386 -no-pie -T libc/link.ld -nostdlib -static \
+	    libc/crt0.o sysinstall/sysinstall.o libc/libc.a $$LIBGCC -o $@
+	rm -f sysinstall/sysinstall.o
+	@echo "[SYSINSTALL.ELF] size: $$(wc -c < $@) bytes"
 
 # ── B.img: FAT12 data disk (secondary master) ──
 $(B_IMG): B.vol mkmbr.py
@@ -191,27 +210,45 @@ $(NET_ELF): net.c libc/libc.a libc/crt0.o
 run: $(A_IMG)
 	qemu-system-i386 -drive file=$(A_IMG),format=raw,if=ide,index=0 -nographic
 
-# 图形模式：启动扇区会请求 VBE 640x480x16bpp，内核自动切换 framebuffer 文本层。
-run-gui: A.flp $(B_IMG) $(C_IMG)
-	qemu-system-i386 -drive file=A.flp,format=raw,if=floppy,index=0 -boot a \
-	  -drive file=$(B_IMG),format=raw,if=ide,index=0 \
-	  -drive file=$(C_IMG),format=raw,if=ide,index=1 \
+# 图形模式：默认从 A.img 硬盘启动，启动扇区会请求 VBE 640x480x16bpp。
+run-gui: $(A_IMG) $(B_IMG) $(C_IMG)
+	qemu-system-i386 -drive file=$(A_IMG),format=raw,if=ide,index=0 \
+	  -drive file=$(B_IMG),format=raw,if=ide,index=1 \
+	  -drive file=$(C_IMG),format=raw,if=ide,index=2 \
 	  -audiodev driver=sdl,id=audio0 -machine pc,pcspk-audiodev=audio0 -display gtk
 
-run-net: A.flp $(B_IMG) $(C_IMG)
-	qemu-system-i386 -drive file=A.flp,format=raw,if=floppy,index=0 -boot a \
-	  -drive file=$(B_IMG),format=raw,if=ide,index=0 \
-	  -drive file=$(C_IMG),format=raw,if=ide,index=1 \
+# 网络模式：默认从 A.img 硬盘启动，B:/C: 作为后续 IDE 数据盘。
+run-net: $(A_IMG) $(B_IMG) $(C_IMG)
+	qemu-system-i386 -drive file=$(A_IMG),format=raw,if=ide,index=0 \
+	  -drive file=$(B_IMG),format=raw,if=ide,index=1 \
+	  -drive file=$(C_IMG),format=raw,if=ide,index=2 \
 	  -netdev user,id=n0 -device rtl8139,netdev=n0 \
 	  -audiodev driver=sdl,id=audio0 -machine pc,pcspk-audiodev=audio0 -nographic
 
-# 网络 + GUI + PC speaker 音频后端。
-run-net-gui: A.flp $(B_IMG) $(C_IMG)
+# 网络 + GUI：从 A.img 硬盘启动，B:/C: 作为后续 IDE 数据盘。
+run-net-gui: $(A_IMG) $(B_IMG) $(C_IMG)
+	qemu-system-i386 -drive file=$(A_IMG),format=raw,if=ide,index=0 \
+	  -drive file=$(B_IMG),format=raw,if=ide,index=1 \
+	  -drive file=$(C_IMG),format=raw,if=ide,index=2 \
+	  -netdev user,id=n0 -device rtl8139,netdev=n0 \
+	  -audiodev driver=sdl,id=audio0 -machine pc,pcspk-audiodev=audio0 -display gtk
+
+# 网络 + GUI：从 A.flp 软盘启动，B:/C: 作为 IDE 数据盘。
+run-flp-gui: A.flp $(B_IMG) $(C_IMG)
 	qemu-system-i386 -drive file=A.flp,format=raw,if=floppy,index=0 -boot a \
 	  -drive file=$(B_IMG),format=raw,if=ide,index=0 \
 	  -drive file=$(C_IMG),format=raw,if=ide,index=1 \
 	  -netdev user,id=n0 -device rtl8139,netdev=n0 \
 	  -audiodev driver=sdl,id=audio0 -machine pc,pcspk-audiodev=audio0 -display gtk
+
+# 安装盘 GUI 调试：从软盘启动安装程序，B.img 作为可写目标硬盘。
+run-install: $(INSTALL_IMG) $(B_IMG)
+	qemu-system-i386 -drive file=$(INSTALL_IMG),format=raw,if=floppy,index=0 -boot a \
+	  -drive file=$(B_IMG),format=raw,if=ide,index=0 \
+	  -display gtk
+
+# 兼容旧的下划线写法。
+run_install: run-install
 
 run-dual: $(A_IMG) $(B_IMG)
 	qemu-system-i386 -hda $(A_IMG) -hdb $(B_IMG) -nographic

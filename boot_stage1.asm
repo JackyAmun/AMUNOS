@@ -40,6 +40,10 @@ boot_code:
     ; Hard disks use EDD; floppy fallback uses the known 1.44MB geometry.
     ; Some IDE BIOS paths give an unreliable AH=41h capability result, so
     ; issue the actual AH=42h read directly and use CF as the decision point.
+    ; VMware may advertise/partially implement EDD for a virtual floppy;
+    ; force the conventional CHS path for DL<80h for reliable booting.
+    cmp dl, 0x80
+    jb .chs
     xor ax, ax
     mov ds, ax
     mov es, ax
@@ -57,6 +61,12 @@ boot_code:
     jmp .loaded
 
 .chs:
+    ; Reset the floppy controller before CHS reads.  VMware can leave the
+    ; virtual FDC busy after BIOS probing, causing an otherwise valid image
+    ; to stop with only the firmware cursor visible.
+    xor ax, ax
+    mov dl, [bpb_drive_num]
+    int 0x13
     mov ax, 0x0800
     mov es, ax
     xor bx, bx

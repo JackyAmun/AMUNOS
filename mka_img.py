@@ -19,6 +19,7 @@ import struct, sys, os
 
 path = sys.argv[1] if len(sys.argv) > 1 else 'A.vol'
 partition_lba = int(sys.argv[2]) if len(sys.argv) > 2 else 2048
+install_mode = len(sys.argv) > 3 and sys.argv[3].lower() == 'install'
 d = bytearray(2880 * 512)
 
 STAGE2_SECTORS = 4
@@ -196,6 +197,7 @@ add_opt_to(BIN, 'SYSINFO', 'ELF', 'sysinfo.elf')
 add_opt_to(BIN, 'DFLAT', 'ELF', 'dflat-demo.elf')
 add_opt_to(BIN, 'BEEP', 'ELF', 'beep.elf')
 add_opt_to(BIN, 'NET', 'ELF', 'net.elf')
+add_opt_to(BIN, 'SYSINST', 'ELF', 'sysinstall/sysinstall.elf')
 
 # ── USR\LIB\ : TCC 链接库 (cmd_tcc 注入 -L/-B) ──
 add_opt_to(USR_LIB, 'LIBC',    'A  ', 'libc/libc.a')
@@ -236,6 +238,7 @@ add_opt_to(USR_SRC, 'AMUNRUN', 'C  ', 'amunrun.c')
 add_opt_to(root, 'HZK16', '   ', 'HZK16')
 # ── U2GB  Unicode→GB2312 映射 (v6.8 UTF-8 支持): 把 UTF-8 码点查成 GB2312 字库偏移 ──
 add_opt_to(root, 'U2GB', 'BIN', 'u2gb.bin')
+add_opt_to(root, 'MBR',  'BIN', 'mbr_boot.bin')
 
 # ── TCC crt 文件留根 (TCC crt_paths="A:\" 绝对前缀, 任何盘/目录都能解析) ──
 add_opt_to(root, 'CRT1', 'O  ', 'libc/crt1.o')
@@ -252,7 +255,10 @@ SYSINFO /BIN/SYSINFO.ELF
 DFLAT /BIN/DFLAT.ELF
 BEEP /BIN/BEEP.ELF
 NET /BIN/NET.ELF
+SYSINSTALL /BIN/SYSINST.ELF
 '''
+if install_mode:
+    CMDS_BIN = '; AMUNOS installation media command map\nSYSINSTALL /BIN/SYSINST.ELF\n'
 add_to(root, 'CMDS', 'BIN', CMDS_BIN)
 
 # ── 中文演示/验证样本 (v6.8.1): GB2312 中文文件名 + GB/UTF-8 内容 ──
@@ -267,6 +273,22 @@ add_to(root, 'GB_CN', 'TXT',
        '这是 GB2312 编码的中文内容\n第二行 789 ghi\n'.encode('gb2312'))
 add_long_to(root, 'A longer filename example.txt', 'LONGNAM1', 'TXT',
             'This file is addressed through a FAT long filename.\n')
+
+if install_mode:
+    # Keep the installer medium small and deterministic: boot files, the
+    # installer itself, MBR code, fonts, and the command map only.
+    def short_name(entry):
+        return bytes(entry[0:8]).rstrip(b' ').decode('latin1').upper()
+    root.entries = [e for e in root.entries
+                    if short_name(e) in ('BOOT', 'BIN', 'HZK16', 'U2GB', 'MBR', 'CMDS')]
+    for sub in all_dirs:
+        if sub.name == 'BOOT':
+            continue
+        if sub.name == 'BIN':
+            sub.entries = [e for e in sub.entries if short_name(e) == 'SYSINST']
+        else:
+            sub.entries = []
+    all_dirs = [sub for sub in all_dirs if sub.name in ('BOOT', 'BIN')]
 
 # ── 布局落盘: 根目录 + 各子目录 + FAT2 ──
 for i, e in enumerate(root.entries):

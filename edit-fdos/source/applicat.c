@@ -615,6 +615,18 @@ static void DoWindowColors(WINDOW wnd)
 {
     WINDOW cwnd;
     InitWindowColors(wnd);
+    /* Only single-line entry fields use the white input surface. */
+    if ((GetClass(wnd) == EDITBOX || GetClass(wnd) == EDITOR) &&
+        isMultiLine(wnd)) {
+        wnd->WindowColors[STD_COLOR][FG] = WHITE;
+        wnd->WindowColors[STD_COLOR][BG] = BLUE;
+        wnd->WindowColors[SELECT_COLOR][FG] = BLACK;
+        wnd->WindowColors[SELECT_COLOR][BG] = LIGHTGRAY;
+        wnd->WindowColors[FRAME_COLOR][FG] = WHITE;
+        wnd->WindowColors[FRAME_COLOR][BG] = BLUE;
+        wnd->WindowColors[HILITE_COLOR][FG] = YELLOW;
+        wnd->WindowColors[HILITE_COLOR][BG] = BLUE;
+    }
     cwnd = FirstWindow(wnd);
     while (cwnd != NULL) {
         DoWindowColors(cwnd);
@@ -652,6 +664,23 @@ static void SelectColors(WINDOW wnd)
                 if (*bg == BLACK) *bg = BLUE;
                 else if (*bg == BLUE) *bg = BLACK;
             }
+    }
+
+    /* Input fields stay white in every color theme for reliable contrast. */
+    {
+        int input_classes[] = { EDITBOX, COMBOBOX, EDITOR };
+        unsigned int i;
+        for (i = 0; i < sizeof input_classes / sizeof input_classes[0]; i++) {
+            int cls = input_classes[i];
+            cfg.clr[cls][STD_COLOR][FG] = BLACK;
+            cfg.clr[cls][STD_COLOR][BG] = WHITE;
+            cfg.clr[cls][SELECT_COLOR][FG] = BLACK;
+            cfg.clr[cls][SELECT_COLOR][BG] = LIGHTGRAY;
+            cfg.clr[cls][FRAME_COLOR][FG] = BLUE;
+            cfg.clr[cls][FRAME_COLOR][BG] = WHITE;
+            cfg.clr[cls][HILITE_COLOR][FG] = BLACK;
+            cfg.clr[cls][HILITE_COLOR][BG] = LIGHTGRAY;
+        }
     }
     DoWindowColors(wnd);
 }

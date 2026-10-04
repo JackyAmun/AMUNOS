@@ -442,6 +442,9 @@ int sys_collect_info(sysinfo_t *out) {
  out->fs_spc = fs_spc;
  out->fs_root_lba = fs_root_lba;
  out->fs_data_lba = fs_data_lba;
+ out->current_sectors = (current_drive_idx >= 0 &&
+                         current_drive_idx < DEV_SLOT_COUNT) ?
+                        devs[current_drive_idx].sectors : 0;
  out->fb_active = fb_active();
  for (int i = 0; i < 7; i++) {
   out->dev_present[i] = devs[i].present;
@@ -450,6 +453,20 @@ int sys_collect_info(sysinfo_t *out) {
   out->dev_model[i][20] = 0;
  }
  return 0;
+}
+
+/* Raw sector access for the installer.  Keep the syscall deliberately small:
+ * callers may read any mounted/physical slot, but writes are limited to the
+ * writable physical IDE/FDC slots and to short batches. */
+static int sys_blk_read(int slot, unsigned lba, void *buf) {
+ if (!buf) return BLK_ERR_IO;
+ return blk_read_n(lba, 1, buf, slot);
+}
+
+static int sys_blk_write(int slot, unsigned lba, const void *buf) {
+ if (slot < 0 || slot > 4 || !buf)
+  return BLK_ERR_READ_ONLY;
+ return blk_write_n(lba, 1, buf, slot);
 }
 
 static int sys_clip_set(const char *s, int len) {
@@ -660,6 +677,10 @@ void syscall_handler(unsigned *frame) {
  case 76: result = nic_mac((unsigned char*)a1); break;
  case 77: result = nic_send((const void*)a1, (unsigned)a2); break;
  case 78: result = nic_receive((void*)a1, (unsigned)a2); break;
+ case 79: result = sys_blk_read(a1, a2, (void*)a3); break;
+ case 80: result = sys_blk_write(a1, a2, (const void*)a3); break;
+ case 81: result = (a1 >= 0 && a1 < DEV_PHYSICAL_COUNT && a1 != 5 && a1 != 6) ?
+                     fs_format_device(a1) : BLK_ERR_READ_ONLY; break;
  case 27: { /* SYS_CJKWCHAR: 在绝对格 (x,y) 放一个汉字 (占两格).
  * a1=x a2=y; packed 低16=GB 码 (0=替换框□), 高位=attr.
  * EDIT 文本行渲染用它把中文字节画成真实汉字。 */

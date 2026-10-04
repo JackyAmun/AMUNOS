@@ -274,6 +274,100 @@ int fs_drive_present(int d) {
     return (ret == 0 && b[510] == 0x55 && b[511] == 0xAA);
 }
 
+/* Format one physical floppy/IDE device as a superfloppy FAT volume. */
+int fs_format_device(int slot)
+{
+    unsigned total, volume_lba, volume_total, spc = 1, spf = 1, root_entries;
+    unsigned root_secs, data_secs, clusters, next_spf;
+    int fat_bits;
+    unsigned char bpb[512], fat[512], zero[4096];
+    unsigned lba;
+
+    if (slot < 0 || slot >= DEV_PHYSICAL_COUNT || slot == 5 || slot == 6 ||
+        !devs[slot].present || !(devs[slot].caps & BLK_CAP_WRITE) ||
+        !devs[slot].sectors)
+        return BLK_ERR_READ_ONLY;
+    total = devs[slot].sectors;
+    volume_lba = slot == 4 ? 0 : 2048;
+    if (total <= volume_lba + 64) return BLK_ERR_RANGE;
+    volume_total = total - volume_lba;
+    root_entries = slot == 4 ? 224 : 512;
+    fat_bits = slot == 4 ? 12 : 16;
+
+    for (;;) {
+        for (int pass = 0; pass < 8; pass++) {
+            root_secs = (root_entries * 32 + 511) / 512;
+            data_secs = volume_total > 1 + 2 * spf + root_secs ?
+                        volume_total - 1 - 2 * spf - root_secs : 0;
+            clusters = data_secs / spc;
+            next_spf = fat_bits == 12 ?
+                (((clusters + 2) * 3 / 2) + 511) / 512 :
+                (((clusters + 2) * 2) + 511) / 512;
+            if (next_spf < 1) next_spf = 1;
+            if (next_spf == spf) break;
+            spf = next_spf;
+        }
+        if (fat_bits == 12 && clusters > 4084) {
+            fat_bits = 16; spf = 1; continue;
+        }
+        if (fat_bits == 16 && clusters > 65524 && spc < 128) {
+            spc <<= 1; spf = 1; continue;
+        }
+        break;
+    }
+    if (!clusters || (fat_bits == 12 && clusters > 4084) ||
+        (fat_bits == 16 && clusters > 65524)) return BLK_ERR_RANGE;
+
+    for (lba = 0; lba < total; ) {
+        unsigned count = total - lba;
+        if (count > 8) count = 8;
+        for (unsigned i = 0; i < sizeof zero; i++) zero[i] = 0;
+        if (blk_write_n(lba, count, zero, slot) != BLK_OK) return BLK_ERR_IO;
+        lba += count;
+    }
+    for (unsigned i = 0; i < sizeof bpb; i++) bpb[i] = 0;
+    bpb[0] = 0xEB; bpb[1] = 0x3C; bpb[2] = 0x90;
+    for (unsigned i = 0; i < 8; i++) bpb[3 + i] = "AMUNOS  "[i];
+    *(unsigned short *)(bpb + 11) = 512;
+    bpb[13] = (unsigned char)spc;
+    *(unsigned short *)(bpb + 14) = 1;
+    bpb[16] = 2;
+    *(unsigned short *)(bpb + 17) = (unsigned short)root_entries;
+    if (volume_total <= 65535) *(unsigned short *)(bpb + 19) = (unsigned short)volume_total;
+    bpb[21] = slot == 4 ? 0xF0 : 0xF8;
+    *(unsigned short *)(bpb + 22) = (unsigned short)spf;
+    *(unsigned short *)(bpb + 24) = 18;
+    *(unsigned short *)(bpb + 26) = 2;
+    if (volume_total > 65535) *(unsigned int *)(bpb + 32) = volume_total;
+    *(unsigned int *)(bpb + 28) = volume_lba;
+    bpb[510] = 0x55; bpb[511] = 0xAA;
+    if (blk_write_n(volume_lba, 1, bpb, slot) != BLK_OK) return BLK_ERR_IO;
+
+    for (unsigned i = 0; i < sizeof fat; i++) fat[i] = 0;
+    if (fat_bits == 12) {
+        fat[0] = 0xF0; fat[1] = 0xFF; fat[2] = 0xFF;
+    } else {
+        fat[0] = 0xF8; fat[1] = 0xFF; fat[2] = 0xFF; fat[3] = 0xFF;
+    }
+    for (unsigned copy = 0; copy < 2; copy++)
+        for (unsigned s = 0; s < spf; s++) {
+            const void *src = s == 0 ? fat : zero;
+            if (blk_write_n(volume_lba + 1 + copy * spf + s, 1, src, slot) != BLK_OK)
+                return BLK_ERR_IO;
+        }
+    if (slot != 4) {
+        unsigned char mbr[512];
+        for (unsigned i = 0; i < sizeof mbr; i++) mbr[i] = 0;
+        mbr[446] = 0x80;                 /* active primary partition */
+        mbr[450] = fat_bits == 12 ? 0x01 : 0x06;
+        *(unsigned int *)(mbr + 454) = volume_lba;
+        *(unsigned int *)(mbr + 458) = volume_total;
+        mbr[510] = 0x55; mbr[511] = 0xAA;
+        if (blk_write_n(0, 1, mbr, slot) != BLK_OK) return BLK_ERR_IO;
+    }
+    return BLK_OK;
+}
+
 /* 把整张 FAT 读入堆缓存. 写透/读都基于缓存 (少读盘).
  * v6.5.6 P2: FAT32 FAT 可达几百 KB → 每次挂载按需分配 (先释放旧缓存). */
 static void load_fat_cache(void) {

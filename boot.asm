@@ -46,6 +46,10 @@ boot_code:
     ; (跨道读会失败)。失败复位重试 3 次(公共 int13_retry)。保存真实 DL。
     mov [bpb_drive_num], dl
     mov dl, [bpb_drive_num]
+    ; A floppy must use CHS even if a BIOS advertises an EDD extension.
+    ; This avoids VMware virtual-floppy BIOS paths that return bad AH=42 data.
+    cmp dl, 0x80
+    jb .no_ext
     mov ah, 0x41
     mov bx, 0x55AA
     int 0x13
@@ -74,6 +78,10 @@ boot_code:
 
     ; CHS 分块路径: cnt=SPT-sect0 道对齐, 段增量 cnt*32; bp=当前LBA
 .no_ext:
+    ; Reset the virtual FDC before entering the CHS path.
+    xor ax, ax
+    mov dl, [bpb_drive_num]
+    int 0x13
     mov bp, 5                      ; stage1 + stage2(4)
     mov si, 0x1000                 ; 内核目标段 (避免覆盖二阶段)
 .chs_loop:

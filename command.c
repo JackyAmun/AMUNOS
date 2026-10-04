@@ -253,6 +253,37 @@ void cmd_mov(char* arg){
 
 /* ── CLS/VER/TIME ── */
 void cmd_cls(){cls();}
+static void cmd_format(char *arg){
+    char spec[16]; int n=0, slot=-1;
+    while(*arg==' ') arg++;
+    while(*arg && *arg!=' ' && n<15) spec[n++]=to_upper(*arg++);
+    spec[n]=0;
+    if(!spec[0]){put_str("Usage: FORMAT <drive:|0..4>\n");return;}
+    if(!strcmp(spec,"FD0")) slot=4;
+    else if(spec[0]>='0' && spec[0]<='4' && !spec[1]) slot=spec[0]-'0';
+    else if(spec[1]==':'){
+        char *p=spec; slot=parse_drive(&p);
+    }
+    if(slot<0 || slot>=DEV_PHYSICAL_COUNT || slot==5 || slot==6 ||
+       !devs[slot].present || !(devs[slot].caps & BLK_CAP_WRITE) ||
+       !devs[slot].sectors){
+        put_str("FORMAT: target is not a writable floppy or IDE disk.\n");return;
+    }
+    put_str("WARNING: all data on ");put_str(spec);put_str(" will be erased.\n");
+    put_str("Press Y to continue, any other key to cancel: ");
+    for(;;){
+        input_poll();
+        if(!key_pressed) continue;
+        { int kp=key_pressed; key_pressed=0;
+          if(kp==1 && (current_char=='Y'||current_char=='y')) break;
+          put_str("\nFormat cancelled.\n"); return;
+        }
+    }
+    put_str("\nFormatting...\n");
+    if(fs_format_device(slot)!=BLK_OK){put_str("FORMAT failed.\n");return;}
+    if(current_drive_idx==slot) fs_init();
+    put_str("Format complete.\n");
+}
 void cmd_ver(){put_str("\nAMUNOS 6.5.7(dev) (C)2026 AMUNOS Team\nDFLAT 0.1\n\n");}
 
 /* ── ZH (v6.8 中文演示): 把一段 GB2312 汉字经 cjk_cell 渲染到可见 80×25 区 ──
@@ -291,6 +322,7 @@ void cmd_help(char* arg){
         else if(!strcmp(arg,"MOV"))put_str("MOV src dst — move file\n");
         else if(!strcmp(arg,"DEL"))put_str("DEL file — delete file\n");
         else if(!strcmp(arg,"MD"))put_str("MD name — create directory\n");
+        else if(!strcmp(arg,"FORMAT"))put_str("FORMAT drive:|0..4 — format floppy or IDE disk\n");
         else if(!strcmp(arg,"EDIT"))put_str("EDIT file — text editor\n");
         else if(!strcmp(arg,"ELF"))put_str("ELF file.elf — load & run ELF executable\n");
         else if(!strcmp(arg,"TCC"))put_str("TCC file.c [-o out] — compile C to ELF (run on A:, uses BIN/TCC.ELF + USR/INCLUDE/LIB)\n");
@@ -310,6 +342,7 @@ void cmd_help(char* arg){
         " MOV src dst      Move file",
         " DEL file         Delete file",
         " MD  name         Create directory",
+        " FORMAT drive:     Format a floppy or IDE disk",
         " RMDIR name       Delete empty directory",
         " EDIT file        Text editor (F1-Help F2-Save F3-Open F4-New F5-Quit)",
         " ELF  file.elf    Load & run ELF executable",
@@ -649,6 +682,7 @@ void exec_cmd(char* line){
     }
 
     if(!strcmp(cmd,"DIR"))cmd_dir(a1);else if(!strcmp(cmd,"CD"))cmd_cd(a1);
+    else if(!strcmp(cmd,"FORMAT"))cmd_format(a1);
     else if(!strcmp(cmd,"CLS"))cls();else if(!strcmp(cmd,"VER"))cmd_ver();
     else if(!strcmp(cmd,"DEVS"))devs_list();   /* v6.5.6 阶段B: 设备清单 */
     else if(!strcmp(cmd,"HELP"))cmd_help(a1);else if(!strcmp(cmd,"ECHO"))cmd_echo(a1);
