@@ -25,17 +25,20 @@ static int read_line_key(void)
         if (c == 27 || c == 3) return c;
         if (c == '\r' || c == '\n') {
             putchar('\n');
+            fflush(stdout);
             return value;
         }
         if (c == '\b' || c == 127) {
             value = 0;
             putchar('\b'); putchar(' '); putchar('\b');
+            fflush(stdout);
             continue;
         }
         if (c >= 'a' && c <= 'z') c -= 'a' - 'A';
         if (c >= 32 && c <= 126) {
             value = c;
             putchar(c);
+            fflush(stdout);
         }
     }
 }
@@ -62,7 +65,7 @@ static int choose_target(const sysinfo_t *si)
     fflush(stdout);
     for (;;) {
         int c = read_line_key();
-        if (c == 27) return -1;
+        if (c == 27 || c == 3) return -1;
         if (c >= '1' && c <= '5') {
             slot = c - '1';
             if (si->dev_present[slot] && si->dev_sectors[slot]) return slot;

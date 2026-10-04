@@ -275,6 +275,8 @@ add_long_to(root, 'A longer filename example.txt', 'LONGNAM1', 'TXT',
             'This file is addressed through a FAT long filename.\n')
 
 if install_mode:
+    # Mark the boot sector so the loader can select the VMware-safe VGA path.
+    d[0x1F0:0x1F4] = b'INST'  # offset inside the boot sector
     # Keep the installer medium small and deterministic: boot files, the
     # installer itself, MBR code, fonts, and the command map only.
     def short_name(entry):

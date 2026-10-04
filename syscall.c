@@ -527,7 +527,9 @@ void syscall_handler(unsigned *frame) {
  int a3 = frame[9]; /* edx = arg3 */
 
  /* Ctrl+C 强制终止: 前台程序运行时, 任何 syscall 都是中止点 */
- if (force_kill && prog_active) {
+ /* Programs which explicitly poll/read the keyboard must get a chance to
+  * consume Ctrl+C themselves.  Other syscalls retain the force-kill path. */
+ if (force_kill && prog_active && num != 15 && num != 19) {
  force_kill = 0;
  prog_killed = 1;
  prog_cleanup();

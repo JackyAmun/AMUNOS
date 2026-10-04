@@ -131,6 +131,12 @@ boot_code:
 
 .load_ok:
 
+    ; The installation floppy deliberately uses BIOS text mode.  VMware can
+    ; report a nominal VBE mode while exposing an unusable linear framebuffer;
+    ; keep the recovery/install medium visible on the plain VGA console.
+    cmp dword [0x7DF0], 0x54534E49       ; boot sector marker: "INST"
+    je .vbe_done
+
     ; VBE 640x480x16bpp: 参数写 0x1500 传内核 fb_init; 失败静默跳过。
     ; 关键: 先复位 ES/DS=0, 否则 SeaBIOS 把模式信息写进内核区且读回错位。
     xor ax, ax
