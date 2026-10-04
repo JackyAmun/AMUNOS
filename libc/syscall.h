@@ -41,8 +41,11 @@
 #define SYS_VIDEO_BASE 25 /* 当前文本缓冲基址 (图形模式=softbuf; EDIT 写屏用) */
 #define SYS_UTF8TOGB 26 /* Unicode 码点 → GB2312 码 (U2GB 表; 0=不在字库) */
 #define SYS_CJKWCHAR 27 /* 绝对格 (x,y) 放汉字: packed=gb|(attr<<16) */
+#define SYS_CJKCLEAR 74 /* 覆盖旧汉字位置前清除占格元数据 */
 
-/* ── GUI 窗口服务器 (v6.9, 内核 gui.c) ── */
+/* GUI syscall range is retired from the active DFLAT release. */
+#if 0
+/* ── GUI 窗口服务器 (v6.9, archived gui.c) ── */
 #define SYS_GUI_ENTER 28 /* 置 gui_active, 接管屏幕 */
 #define SYS_GUI_LEAVE 29 /* 关闭所有窗, 回文本渲染 */
 #define SYS_GUI_WIN 30 /* 建窗(x,y,w,h,title) → id */
@@ -75,11 +78,27 @@
 #define SYS_GUI_SCROLLBAR 56 /* 建垂直滚动条(win, pack(x,y), h) → ctl */
 #define SYS_GUI_SCROLLBAR_SET 57 /* 设置滚动条(win|ctl<<8, pack(min,max), pack(page,val)) */
 #define SYS_GUI_TAREA_INFO 58 /* TextArea 信息(win|ctl<<8, out[6]) */
+#endif
 #define SYS_CLIP_SET 59 /* 设置系统剪贴板(buf,len) */
 #define SYS_CLIP_GET 60 /* 读取系统剪贴板(buf,max) → bytes; buf NULL 返回长度 */
 #define SYS_SYSINFO 61 /* 读取内核/FS/设备摘要到 sysinfo_t */
+#if 0
+#define SYS_GUI_TAREA_INSERT 62 /* TextArea 光标/选区处替换插入 */
+#define SYS_GUI_TAREA_SELECTION_GET 63 /* 读取 TextArea 选区 */
+#define SYS_GUI_TAREA_SELECT_ALL 64 /* 全选 TextArea */
+#define SYS_GUI_WIN_TITLE 65 /* 更新窗口标题 */
+#define SYS_GUI_EDIT_GET 66 /* 读取单行输入框文本 */
+#define SYS_GUI_WIN_CLOSE_GUARD 67 /* 关闭按钮仅投递事件 */
+#endif
+#define SYS_DFLAT_CURSOR_SET 68 /* x,y, shape: 0=underline 1=bar 2=block */
+#define SYS_DFLAT_CURSOR_GET 69 /* out[4]=x,y,shape,visible */
+#define SYS_DFLAT_CURSOR_PUSH 70 /* 保存光标状态 (最多 50 层) */
+#define SYS_DFLAT_CURSOR_POP 71 /* 恢复光标状态 */
+#define SYS_DFLAT_CURSOR_VISIBLE 72 /* 设置光标显隐 */
+#define SYS_DFLAT_CURSOR_SWAP 73 /* 交换栈顶两层 */
 
-/* 事件类型 (gui_ev_t.type) */
+/* 事件类型 (gui_ev_t.type), retained only in the archived GUI API. */
+#if 0
 #define GEV_CLICK 1
 #define GEV_KEY 2
 #define GEV_ENTER 3
@@ -91,6 +110,7 @@ typedef struct {
  int ctl; /* 控件 id (列表点击: ch 为选中项索引) */
  int ch; /* GEV_KEY: 键入字符; GEV_CLICK 列表: 项索引 */
 } gui_ev_t;
+#endif
 
 typedef struct {
  unsigned int ticks;
@@ -102,7 +122,6 @@ typedef struct {
  int fs_root_lba;
  int fs_data_lba;
  int fb_active;
- int gui_active;
  int dev_present[7];
  unsigned int dev_sectors[7];
  char dev_model[7][21];
@@ -236,7 +255,7 @@ static inline int sys_mouse(int *out) {
 static inline int sys_keyhit(void) {
  return (int)syscall0(SYS_KEYHIT);
 }
-/* 软件输入光标 '|' (内核 0xB8000 叠加层, v6.7): 屏幕格坐标 0-79 / 0-24 */
+/* 软件输入光标 '|' (内核 0xB8000 叠加层, v6.7): 屏幕格坐标 0-79 / 0-29 */
 static inline int sys_cur(int x, int y) {
  return (int)syscall2(SYS_CURSOR, x, y);
 }
@@ -245,6 +264,24 @@ static inline int sys_curhide(void) {
 }
 static inline int sys_curshow(void) {
  return (int)syscall0(SYS_CURSHOW);
+}
+static inline int sys_dflat_cursor_set(int x, int y, int shape) {
+ return (int)syscall3(SYS_DFLAT_CURSOR_SET, x, y, shape);
+}
+static inline int sys_dflat_cursor_get(int out[4]) {
+ return (int)syscall1(SYS_DFLAT_CURSOR_GET, (long)out);
+}
+static inline int sys_dflat_cursor_push(void) {
+ return (int)syscall0(SYS_DFLAT_CURSOR_PUSH);
+}
+static inline int sys_dflat_cursor_pop(void) {
+ return (int)syscall0(SYS_DFLAT_CURSOR_POP);
+}
+static inline int sys_dflat_cursor_visible(int visible) {
+ return (int)syscall1(SYS_DFLAT_CURSOR_VISIBLE, visible != 0);
+}
+static inline int sys_dflat_cursor_swap(void) {
+ return (int)syscall0(SYS_DFLAT_CURSOR_SWAP);
 }
 static inline int sys_mousehide(void) {
  return (int)syscall0(SYS_MOUSEHIDE);
@@ -259,15 +296,19 @@ static inline unsigned sys_utf8togb(unsigned cp) { /* Unicode 码点 → GB2312 
  return (unsigned)syscall1(SYS_UTF8TOGB, (long)cp);
 }
 static inline void sys_cjkwchar(int x, int y, unsigned gb, int fg, int bg) {
- /* 绝对格 (x,y) 放汉字占两格; fg/bg = VGA 前景/背景 (0-15/0-7) */
- unsigned attr = (unsigned)((fg & 0x0F) | ((bg & 0x07) << 4));
+ /* 绝对格 (x,y) 放汉字占两格; fg/bg = VGA 前景/背景色索引 */
+ unsigned attr = (unsigned)((fg & 0x0F) | ((bg & 0x0F) << 4));
  syscall3(SYS_CJKWCHAR, x, y, (long)(gb | (attr << 16)));
+}
+static inline void sys_cjkclear(int x, int y) {
+    syscall2(SYS_CJKCLEAR, x, y);
 }
 static inline int sys_sysinfo(sysinfo_t *out) {
  return (int)syscall1(SYS_SYSINFO, (long)out);
 }
 
-/* ── GUI 窗口服务器包装 (v6.9) ── */
+/* ── GUI 窗口服务器包装 (archived) ── */
+#if 0
 static inline int sys_gui_enter(void) { return (int)syscall0(SYS_GUI_ENTER); }
 static inline int sys_gui_leave(void) { return (int)syscall0(SYS_GUI_LEAVE); }
 static inline int sys_gui_win(int x, int y, int w, int h, const char *title) {
@@ -342,13 +383,37 @@ static inline int sys_gui_tarea_info(int win, int ctl, int out[6]) {
  return (int)syscall2(SYS_GUI_TAREA_INFO, (long)((win & 0xFF) | ((unsigned)ctl << 8)),
  (long)out);
 }
+static inline int sys_gui_tarea_insert(int win, int ctl, const char *buf, int len) {
+ return (int)syscall3(SYS_GUI_TAREA_INSERT, (long)((win & 0xFF) | ((unsigned)ctl << 8)),
+  (long)buf, len);
+}
+static inline int sys_gui_tarea_selection_get(int win, int ctl, char *buf, int max) {
+ return (int)syscall3(SYS_GUI_TAREA_SELECTION_GET,
+  (long)((win & 0xFF) | ((unsigned)ctl << 8)), (long)buf, max);
+}
+static inline int sys_gui_tarea_select_all(int win, int ctl) {
+ return (int)syscall1(SYS_GUI_TAREA_SELECT_ALL,
+  (long)((win & 0xFF) | ((unsigned)ctl << 8)));
+}
+static inline int sys_gui_win_title(int win, const char *title) {
+ return (int)syscall2(SYS_GUI_WIN_TITLE, win, (long)title);
+}
+static inline int sys_gui_edit_get(int win, int ctl, char *buf, int max) {
+ return (int)syscall3(SYS_GUI_EDIT_GET, (long)((win & 0xFF) | ((unsigned)ctl << 8)),
+  (long)buf, max);
+}
+static inline int sys_gui_win_close_guard(int win, int enabled) {
+ return (int)syscall2(SYS_GUI_WIN_CLOSE_GUARD, win, enabled);
+}
+#endif
 static inline int sys_clip_set(const char *buf, int len) {
  return (int)syscall2(SYS_CLIP_SET, (long)buf, len);
 }
 static inline int sys_clip_get(char *buf, int max) {
  return (int)syscall2(SYS_CLIP_GET, (long)buf, max);
 }
-/* : List 读回 + 复选/单选/菜单栏 */
+/* Archived list/checkbox/radio/menu wrappers. */
+#if 0
 static inline int sys_gui_list_get(int win, int ctl, char *buf, int max) {
  return (int)syscall3(SYS_GUI_LIST_GET, (long)((win & 0xFF) | ((unsigned)ctl << 8)),
  (long)buf, max);
@@ -375,6 +440,7 @@ static inline int sys_gui_menu_item(int win, int ctl, int menu, const char *item
  return (int)syscall3(SYS_GUI_MENU_ITEM, win,
  (long)((ctl & 0xFFFF) | ((unsigned)menu << 16)), (long)item);
 }
+#endif
 
 /* ── 桩 (TCC 引用的 POSIX 表层, AMUNOS 暂未实现) ── */
 static inline int sys_stat(const char *path, struct stat *st) { (void)path; (void)st; return -1; }

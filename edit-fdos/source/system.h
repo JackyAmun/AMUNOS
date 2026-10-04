@@ -25,9 +25,9 @@
 #define COUNT (1193280L / FREQUENCY)
 #define ZEROFLAG 0x40
 #define MAXSAVES 50
-/* AMUNOS: 固定 80x25 彩色文本 */
+/* AMUNOS: 固定 80x30 彩色文本 */
 #define SCREENWIDTH  80
-#define SCREENHEIGHT 25
+#define SCREENHEIGHT 30
 /* AMUNOS: DOS 路径常量桩 (原 dos.h) */
 #define MAXPATH 80
 #define clearBIOSbuffer()

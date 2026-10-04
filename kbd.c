@@ -169,8 +169,8 @@ void keyboard_handler() {
             return;
         }
         if (is_ctrl && sc == KEY_C) {
-            force_kill = 1;   // 全局强制终止标志
-            key_pressed = 12; // 通知 REPL 清行 (程序运行时由 syscall 层消费)
+            force_kill = 1;   // DFLAT/控制台程序统一保留 Ctrl+C 强制终止
+            key_pressed = 12;
             return;
         }
         /* Ctrl+字母 → 标准控制码 (Ctrl+A=1..Ctrl+Z=26; Ctrl+M=回车, Ctrl+I=Tab,
@@ -294,6 +294,9 @@ void input_poll(void) {
 
     if (c == '\r' || c == '\n')      key_pressed = 2;                 /* 回车 */
     else if (c == '\b' || c == 0x7F) key_pressed = 3;                 /* 退格 */
-    else if (c == 3)                 { force_kill = 1; key_pressed = 12; } /* Ctrl+C */
+    else if (c == 3) {
+        force_kill = 1;
+        key_pressed = 12;
+    }
     else                             { current_char = (char)c; key_pressed = 1; }
 }

@@ -10,7 +10,7 @@ extern unsigned char last_scancode,kmap[],kmap_s[];
 int strlen(const char*s){int i=0;while(s[i])i++;return i;}
 int strcmp(const char*a,const char*b){while(*a&&*a==*b){a++;b++;}return*(unsigned char*)a-*(unsigned char*)b;}
 void strcpy(char*d,const char*s){while((*d++=*s++));}
-void put_num(unsigned n){if(!n){put_char('0',0x07);return;}char b[12];int i=0;while(n){b[i++]='0'+n%10;n/=10;}while(--i>=0)put_char(b[i],0x07);}
+void put_num(unsigned n){if(!n){put_char('0',0x0E);return;}char b[12];int i=0;while(n){b[i++]='0'+n%10;n/=10;}while(--i>=0)put_char(b[i],0x0E);}
 char to_upper(char c){return(c>='a'&&c<='z')?c-32:c;}
 char drive_letter(void){return (char)('A'+dev_letter_from_slot(current_drive_idx));}
 
@@ -43,13 +43,13 @@ static void redraw(int pos){
     while (ser_col > scol) { serial_putc('\b'); ser_col--; }   /* 退到插入点 */
     cur_x=prompt_len+pos;
     for(int i=pos;i<cmd_len;i++){
-        put_char(cmd_buf[i],0x0F);
+        put_char(cmd_buf[i],0x0E);
     }
     /* 末尾清空格直接写 VRAM, 不镜像到串口 (否则回显变成 "s e r" 错乱)。
      * 经 vga_poke: 自动清掉该格上的输入光标 | / 鼠标 █ 叠加, 防陈旧还原 (v6.7) */
     int ec = prompt_len + cmd_len;
     if (ec < 80) {
-        vga_poke(ec, cur_y, ' ', 0x07);
+        vga_poke(ec, cur_y, ' ', 0x0E);
     }
     /* 串口: 覆盖行尾残留 (行变短时), 光标停在行尾 */
     int scol_end = ser_col_of(cmd_len);
@@ -107,7 +107,7 @@ void kmain(){
             key_pressed=0;
         }
         else if(key_pressed==2){  // 回车
-            put_char('\n',0x07);
+            put_char('\n',0x0E);
             key_pressed=0;  /* 先清残留回车, 避免程序首个 kbd_read_char 误读空行 */
             if(cmd_len>0)exec_cmd(cmd_buf);
             for(int i=0;i<128;i++)cmd_buf[i]=0;
@@ -137,7 +137,7 @@ void kmain(){
         else if(key_pressed==12){  // Ctrl+C — 清行 (无前台程序时)
             for(int i=0;i<128;i++)cmd_buf[i]=0;
             cmd_len=0;cmd_pos=0;ser_col=0;force_kill=0;key_pressed=0;
-            put_char('^',0x0C);put_char('C',0x0C);put_char('\n',0x07);
+            put_char('^',0x0C);put_char('C',0x0C);put_char('\n',0x0E);
             print_prompt();
         }
         else if(key_pressed>0)key_pressed=0;

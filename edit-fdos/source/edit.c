@@ -84,7 +84,7 @@ void main(int argc, char *argv[])
     char *fileargs[64], *optargs[64];
     int n_options, n_files, index, help_flag=0;
 
-    /* AMUNOS: 无配置文件, 固定 80x25; /B 选项在下方循环里处理 */
+    /* AMUNOS: 固定 80x30, 显示主题由配置或启动参数选择。 */
     cfg.ScreenLines = SCREENHEIGHT;
 
     n_options = classify_args(argc, argv, fileargs, optargs);
@@ -97,13 +97,18 @@ void main(int argc, char *argv[])
             cfg.mono=1; /* "monochrome" color scheme */
         else if (optargs[index][0] == 'i' || optargs[index][0] == 'I')
             cfg.mono=2;	/* "reverse" color scheme */
+        else if (optargs[index][0] == 'u' || optargs[index][0] == 'U') {
+            cfg.mono=0;
+            cfg.theme=1;
+        }
+        else if (optargs[index][0] == 'a' || optargs[index][0] == 'A') {
+            cfg.mono=0;
+            cfg.theme=0;
+        }
         else if (optargs[index][0] == 'r' || optargs[index][0] == 'R')
             cfg.ReadOnlyMode=TRUE;
-        else if (optargs[index][0] == 'H' || optargs[index][0] == 'h') {
-            cfg.ScreenLines = (isEGA() || isVGA()) ? (isVGA() ? 50 : 43)
-                : SCREENHEIGHT; /* improved in 0.7b */
-            }
-            /* 0.7a and before: cfg.ScreenLines = SCREENHEIGHT; */
+        else if (optargs[index][0] == 'H' || optargs[index][0] == 'h')
+            cfg.ScreenLines = SCREENHEIGHT; /* legacy switch; fixed 80x30 display */
         else
             {
             printf("Invalid parameter - /%s\n", optargs[index]);
@@ -115,10 +120,11 @@ void main(int argc, char *argv[])
     if (help_flag)
         {
         printf("FreeDOS Editor    Version " VERSION ".\n\n"
-               "Syntax: EDIT [/B] [/H] [/?] [file(s)]\n"
+               "Syntax: EDIT [/A] [/U] [/B] [/I] [/?] [file(s)]\n"
+               "  /A     Amber / black / blue theme\n"
+               "  /U     Deep blue theme\n"
                "  /B     Force monochrome mode\n"
                "  /I     Use inverse color scheme\n"
-               "  /H     Use 43/50 lines on EGA/VGA\n"
                "  /R     Open all files read-only\n"
                "  /?     Display this help message\n"
                "  [file] Specify file(s) to load.\n"
@@ -264,23 +270,21 @@ static int MemoPadProc(WINDOW wnd,MESSAGE msg,PARAM p1,PARAM p2)
 #endif
 		case ID_ABOUT:
 		    {
-		    char aboutMsg [] =
-		               "          FreeDOS Edit           \n"
-                               "          Version @              \n"
+		    char aboutMsg[512];
+		    sprintf(aboutMsg,
+                               "          FreeDOS Edit           \n"
+                               "          Version %s              \n"
                                "                                 \n"
                                "   FreeDOS Edit is based on the  \n"
                                "   D-Flat application published  \n"
                                "   in Dr. Dobb's Journal.        \n"
                                "                                 \n"
-                               "    �������������������������    \n"
+                               "          AMUNOS edition         \n"
                                "                                 \n"
                                "FreeDOS Edit is a clone of MS-DOS\n"
                                "editor for the FreeDOS Project   \n"
-                               "Released under the GNU GPL License";
-                    if (strchr(aboutMsg,'@') != NULL)
-                        strncpy(strchr(aboutMsg,'@'), VERSION,
-                            strlen(VERSION));
-                        /* intentionally not terminating after VERSION! */
+                               "Released under the GNU GPL License",
+                               VERSION);
                     MessageBox("About FreeDOS Edit", aboutMsg);
                     }
 		    return TRUE;
@@ -899,4 +903,3 @@ void PrepEditMenu(void *w, struct Menu *mnu)
 	} /* editable non-empty EDITBOX */
     }
 }
-

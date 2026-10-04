@@ -115,6 +115,7 @@ BOOL CharInView(WINDOW wnd, int x, int y)
 void wputch(WINDOW wnd, int c, int x, int y)
 {
 	if (CharInView(wnd, x, y))	{
+		sys_cjkclear(GetLeft(wnd)+x, GetTop(wnd)+y);
 		int ch = (c & 255) | (clr(foreground, background) << 8);
 		int xc = GetLeft(wnd)+x;
 		int yc = GetTop(wnd)+y;
@@ -148,7 +149,7 @@ void wputs(WINDOW wnd, void *s, int x, int y)
         int off=0;
         unsigned char *str=s;
 
-        while (*str)
+        while (*str && (cp1-ln) < 200 && x2 < SCREENWIDTH)
             {
             if (*str == CHANGECOLOR)
                 {
@@ -181,7 +182,8 @@ void wputs(WINDOW wnd, void *s, int x, int y)
                  sys_cjkwchar 设 cjk_cell 记 GB 码 → fb_render 用 HZK16 画。
                  顺序: UTF-8 先于 GB2312 (E4..EF 既是 GB lead 又是 UTF-8 头),
                  与内核 put_cjk_str 一致。0xAE/0xAF 已在上面按色码令牌处理。 ── */
-            if (*str >= 0xE0 && *str <= 0xEF && str[1] >= 0x80 && str[1] <= 0xBF
+            if (*str >= 0xE0 && *str <= 0xEF && str[1] && str[2]
+                && str[1] >= 0x80 && str[1] <= 0xBF
                 && str[2] >= 0x80 && str[2] <= 0xBF)    {   /* UTF-8 3 字节 */
                 unsigned cp = ((unsigned)(*str & 0x0F) << 12)
                             | ((unsigned)(str[1] & 0x3F) << 6)
@@ -194,7 +196,7 @@ void wputs(WINDOW wnd, void *s, int x, int y)
                 str += 3; x += 2; x2 += 2;
                 continue;
             }
-            if (*str >= 0xA1 && *str <= 0xF7 && str[1] >= 0xA1)    {   /* GB2312 */
+            if (*str >= 0xA1 && *str <= 0xF7 && str[1] >= 0xA1 && str[1] <= 0xFE) { /* GB2312 */
                 unsigned gb = ((unsigned)*str << 8) | (unsigned)str[1];
                 int cx = GetLeft(wnd) + x;
                 if (cx + 1 < SCREENWIDTH && CharInView(wnd, x, y))
@@ -210,7 +212,9 @@ void wputs(WINDOW wnd, void *s, int x, int y)
                 *cp1 = ' ' | (clr(foreground, background) << 8);
             else
 #endif
-                *cp1 = (*str & 255) | (clr(foreground, background) << 8);
+            if (CharInView(wnd, x, y))
+                sys_cjkclear(GetLeft(wnd)+x, y1);
+            *cp1 = (*str & 255) | (clr(foreground, background) << 8);
 
             if (ClipString)
                 if (!CharInView(wnd, x, y))
@@ -278,7 +282,7 @@ void wputs(WINDOW wnd, void *s, int x, int y)
 /* --------- get the current video mode -------- */
 void get_videomode(void)
 {
-    /* AMUNOS: 固定 80x25 彩色文本。线性地址取当前文本缓冲基址 —
+    /* AMUNOS: 固定 80x30 彩色文本。线性地址取当前文本缓冲基址 —
      * 图形模式下内核把写屏目标切到软件缓冲 (VBE 图形模式 0xB8000 是图形
      * 窗口, 直写会消失); SYS_VIDEO_BASE 返回该缓冲地址 (v6.8)。 */
     video_address = (unsigned)sys_video_base();

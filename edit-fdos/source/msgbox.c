@@ -181,10 +181,6 @@ WINDOW MomentaryMessage(char *msg)
                     NULL,NULL,NULL,
                     HASBORDER | SHADOW | SAVESELF);
     SendMessage(wnd, SETTEXT, (PARAM) msg, 0);
-    if (cfg.mono == 0)    {
-        WindowClientColor(wnd, WHITE, GREEN);
-        WindowFrameColor(wnd, WHITE, GREEN);
-    }
     SendMessage(wnd, SHOW_WINDOW, 0, 0);
     return wnd;
 }

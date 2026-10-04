@@ -50,7 +50,6 @@ typedef struct {
  int fs_root_lba;
  int fs_data_lba;
  int fb_active;
- int gui_active;
  int dev_present[7];
  unsigned int dev_sectors[7];
  char dev_model[7][21];
@@ -155,19 +154,27 @@ void cmd_ver(); // 添加这一行
 int sys_collect_info(sysinfo_t *out);
 
 void put_char(char c, char color);
-void put_str(char *s);
+void put_str(const char *s);
 void cls();
 
-// --- 6.1 软件叠加层 (vga.c, v6.7): 输入光标 | + 鼠标指针 █ ---
-// update_cursor() 隐藏硬件文本光标并重绘两个叠加。
+// --- 6.1 文本光标与鼠标 (vga.c): VBE 模式由 fb.c 画在字形背景上 ---
+// update_cursor() 隐藏硬件文本光标并刷新光标位置。
 // 用户程序 (EDIT) 用 soft_cursor_at/hide/show 定位输入光标。
 void vga_overlay_refresh(void);
 void vga_overlay_selfheal(void); // 定时器每 tick 重铺 (EDIT 重绘抹掉后自愈)
+int vga_text_cursor_state(int *x, int *y, int *shape);
+int vga_text_mouse_state(int *x, int *y);
 void vga_mouse_redraw(void);
 void vga_poke(int x, int y, unsigned char ch, unsigned char attr);
 void soft_cursor_at(int x, int y);
 void soft_cursor_hide(void);
 void soft_cursor_show(void);
+int dflat_cursor_set(int x, int y, int shape);
+int dflat_cursor_get(int *out);
+int dflat_cursor_push(void);
+int dflat_cursor_pop(void);
+int dflat_cursor_swap(void);
+int dflat_cursor_visible(int visible);
 void soft_mouse_hide(void); // 隐藏鼠标叠加 (getvideo 捕获背景期间)
 void soft_mouse_show(void);
 void vga_enable_softbuf(void); // 图形模式: vram 切到软件缓冲 (v6.8)
@@ -252,6 +259,7 @@ int mouse_px_x(void); // 原始像素 X (GUI 命中测试)
 int mouse_px_y(void); // 原始像素 Y (GUI 命中测试)
 int mouse_lbutton(void); // 左键按下? (GUI 点击投递)
 
+#if 0 /* GUI syscall/API retired; sources remain in the GUI backup archive. */
 // --- 13.0 GUI 窗口服务器 (gui.c, v6.9) ---
 extern int gui_active; // 1 = GUI 接管屏幕 (fb_render/叠加层停用)
 int gui_enter(void);
@@ -259,19 +267,25 @@ void gui_leave(void);
 int gui_win(int x, int y, int w, int h, const char *title);
 int gui_win_close(int id);
 int gui_win_raise(int id);
+int gui_win_title(int id, const char *title); // 更新窗口标题（例如文档的未保存标记）
+int gui_win_close_guard(int id, int enabled); // 关闭按钮仅投递 GEV_CLOSE，由应用确认
 int gui_btn(int win, int cx, int cy, const char *label);
 int gui_lbl(int win, int x, int y, const char *text);
 int gui_statusbar(int win, int x, int y, int w, const char *text); // 状态栏控件
 int gui_edit(int win, int cx, int cy, int w);
+int gui_edit_get(int win, int ctl, char *buf, int max); // 读取单行输入框文本
 int gui_list(int win, int x, int y, int w, int h);
 int gui_scrollbar(int win, int x, int y, int h); // 垂直滚动条 → ctl
 int gui_scrollbar_set(int win, int ctl, int minv, int maxv, int page, int val); // 设置滚动条
 int gui_list_set(int win, int ctl, const char *str); // 追加/替换项, 空串清空
 int gui_wnd_text(int win, int ctl, const char *str); // 设控件文本 (按钮/标签/输入框)
 int gui_tarea(int win, int x, int y, int w, int h); // 建多行文本区 → ctl
-int gui_tarea_set(int win, int ctl, const char *str, int len); // 设文本区内容 (len 字节)
+int gui_tarea_set(int win, int ctl, const char *str, int len); // 设文本区内容 (len 字节, 最多 2047)
 int gui_tarea_get(int win, int ctl, char *buf, int max); // 读回文本区内容 → 字节数
 int gui_tarea_info(int win, int ctl, int *out); // out[0]=line out[1]=col out[2]=byte out[3]=lines out[4]=top out[5]=bytes
+int gui_tarea_insert(int win, int ctl, const char *str, int len); // 光标/选区处替换插入 → 新字节数
+int gui_tarea_selection_get(int win, int ctl, char *buf, int max); // 读选区 → 字节数
+int gui_tarea_select_all(int win, int ctl); // 全选 → 选中字节数
 int gui_list_get(int win, int ctl, char *buf, int max); // 读回 list 选中项文本 → 选中索引
 int gui_list_n(int win, int ctl); // list 项数
 int gui_check(int win, int x, int y, const char *label); // 复选框 → ctl
@@ -286,5 +300,6 @@ int gui_fill(int win, int x, int y, int w, int h, unsigned short color);
 int gui_text(int win, int x, int y, const char *str);
 int gui_dialog(int parent, int w, int h, const char *title); // 弹窗 → 新窗 id
 int gui_events(void *buf, int max); // 取一批事件, 返回个数
+#endif
 
 #endif

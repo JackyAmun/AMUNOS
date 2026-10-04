@@ -3,7 +3,6 @@
 #include "dflat.h"
 
 static int ScreenHeight;
-static BOOL DisplayModified = FALSE;
 WINDOW ApplicationWindow;
 
 extern DBOX Display;
@@ -23,7 +22,6 @@ static void CreateMenu(WINDOW);
 static void CreateStatusBar(WINDOW);
 static void SelectColors(WINDOW);
 static void SetScreenHeight(int);
-static void SelectLines(WINDOW);
 
 #ifdef INCLUDE_WINDOWOPTIONS
 static void SelectTexture(void);
@@ -61,37 +59,6 @@ static int CreateWindowMsg(WINDOW wnd)
     int rtn;
 	ApplicationWindow = wnd;
     ScreenHeight = SCREENHEIGHT;
-    if (!DisplayModified)    {
-       	int i;
-       	CTLWINDOW *ct, *ct1;
-       	ct = FindCommand(&Display, ID_SNOWY, CHECKBOX);
-    	if (!isVGA())    {
-        	/* ---- modify Display Dialog Box for EGA, CGA ---- */
-        	if (isEGA())
-            	ct1 = FindCommand(&Display,ID_50LINES,RADIOBUTTON);
-        	else    {
-            	CTLWINDOW *ct2;
-            	ct2 = FindCommand(&Display,ID_COLOR,RADIOBUTTON)-1;
-				if (ct2)	{
-	            	ct2->dwnd.w++;
-    	        	for (i = 0; i < 7; i++)
-        	        	(ct2+i)->dwnd.x += 8;
-				}
-            	ct1 = FindCommand(&Display,ID_25LINES,RADIOBUTTON)-1;
-        	}
-			if (ct && ct1)
-	        	for (i = 0; i < 6; i++)
-    	        	*ct1++ = *ct++;
-		}
-    	if (isVGA() || isEGA())    {
-			/* ------ eliminate the snowy check box ----- */
-	       	ct = FindCommand(&Display, ID_SNOWY, CHECKBOX);
-			if (ct != NULL)
-				for (i = 0; i < 4; i++)
-					*(ct+i) = *(ct+2+i);
-		}
-        DisplayModified = TRUE;
-    }
 #ifdef INCLUDE_WINDOWOPTIONS
     if (cfg.Border)
         SetCheckBox(&Display, ID_BORDER);
@@ -106,16 +73,10 @@ static int CreateWindowMsg(WINDOW wnd)
         PushRadioButton(&Display, ID_MONO);
     else if (cfg.mono == 2)
         PushRadioButton(&Display, ID_REVERSE);
+    else if (cfg.theme == 1)
+        PushRadioButton(&Display, ID_BLUE);
     else
         PushRadioButton(&Display, ID_COLOR);
-    if (cfg.ScreenLines == 25)
-        PushRadioButton(&Display, ID_25LINES);
-    else if (cfg.ScreenLines == 43)
-        PushRadioButton(&Display, ID_43LINES);
-    else if (cfg.ScreenLines == 50)
-        PushRadioButton(&Display, ID_50LINES);
-	if (cfg.snowy)
-        SetCheckBox(&Display, ID_SNOWY);
     if (SCREENHEIGHT != cfg.ScreenLines)    {
         SetScreenHeight(cfg.ScreenLines);
         if (WindowHeight(wnd) == ScreenHeight ||
@@ -261,7 +222,6 @@ static void CommandMsg(WINDOW wnd, PARAM p1, PARAM p2)
 					oldFocus = inFocus;
                 SendMessage(wnd, HIDE_WINDOW, 0, 0);
                 SelectColors(wnd);
-                SelectLines(wnd);
 #ifdef INCLUDE_WINDOWOPTIONS
                 SelectBorder(wnd);
                 SelectTitle(wnd);
@@ -323,7 +283,6 @@ static int CloseWindowMsg(WINDOW wnd)
     if (ScreenHeight != SCREENHEIGHT)
         SetScreenHeight(ScreenHeight);
     UnLoadHelpFile();
-	DisplayModified = FALSE;
 	ApplicationWindow = NULL;
     return rtn;
 }
@@ -674,7 +633,7 @@ static void SelectColors(WINDOW wnd)
         cfg.mono = 2;
     else
         cfg.mono = 0;
-    cfg.snowy = CheckBoxSetting(&Display, ID_SNOWY);
+    cfg.theme = RadioButtonSetting(&Display, ID_BLUE) ? 1 : 0;
 	get_videomode();
     if ((ismono() || video_mode == 2) && cfg.mono == 0)
         cfg.mono = 1;
@@ -685,36 +644,16 @@ static void SelectColors(WINDOW wnd)
         memcpy(cfg.clr, reverse, sizeof reverse);
     else
         memcpy(cfg.clr, color, sizeof color);
+    if (cfg.mono == 0 && cfg.theme == 1) {
+        int cls, col;
+        for (cls = 0; cls < CLASSCOUNT; cls++)
+            for (col = 0; col < 4; col++) {
+                unsigned char *bg = &cfg.clr[cls][col][BG];
+                if (*bg == BLACK) *bg = BLUE;
+                else if (*bg == BLUE) *bg = BLACK;
+            }
+    }
     DoWindowColors(wnd);
-}
-
-/* ---- select screen lines ---- */
-static void SelectLines(WINDOW wnd)
-{
-    cfg.ScreenLines = 25;
-    if (isEGA() || isVGA())    {
-        if (RadioButtonSetting(&Display, ID_43LINES))
-            cfg.ScreenLines = 43;
-        else if (RadioButtonSetting(&Display, ID_50LINES))
-            cfg.ScreenLines = 50;
-    }
-    if (SCREENHEIGHT != cfg.ScreenLines)    {
-        SetScreenHeight(cfg.ScreenLines);
-		/* ---- re-maximize ---- */
-        if (wnd->condition == ISMAXIMIZED)	{
-            SendMessage(wnd, SIZE, (PARAM) GetRight(wnd),
-                SCREENHEIGHT-1);
-			return;
-		}
-		/* --- adjust if current size does not fit --- */
-		if (WindowHeight(wnd) > SCREENHEIGHT)
-            SendMessage(wnd, SIZE, (PARAM) GetRight(wnd),
-                (PARAM) GetTop(wnd)+SCREENHEIGHT-1);
-		/* --- if window is off-screen, move it on-screen --- */
-		if (GetTop(wnd) >= SCREENHEIGHT-1)
-			SendMessage(wnd, MOVE, (PARAM) GetLeft(wnd),
-				(PARAM) SCREENHEIGHT-WindowHeight(wnd));
-    }
 }
 
 /* ---- set the screen height in the video hardware ---- */
@@ -780,4 +719,3 @@ static void SelectTitle(WINDOW wnd)
 }
 
 #endif
-

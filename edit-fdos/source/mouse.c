@@ -90,5 +90,5 @@ int button_releases(void)
 /* ----- set mouse travel limits ------- */
 void set_mousetravel(int minx, int maxx, int miny, int maxy)
 {
-    /* 内核已把坐标钳制在 80x25 内 */
+    /* 内核已把坐标钳制在 80x30 内 */
 }

@@ -139,9 +139,8 @@ add_opt_to(BOOT, 'KERNEL', 'BIN', 'kernel.bin')
 # ── BIN\ : 系统可执行程序 (CMDS.TXT 表指向这里; TCC 走命令前缀) ──
 add_opt_to(BIN, 'TCC',  'ELF', 'tcc.elf')
 add_opt_to(BIN, 'EDIT', 'ELF', 'edit.elf')
-add_opt_to(BIN, 'GUI',  'ELF', 'gui-demo.elf')   # GUI 控件演示 (v6.9)
 add_opt_to(BIN, 'SYSINFO', 'ELF', 'sysinfo.elf')
-add_opt_to(BIN, 'WRITE', 'ELF', 'write.elf')
+add_opt_to(BIN, 'DFLAT', 'ELF', 'dflat-demo.elf')
 
 # ── USR\LIB\ : TCC 链接库 (cmd_tcc 注入 -L/-B) ──
 add_opt_to(USR_LIB, 'LIBC',    'A  ', 'libc/libc.a')
@@ -194,9 +193,8 @@ CMDS_BIN = '''\
 ; 格式: 命令名 目标ELF   (相对路径自动补来源盘盘符; 全盘 A:-D: 搜索)
 ; 注释以 ; 或 # 开头; 用 EDIT CMDS.BIN 编辑或 INSTALL 命令追加
 EDIT /BIN/EDIT.ELF
-GUI /BIN/GUI.ELF
 SYSINFO /BIN/SYSINFO.ELF
-WRITE /BIN/WRITE.ELF
+DFLAT /BIN/DFLAT.ELF
 '''
 add_to(root, 'CMDS', 'BIN', CMDS_BIN)
 

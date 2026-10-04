@@ -4,7 +4,7 @@
 
 #define VGA_BASE    0xB8000
 #define VGA_COLS    80
-#define VGA_ROWS    25
+#define VGA_ROWS    30
 #define VGA_BYTES   (VGA_COLS * VGA_ROWS * 2)
 
 /* vram: 逻辑文本缓冲 (v6.8)。文本模式默认指向硬件 0xB8000;
@@ -22,7 +22,7 @@ const unsigned char *vga_textbuf(void) { return (const unsigned char *)vram; }
 unsigned long vga_vram_base(void) { return (unsigned long)vram; }
 
 /* ── 汉字格映射 (v6.8 中文): 与 softbuf 并行, 标记每格是 ASCII 还是汉字。
- *   单字节格 (80×25) 放不下 GB2312 双字节汉字 → 用这张表告诉渲染器:
+ *   单字节格 (80×30) 放不下 GB2312 双字节汉字 → 用这张表告诉渲染器:
  *     0         = ASCII 格 (fb_render 画 8×16 拉丁字形)
  *     GB码       = 汉字左格 (fb_render 画 16×16 HZK16 字形, 跨 (x,y)+(x+1,y))
  *     0xFFFF     = 汉字右格 (fb_render 跳过, 左格已覆盖两格宽)
@@ -65,13 +65,13 @@ void vga_cjk_clear_all(void) {
 /* v6.8.1 (SYS_CJKWCHAR): 在绝对格 (x,y) 放一个汉字 (占两格). EDIT 等用户程序
  * 绕开 put_cjk_str 的光标式写入, 于任意文本位置置汉字做本地化显示。
  * gb = GB2312 码 (含 0x05→0xE5 已还原); gb==0 → 替换框 □.
- * fg/bg 为 VGA 属性 (0-7); 越界静默忽略. 先清邻格避免残留半个汉字标记。 */
+ * fg/bg 为 VGA 属性索引 (0-15); 越界静默忽略. 先清邻格避免残留半个汉字标记。 */
 void vga_cjk_place_gb(int x, int y, unsigned gb, int fg, int bg) {
     if (x < 0 || x + 1 >= VGA_COLS || y < 0 || y >= VGA_ROWS) return;
     vga_cjk_ascii(x, y);
     vga_cjk_ascii(x + 1, y);
     int o = (y * VGA_COLS + x) * 2;
-    char attr = (char)((bg << 4) | (fg & 0x0F));
+    char attr = (char)(((bg & 0x0F) << 4) | (fg & 0x0F));
     vram[o] = 0xDB; vram[o + 1] = attr;
     vram[o + 2] = 0xDB; vram[o + 3] = attr;
     if (gb) vga_cjk_set(x, y, gb); else vga_cjk_box(x, y);
@@ -90,15 +90,23 @@ extern int cur_x, cur_y;
  * (EDIT 直写 0xB8000、滚动、重绘), 说明新内容已是真文本, 直接丢弃旧
  * 影子, 避免陈旧还原盖掉新字符。这样叠加在任意直写者面前都自愈, 无需
  * 把所有写屏点都改成经 put_char。 */
-#define IC_CH    '_'             /* 全局下划线输入光标 (用户要求) */
-#define IC_ATTR  0x0F            /* 亮白 */
 #define MC_CH    0xDB            /* █ 全块 */
 #define MC_ATTR  0x0F            /* 黑底亮白 — 鼠标指针白色, 与全黑/亮白前景都对比 */
+#define DFLAT_CURSOR_STACK 50
+#define IC_BLINK_TICKS 0         /* 输入光标固定显示，不再闪烁 */
 
 static int ic_x = -1, ic_y = -1;        /* 输入光标绘制位置; -1=未绘制 */
 static unsigned char ic_sc, ic_sa;      /* 光标下原字符/属性 */
 static int ic_px = 0, ic_py = 0;        /* 光标"应处"位置 (hide 后 show 用) */
 static int ic_hidden = 0;               /* EDIT hidecursor 状态 */
+static int ic_shape = 0;                /* 0=underline, 1=bar, 2=block */
+static unsigned char ic_draw_ch, ic_draw_attr;
+static int ic_last_x = -1, ic_last_y = -1;
+static unsigned ic_blink_ticks;
+static int ic_blink_on = 1;
+typedef struct { int x, y, shape, hidden; } dflat_cursor_state_t;
+static dflat_cursor_state_t dflat_cursor_stack[DFLAT_CURSOR_STACK];
+static int dflat_cursor_depth;
 static int mc_x = -1, mc_y = -1;        /* 鼠标指针绘制位置 */
 static unsigned char mc_sc, mc_sa;
 static int mc_hidden = 0;               /* 用户程序隐藏鼠标 (getvideo 捕获期间) */
@@ -117,27 +125,42 @@ static int cell_shows(int x, int y, unsigned char c, unsigned char a) {
     return c2 == c && a2 == a;
 }
 
-/* 还原输入光标格 (仅当格上仍是我们的 | 才写回; 否则已被新文本覆盖, 跳过) */
+/* 还原输入光标格; 若程序已写入新内容, 不恢复旧字符。 */
 static void ic_clear(void) {
     if (ic_x >= 0) {
-        if (cell_shows(ic_x, ic_y, IC_CH, IC_ATTR))
+        if (!fb_active() && cell_shows(ic_x, ic_y, ic_draw_ch, ic_draw_attr))
             cell_put(ic_x, ic_y, ic_sc, ic_sa);
         ic_x = -1;
     }
 }
-/* 在 (x,y) 画输入光标 (鼠标在上则不盖; 已在此处且完好则不动) */
+/* 输入光标保留原字符, 仅反转属性; VBE 使用像素下划线。 */
 static void ic_draw_at(int x, int y) {
+    unsigned char ch, attr;
     if (x < 0 || x >= VGA_COLS || y < 0 || y >= VGA_ROWS) { ic_clear(); return; }
     if (mc_x == x && mc_y == y) return;                       /* 鼠标优先 */
-    if (ic_x == x && ic_y == y && cell_shows(x, y, IC_CH, IC_ATTR)) return;
+    if (fb_active()) {
+        if (ic_last_x != x || ic_last_y != y) {
+            ic_blink_ticks = 0;
+            ic_blink_on = 1;
+            ic_last_x = x; ic_last_y = y;
+        }
+        ic_x = x; ic_y = y;
+        return;
+    }
+    if (ic_x == x && ic_y == y && cell_shows(x, y, ic_draw_ch, ic_draw_attr)) return;
     ic_clear();
-    cell_get(x, y, &ic_sc, &ic_sa); cell_put(x, y, IC_CH, IC_ATTR);
+    cell_get(x, y, &ic_sc, &ic_sa);
+    ch = ic_sc;
+    attr = (unsigned char)((ic_sa << 4) | (ic_sa >> 4));
+    if (attr == ic_sa) attr ^= 0x70;
+    cell_put(x, y, ch, attr);
+    ic_draw_ch = ch; ic_draw_attr = attr;
     ic_x = x; ic_y = y;
 }
 /* 还原鼠标指针格 */
 static void mc_clear(void) {
     if (mc_x >= 0) {
-        if (cell_shows(mc_x, mc_y, MC_CH, MC_ATTR))
+        if (!fb_active() && cell_shows(mc_x, mc_y, MC_CH, MC_ATTR))
             cell_put(mc_x, mc_y, mc_sc, mc_sa);
         mc_x = -1;
     }
@@ -145,6 +168,10 @@ static void mc_clear(void) {
 /* 在 (x,y) 画鼠标指针 (输入光标在上则先清掉它 — 鼠标优先, 指针不丢) */
 static void mc_draw_at(int x, int y) {
     if (x < 0 || x >= VGA_COLS || y < 0 || y >= VGA_ROWS) { mc_clear(); return; }
+    if (fb_active()) {
+        mc_x = x; mc_y = y;
+        return;
+    }
     if (mc_x == x && mc_y == y && cell_shows(x, y, MC_CH, MC_ATTR)) return;
     if (ic_x == x && ic_y == y) ic_clear();
     mc_clear();
@@ -152,25 +179,102 @@ static void mc_draw_at(int x, int y) {
     mc_x = x; mc_y = y;
 }
 
-/* 重新铺两个叠加: 先还原旧的, 再画鼠标 █ 与输入光标 |。
+/* 刷新光标状态; VBE 模式下实际光标在 fb_render 的像素层绘制。
  * shell 每次 update_cursor 都调用; 鼠标优先 (重叠时 | 让位, 指针不丢)。
  * 归属切换: shell 拥有光标 → ic_px/ic_py 追到 cur_x/cur_y, 并强制显示。 */
 void vga_overlay_refresh(void) {
     ic_hidden = 0;
+    ic_shape = 0;
     ic_px = cur_x; ic_py = cur_y;
     vga_overlay_selfheal();
 }
 
-/* 定时器自愈 (v6.7): 每 tick 重铺两个叠加 (尊重 ic_hidden, 不强制显示)。
- * 任何直写者 (EDIT 的 DFLAT 重绘、滚动) 抹掉 █/| 后 10ms 内恢复, 不依赖
+/* 定时器自愈: 每 tick 更新叠加状态, 输入光标每秒切换明暗。
+ * 任何直写者 (EDIT 的 DFLAT 重绘、滚动) 抹掉叠加层后 10ms 内恢复, 不依赖
  * 程序是否轮询鼠标。输入光标画在 ic_px/ic_py (shell 经 update_cursor 设,
  * EDIT 经 sys_cur 设)。 */
 void vga_overlay_selfheal(void) {
-    if (gui_active) return;          /* GUI 窗口服务器自绘图层, 文本叠加停用 */
-    ic_clear();
-    mc_clear();
-    if (!mc_hidden && mouse_installed_k()) mc_draw_at(mouse_char_x(), mouse_char_y());
-    if (!ic_hidden) ic_draw_at(ic_px, ic_py);
+    if (ic_hidden) {
+        ic_blink_ticks = 0;
+        ic_blink_on = 1;
+    } else {
+        /* Keep the cursor steady; an old timer phase must not return. */
+        ic_blink_ticks = 0;
+        ic_blink_on = 1;
+    }
+
+    /* In framebuffer mode fb_render() owns the final pixel composition.
+     * Do not clear/repaint an overlay from the timer while that renderer is
+     * rebuilding the same frame; only publish the current overlay state. */
+    if (fb_active()) {
+        if (!mc_hidden && mouse_installed_k()) {
+            mc_x = mouse_char_x();
+            mc_y = mouse_char_y();
+        } else {
+            mc_x = -1;
+            mc_y = -1;
+        }
+        if (!ic_hidden) {
+            ic_x = ic_px;
+            ic_y = ic_py;
+        } else {
+            ic_x = -1;
+            ic_y = -1;
+        }
+        return;
+    }
+
+    {
+        int mx = -1, my = -1;
+        int cx = ic_px, cy = ic_py;
+        int mouse_visible = !mc_hidden && mouse_installed_k();
+        int cursor_visible = !ic_hidden;
+        if (mouse_visible) {
+            mx = mouse_char_x();
+            my = mouse_char_y();
+        }
+
+        /* Keep stationary text-mode overlays in place.  The timer only
+         * repairs them after movement or when an application overwrites them. */
+        if (!mouse_visible || mx < 0 || my < 0) {
+            mc_clear();
+        } else if (mc_x != mx || mc_y != my ||
+                   !cell_shows(mx, my, MC_CH, MC_ATTR)) {
+            mc_clear();
+            mc_draw_at(mx, my);
+        }
+
+        if (!cursor_visible || cx < 0 || cy < 0) {
+            ic_clear();
+        } else if (cx == mx && cy == my && mouse_visible) {
+            ic_clear();
+        } else if (ic_x != cx || ic_y != cy ||
+                   !cell_shows(cx, cy, ic_draw_ch, ic_draw_attr)) {
+            ic_clear();
+            ic_draw_at(cx, cy);
+        }
+    }
+}
+
+int vga_text_cursor_state(int *x, int *y, int *shape) {
+    if (ic_hidden || ic_x < 0 ||
+        (ic_x == mc_x && ic_y == mc_y)) return 0;
+    *x = ic_x; *y = ic_y; *shape = ic_shape;
+    return 1;
+}
+
+int vga_text_mouse_state(int *x, int *y) {
+    /* In framebuffer mode use the driver position directly.  The software
+     * overlay cache may be between moves while a frame is being rendered. */
+    if (fb_active()) {
+        if (mc_hidden || !mouse_installed_k()) return 0;
+        *x = mouse_char_x();
+        *y = mouse_char_y();
+        return 1;
+    }
+    if (mc_x < 0) return 0;
+    *x = mc_x; *y = mc_y;
+    return 1;
 }
 
 /* 只刷新鼠标叠加 (鼠标 IRQ 与 SYS_MOUSE 轮询共用)。
@@ -178,12 +282,24 @@ void vga_overlay_selfheal(void) {
  * 轮询与鼠标 IRQ 会交错 — 轮询读到旧位置、IRQ 已画新位置, 轮询再把旧位置
  * 画回去, 而旧格的影子已被新画覆盖 → 出现无人清除的残留 █ (v6.7 修复)。 */
 void vga_mouse_redraw(void) {
-    if (gui_active) return;          /* GUI 模式: 自绘鼠标指针, 不进 softbuf */
     unsigned int flags;
     __asm__ volatile("pushfl; popl %0" : "=r"(flags));
     __asm__ volatile("cli");
     int x = -1, y = -1;
     if (!mc_hidden && mouse_installed_k()) { x = mouse_char_x(); y = mouse_char_y(); }
+    if (fb_active()) {
+        /* Do not publish an empty cache between the old and new positions.
+         * fb_render() may sample it from the timer path. */
+        mc_x = x;
+        mc_y = y;
+        __asm__ volatile("pushl %0; popfl" :: "r"(flags));
+        return;
+    }
+    if (x >= 0 && mc_x == x && mc_y == y &&
+        cell_shows(x, y, MC_CH, MC_ATTR)) {
+        __asm__ volatile("pushl %0; popfl" :: "r"(flags));
+        return;
+    }
     mc_clear();
     if (x >= 0) mc_draw_at(x, y);
     __asm__ volatile("pushl %0; popfl" :: "r"(flags));
@@ -193,10 +309,116 @@ void vga_mouse_redraw(void) {
 void soft_cursor_at(int x, int y) {
     ic_px = x; ic_py = y;
     if (ic_hidden) return;
+    if (fb_active()) {
+        if (ic_blink_on) { ic_x = x; ic_y = y; }
+        return;
+    }
     ic_draw_at(x, y);
 }
 void soft_cursor_hide(void) { ic_hidden = 1; ic_clear(); }
-void soft_cursor_show(void) { ic_hidden = 0; ic_draw_at(ic_px, ic_py); }
+void soft_cursor_show(void) {
+    /* Repainting must not restart the blink phase on every SHOW_CURSOR. */
+    if (ic_hidden) {
+        ic_hidden = 0;
+        ic_blink_ticks = 0;
+        ic_blink_on = 1;
+    }
+    ic_draw_at(ic_px, ic_py);
+}
+
+static unsigned long dflat_irq_save(void) {
+    unsigned long flags;
+    __asm__ volatile("pushfl; popl %0" : "=r"(flags));
+    __asm__ volatile("cli");
+    return flags;
+}
+
+static void dflat_irq_restore(unsigned long flags) {
+    __asm__ volatile("pushl %0; popfl" :: "r"(flags));
+}
+
+int dflat_cursor_set(int x, int y, int shape) {
+    unsigned long flags = dflat_irq_save();
+    if (x < 0) x = 0; if (x >= VGA_COLS) x = VGA_COLS - 1;
+    if (y < 0) y = 0; if (y >= VGA_ROWS) y = VGA_ROWS - 1;
+    if (shape < 0 || shape > 2) shape = 0;
+    if (ic_px == x && ic_py == y && ic_shape == shape) {
+        if (!ic_hidden && !fb_active() &&
+            (ic_x != x || ic_y != y ||
+             !cell_shows(x, y, ic_draw_ch, ic_draw_attr))) {
+            ic_clear();
+            ic_draw_at(x, y);
+        }
+        dflat_irq_restore(flags);
+        return 0;
+    }
+    ic_clear();
+    ic_px = x; ic_py = y; ic_shape = shape;
+    if (!ic_hidden) ic_draw_at(x, y);
+    dflat_irq_restore(flags);
+    return 0;
+}
+
+int dflat_cursor_get(int *out) {
+    unsigned long flags;
+    if (!out) return -1;
+    flags = dflat_irq_save();
+    out[0] = ic_px; out[1] = ic_py; out[2] = ic_shape; out[3] = !ic_hidden;
+    dflat_irq_restore(flags);
+    return 0;
+}
+
+int dflat_cursor_push(void) {
+    unsigned long flags = dflat_irq_save();
+    dflat_cursor_state_t *s;
+    int depth;
+    if (dflat_cursor_depth >= DFLAT_CURSOR_STACK) { dflat_irq_restore(flags); return -1; }
+    s = &dflat_cursor_stack[dflat_cursor_depth++];
+    s->x = ic_px; s->y = ic_py; s->shape = ic_shape; s->hidden = ic_hidden;
+    depth = dflat_cursor_depth;
+    dflat_irq_restore(flags);
+    return depth;
+}
+
+int dflat_cursor_pop(void) {
+    unsigned long flags = dflat_irq_save();
+    dflat_cursor_state_t s;
+    int depth;
+    if (dflat_cursor_depth <= 0) { dflat_irq_restore(flags); return -1; }
+    s = dflat_cursor_stack[--dflat_cursor_depth];
+    depth = dflat_cursor_depth;
+    ic_clear();
+    ic_px = s.x; ic_py = s.y; ic_shape = s.shape; ic_hidden = s.hidden;
+    if (!ic_hidden) ic_draw_at(ic_px, ic_py);
+    dflat_irq_restore(flags);
+    return depth;
+}
+
+int dflat_cursor_swap(void) {
+    unsigned long flags = dflat_irq_save();
+    dflat_cursor_state_t s;
+    int depth;
+    if (dflat_cursor_depth < 2) { dflat_irq_restore(flags); return -1; }
+    s = dflat_cursor_stack[dflat_cursor_depth - 1];
+    dflat_cursor_stack[dflat_cursor_depth - 1] = dflat_cursor_stack[dflat_cursor_depth - 2];
+    dflat_cursor_stack[dflat_cursor_depth - 2] = s;
+    depth = dflat_cursor_depth;
+    dflat_irq_restore(flags);
+    return depth;
+}
+
+int dflat_cursor_visible(int visible) {
+    unsigned long flags = dflat_irq_save();
+    int was_hidden = ic_hidden;
+    ic_hidden = !visible;
+    if (visible && was_hidden) {
+        ic_blink_ticks = 0;
+        ic_blink_on = 1;
+    }
+    if (ic_hidden) ic_clear(); else ic_draw_at(ic_px, ic_py);
+    dflat_irq_restore(flags);
+    return 0;
+}
 
 /* 隐藏/恢复鼠标指针叠加 (DFLAT getvideo/storevideo 捕获背景期间用,
  * 否则定时器自愈把 █ 画进正在捕获的区域, 烤进背景缓冲 -> 残留) */
@@ -240,7 +462,7 @@ static void scroll_up() {
     char *last = vram + (VGA_ROWS - 1) * VGA_COLS * 2;
     for (int col = 0; col < VGA_COLS; col++) {
         last[col * 2]     = ' ';
-        last[col * 2 + 1] = 0x07;
+        last[col * 2 + 1] = 0x0E;
         cjk_cell[(VGA_ROWS - 1) * VGA_COLS + col] = 0;
     }
 }
@@ -303,9 +525,9 @@ void put_char(char c, char color) {
 }
 
 /* 输出字符串 */
-void put_str(char *s) {
+void put_str(const char *s) {
     while (*s) {
-        put_char(*s, 0x07);
+        put_char(*s, 0x0E);
         s++;
     }
     update_cursor();
@@ -318,7 +540,7 @@ void cls() {
     for (int i = 0; i < VGA_COLS * VGA_ROWS; i++) {
         int offset = i * 2;
         vram[offset]     = ' ';
-        vram[offset + 1] = 0x07;
+        vram[offset + 1] = 0x0E;
     }
     cur_x = 0;
     cur_y = 0;
@@ -371,7 +593,8 @@ void put_cjk_str(const unsigned char *s, char color) {
         unsigned char b = *s;
         unsigned cp = 0;
         if (b == 0xEF && s[1] == 0xBB && s[2] == 0xBF) { s += 3; continue; }  /* UTF-8 BOM */
-        if (b >= 0xE0 && b <= 0xEF && s[1] >= 0x80 && s[1] <= 0xBF
+        if (b >= 0xE0 && b <= 0xEF && s[1] && s[2]
+            && s[1] >= 0x80 && s[1] <= 0xBF
             && s[2] >= 0x80 && s[2] <= 0xBF) {            /* UTF-8 3 字节 (CJK) */
             cp = ((unsigned)(b & 0x0F) << 12) | ((unsigned)(s[1] & 0x3F) << 6)
                  | (unsigned)(s[2] & 0x3F);
@@ -379,7 +602,8 @@ void put_cjk_str(const unsigned char *s, char color) {
             cjk_render_uni(cp, color);
             continue;
         }
-        if (b >= 0xF0 && b <= 0xF4 && s[1] >= 0x80 && s[1] <= 0xBF
+        if (b >= 0xF0 && b <= 0xF4 && s[1] && s[2] && s[3]
+            && s[1] >= 0x80 && s[1] <= 0xBF
             && s[2] >= 0x80 && s[2] <= 0xBF && s[3] >= 0x80 && s[3] <= 0xBF) {
             cp = ((unsigned)(b & 0x07) << 18) | ((unsigned)(s[1] & 0x3F) << 12)
                  | ((unsigned)(s[2] & 0x3F) << 6) | (unsigned)(s[3] & 0x3F);
@@ -394,7 +618,7 @@ void put_cjk_str(const unsigned char *s, char color) {
             cjk_render_uni(cp, color);
             continue;
         }
-        if (b >= 0xA1 && b <= 0xF7 && s[1] >= 0xA1) {     /* GB2312 双字节 */
+        if (b >= 0xA1 && b <= 0xF7 && s[1] >= 0xA1 && s[1] <= 0xFE) { /* GB2312 双字节 */
             cjk_place(((unsigned)b << 8) | (unsigned char)s[1], color);
             s += 2;
             continue;

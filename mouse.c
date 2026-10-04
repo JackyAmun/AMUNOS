@@ -1,7 +1,7 @@
 /* mouse.c — PS/2 鼠标驱动 (IRQ12 → 中断向量 0x2C)
  *
  * 8042 初始化 + 三字节标准包解析, 维护像素坐标与按钮状态。
- * VGA 文本模式 (80x25) 以 8x16 字体 640x400 像素平面计,
+ * 文本终端 (80x30) 以 8x16 字体映射到 640x480 像素平面,
  * 字符格坐标 = 像素 / 8 宽, / 16 高, 由 SYS_MOUSE 返回用户程序。
  * 鼠标光标由 QEMU GUI 渲染, 内核不画光标。
  */
@@ -11,9 +11,9 @@
 #define KBD_CMD_PORT  0x64
 #define KBD_DATA_PORT 0x60
 
-/* VGA 文本模式 80x25 的像素平面尺寸 (8x16 字体) */
+/* 文本与 GUI 共用 640x480 帧缓冲 (8x16 字体) */
 #define MOUSE_PX_W 640
-#define MOUSE_PX_H 400
+#define MOUSE_PX_H 480
 
 static int mouse_present = 0;
 static int mx_px = MOUSE_PX_W / 2;    /* 初始屏幕中心 (与 QEMU GUI 光标起始一致) */
@@ -119,11 +119,9 @@ void mouse_handler(void) {
             if (pkt[0] & 0x20) dy -= 256;      /* y 符号位 → 负 */
             mx_px += dx;
             my_px -= dy;                       /* dy 正值 = 鼠标向上 */
-            /* y 上限: 文本模式=MOUSE_PX_H(400, 25×16 可见区); GUI=帧缓冲高(480),
-             * 否则 GUI 像素命中到 y>400 处会被钳到 399, 与帧缓冲 480 高不同平面
-             * → 后续点击全部偏上 (v6.9 修复)。x 恒为帧缓冲宽 640。 */
+            /* 文本渲染与 GUI 共用 640x480 图形平面；文本模式按 30×16 像素换算行列。 */
             int ylim = MOUSE_PX_H;
-            if (gui_active) { int fbh = fb_vbe_h(); if (fbh > 0) ylim = fbh; }
+             { int fbh = fb_vbe_h(); if (fbh > 0) ylim = fbh; }
             if (mx_px < 0) mx_px = 0;
             if (mx_px >= MOUSE_PX_W) mx_px = MOUSE_PX_W - 1;
             if (my_px < 0) my_px = 0;
@@ -139,7 +137,7 @@ void mouse_handler(void) {
 int mouse_installed_k(void)  { return mouse_present; }
 int mouse_buttons_state(void){ return mbuttons; }
 int mouse_char_x(void)       { return mx_px * 80 / MOUSE_PX_W; }
-int mouse_char_y(void)       { return my_px * 25 / MOUSE_PX_H; }
+int mouse_char_y(void)       { return my_px * 30 / MOUSE_PX_H; }
 /* GUI 窗口服务器像素命中测试 (原始像素坐标, 与帧缓冲同平面) */
 int mouse_px_x(void)         { return mx_px; }
 int mouse_px_y(void)         { return my_px; }

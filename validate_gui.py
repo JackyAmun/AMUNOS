@@ -9,7 +9,10 @@ QEMU 自动化: boot → 运行 GUI 控件演示 → 用 pmemsave 抓帧缓冲�
     T4 输入框键盘: 聚焦输入框 → 键入字符 → 输入框区域像素变化 (回显)
 运行: wsl -e bash -c "python3 validate_gui.py" (qemu 装于 WSL, localhost 共享)
 """
-import socket, subprocess, time, os, sys, struct
+import socket, subprocess, time, os, sys, struct, signal
+
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(line_buffering=True)
 
 MON = 44599
 ROOT = '/mnt/c/Users/XU/Desktop/OSDev'
@@ -33,8 +36,27 @@ def mon_cmd(s, cmd, wait=0.5):
 def ch(s, txt, per=0.07):
     for c in txt: mon_cmd(s, 'sendkey ' + c, wait=per)
 
+def check_monitor_port():
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        probe.bind(('127.0.0.1', MON))
+    except OSError:
+        print('FAIL monitor port %d is already in use' % MON)
+        sys.exit(2)
+    finally:
+        probe.close()
+
+def stop_test(signum, frame):
+    raise SystemExit(124)
+
+check_monitor_port()
+signal.signal(signal.SIGTERM, stop_test)
+signal.signal(signal.SIGINT, stop_test)
 qemu = subprocess.Popen(['qemu-system-i386', '-rtc', 'base=localtime',
-    '-hda', ROOT + '/A.img', '-hdb', ROOT + '/B.img', '-hdc', ROOT + '/C.img',
+    '-drive', 'file=' + ROOT + '/A.img,format=raw,if=ide',
+    '-drive', 'file=' + ROOT + '/B.img,format=raw,if=ide',
+    '-drive', 'file=' + ROOT + '/C.img,format=raw,if=ide',
     '-display', 'none', '-monitor', 'tcp:127.0.0.1:%d,server,nowait' % MON,
     '-serial', 'file:' + SERIAL, '-no-reboot'], cwd=ROOT)
 
@@ -71,7 +93,11 @@ def get_serial():
         return ''
 
 results = {}
+def phase(name):
+    print('[GUI] ' + name, flush=True)
+
 try:
+    phase('booting QEMU')
     time.sleep(2)
     if qemu.poll() is not None:
         print('QEMU exited early rc=%s' % qemu.poll()); sys.exit(1)
@@ -130,6 +156,7 @@ try:
 
     mm(*PARK); time.sleep(0.3) # 先把光标停到桌面右上 (避开全部检查区)
 
+    phase('T1 render')
     # ── T1 渲染 ──
     d = dump_fb(s, ROOT + '/vg1.bin')
     desk = cnt(d, bpl, 0xC618, 500, 430, 640, 480)
@@ -159,6 +186,7 @@ try:
     t1b = tg == 4
     results['T1b title glyphs'] = (t1b, 'glyph_cols=%d (want 4)' % tg)
 
+    phase('T2 popup cover and restore')
     # ── T2 弹窗覆盖 + 复原 (核心) ──
     PX0, PY0, PX1, PY1 = 170, 180, 470, 300 # 弹窗区域 (居中 300x120)
     d0 = dump_fb(s, ROOT + '/vg2a.bin') # 光标已停 PARK, 不在区域
@@ -200,6 +228,7 @@ try:
     t2 = ok_open and ok_close and d_open > 50 and d_rest < 500
     results['T2 popup cover+restore'] = (t2, 'open_chg=%d restore_diff=%d' % (d_open, d_rest))
 
+    phase('T3 list selection')
     # ── T3 列表点选 (重试直到高亮出现) ──
     def list_sel():
         d = dump_fb(s, ROOT + '/vg3.bin')
@@ -210,6 +239,7 @@ try:
     t3 = ok_list and blue > 300
     results['T3 list select'] = (t3, 'blue=%d' % blue)
 
+    phase('T4 edit typing')
     # ── T4 输入框键盘回显 (聚焦 + 键入; 重试直到回显出现) ──
     def edit_caret(): # 聚焦输入框后出现闪烁块光标 (0xFC30)
         d = dump_fb(s, ROOT + '/vg4c.bin')
@@ -229,6 +259,7 @@ try:
             break
     results['T4 edit typing'] = (t4, '')
 
+    phase('T5 caret navigation')
     # ── T5 方向键光标 + 光标处插入 (核心: HOME/←→ 动 caret, 插入在光标处非串尾) ──
     # 编辑框 LFB(100,130,340,148), 文本起点 x=103, 每 ASCII 字形 8px。
     # 光标块(0xFC30)所在 x 列 = 光标位置 → 用像素直接证 caret 动了。
@@ -256,6 +287,7 @@ try:
     results['T5 arrow caret+insert'] = (t5,
         'end=%d home=%d ins=%d diff=%d' % (cx_end, cx_home, cx_ins, diff_first))
 
+    phase('T6 TextArea editing')
     # ── T6 多行文本区 GW_TEXTAREA + 内容读回 () ──
     # 编辑器窗 abs(140,60,420,360); 文本区 rel(8,30,404,260)→abs(148,90..552,350),
     # 正文起点 (150,91), 每行 16px。初始 3 行 + 结尾空行 → 行0-3 于 y91/107/123/139。
@@ -288,6 +320,7 @@ try:
         mm(x1, y1, wait); time.sleep(0.35) # 按住移动 (扩展 active/拖动)
         mon_cmd(s, 'mouse_button 0', 0.05); time.sleep(0.5) # 松开 (清 drag_win/sel_drag)
 
+    phase('T8 TextArea selection')
     # ── T8 文本选中 (鼠标拖选, ) ──
     # 编辑器窗 abs(140,60,420,360), 文本区 abs(148,90..552,350), 行1于 y=107..122。
     # 选区高亮 C_SELBG=0x0010; 只统计文本区内 y 108..140 (避开标题带 y<60,
@@ -302,11 +335,12 @@ try:
     base8 = ta_selcnt(108, 140)
     drag_select(160, 110, 286, 110) # 行1上拖选一段
     sel8 = ta_selcnt(108, 140)
-    click(200, 29); time.sleep(0.4) # 点主窗标题 → 改焦 → 选区塌缩
-    clr8 = ta_selcnt(108, 140)
-    t8 = base8 < 5 and sel8 > 250 and clr8 < 10
-    results['T8 textarea selection'] = (t8, 'base=%d sel=%d clr=%d' % (base8, sel8, clr8))
+    click(200, 29); time.sleep(0.4) # 点主窗标题 → 改焦，但保留选区供菜单复制
+    keep8 = ta_selcnt(108, 140)
+    t8 = base8 < 5 and sel8 > 250 and keep8 > 250
+    results['T8 textarea selection persists'] = (t8, 'base=%d sel=%d keep=%d' % (base8, sel8, keep8))
 
+    phase('T7 window chrome')
     # ── T7 窗口 chrome (): 关闭 / 拖动移动 / 最大化还原 ──
     # 编辑器窗 chrome 区 abs[506,560)x[60,78): ✕关=(551,69) ▢最=(533,69) ▁最=(507,69)
     # 关闭后编辑器原区 (470,70,550,410) 变桌面 0xC618 (main 只到 x<460)。
@@ -349,6 +383,7 @@ try:
     results['T7c max+restore'] = (t7c,
         'max=%s rest=%s title_back=%s' % (ok_max, ok_rest, title_back))
 
+    phase('T9 drag fast path')
     # ── T9 拖动快路径: 中途不松手即见窗口跟随 + 暴露区正确 ( 无桌面闪清) ──
     # 主窗现 (80,70,440,340), 标题带 y[70,88)。按 (300,79) 拖把手(off 220,9),
     # 移到 (300,109) 不松 → 新原点 (80,100), 标题带 y[100,118]。
@@ -370,6 +405,7 @@ try:
         'mid_band=%d mid_expose=%d fin_band=%d fin_expose=%d'
         % (mid_band, mid_expose, fin_band, fin_expose))
 
+    phase('T10 checkbox')
     # ── T10 Checkbox 点击切换 () ──
     # T9 后主窗移至 (80, 100); chk_b 窗 (80, 125) → 屏 (160, 225);
     # 盒 14×14 屏 (160, 226)-(174, 240)
@@ -388,6 +424,7 @@ try:
     t10 = ba > 12 and bb < ba and bc > bb and bc > 12
     results['T10 checkbox toggle'] = (t10, 'a=%d b=%d c=%d' % (ba, bb, bc))
 
+    phase('T11 menu keyboard')
     # ── T11 Menu: Alt+字母 打开 + 方向键+Enter 激活 () ──
     # 窗 (80, 100), 菜单条屏 y[118, 136); 弹层约屏 (84, 136)-(132, 216)
     mm(*PARK); time.sleep(0.3)
@@ -411,6 +448,7 @@ try:
     results['T11 menu alt-letter+enter'] = (t11,
         'panel=%d text=%d ed=%d' % (panel_white, item1_text, ed_after))
 
+    phase('T12 tab focus')
     # ── T12 TAB 焦点循环 () ──
     # v6.5.4 模态调度后不用"弹窗"钮 (会开出模态框吞键盘)。改用相邻两钮:
     # 窗 (80, 100): b_clear"清空"屏 (260,160)-(308,186); b_txt"编辑器" (340,160)-(404,186)
@@ -426,6 +464,7 @@ try:
     t12 = ring_clr > 30 and ring_clr2 < 5 and ring_txt > 30
     results['T12 tab focus'] = (t12, 'clr=%d clr2=%d txt=%d' % (ring_clr, ring_clr2, ring_txt))
 
+    phase('summary')
     print('OVERALL', 'PASS' if all(v[0] for v in results.values()) else 'FAIL')
     for k, (ok, info) in results.items():
         print(('PASS' if ok else 'FAIL'), k, info)

@@ -24,8 +24,8 @@ int main(void)
            si.drive_letter, si.current_drive, si.cwd_cluster);
     printf("filesystem  : FAT%d spc=%d root_lba=%d data_lba=%d\n",
            si.fs_fat_bits, si.fs_spc, si.fs_root_lba, si.fs_data_lba);
-    printf("graphics    : framebuffer=%s gui=%s\n",
-           si.fb_active ? "on" : "off", si.gui_active ? "on" : "off");
+    printf("graphics    : framebuffer=%s\n",
+            si.fb_active ? "on" : "off");
     printf("\nDEVICES\n");
     for (int i = 0; i < 7; i++) {
         if (!si.dev_present[i]) continue;

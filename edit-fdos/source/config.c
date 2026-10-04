@@ -6,79 +6,79 @@
 unsigned char color[CLASSCOUNT] [4] [2] = {
     /* ------------ NORMAL ------------ */
    {{LIGHTGRAY, BLACK}, /* STD_COLOR    */
-    {LIGHTGRAY, BLACK}, /* SELECT_COLOR */
-    {WHITE, BLACK},     /* FRAME_COLOR  */
-    {LIGHTGRAY, BLACK}},/* HILITE_COLOR */
+    {WHITE, BLUE},      /* SELECT_COLOR */
+    {YELLOW, BLACK},    /* FRAME_COLOR  */
+    {YELLOW, BLACK}},   /* HILITE_COLOR */
 
     /* ---------- APPLICATION --------- */
-   {{LIGHTGRAY, BLUE},  /* STD_COLOR    */
-    {LIGHTGRAY, BLUE},  /* SELECT_COLOR */
-    {LIGHTGRAY, BLUE},  /* FRAME_COLOR  */
-    {LIGHTGRAY, BLUE}}, /* HILITE_COLOR */
+   {{LIGHTGRAY, BLACK}, /* STD_COLOR    */
+    {WHITE, BLUE},      /* SELECT_COLOR */
+    {YELLOW, BLACK},    /* FRAME_COLOR  */
+    {YELLOW, BLACK}},   /* HILITE_COLOR */
 
     /* ------------ TEXTBOX ----------- */
-   {{BLACK, LIGHTGRAY}, /* STD_COLOR    */
-    {LIGHTGRAY, BLACK}, /* SELECT_COLOR */
-    {BLACK, LIGHTGRAY}, /* FRAME_COLOR  */
-    {BLACK, LIGHTGRAY}},/* HILITE_COLOR */
+   {{WHITE, BLACK},     /* STD_COLOR    */
+    {BLACK, LIGHTGRAY}, /* SELECT_COLOR */
+    {YELLOW, BLACK},    /* FRAME_COLOR  */
+    {YELLOW, BLACK}},   /* HILITE_COLOR */
 
     /* ------------ LISTBOX ----------- */
-   {{BLACK, LIGHTGRAY}, /* STD_COLOR    */
-    {LIGHTGRAY, BLACK}, /* SELECT_COLOR */
-    {BLACK, LIGHTGRAY}, /* FRAME_COLOR  */
-    {BLACK, LIGHTGRAY}},/* HILITE_COLOR */
+   {{WHITE, BLACK},     /* STD_COLOR    */
+    {BLACK, LIGHTGRAY}, /* SELECT_COLOR */
+    {YELLOW, BLACK},    /* FRAME_COLOR  */
+    {YELLOW, BLACK}},   /* HILITE_COLOR */
 
     /* ----------- EDITBOX ------------ */
-   {{LIGHTGRAY, BLUE}, /* STD_COLOR    */
+   {{WHITE, BLACK},     /* STD_COLOR    */
     {BLACK, LIGHTGRAY}, /* SELECT_COLOR */
-    {LIGHTGRAY, BLACK}, /* FRAME_COLOR  */
-    {BLACK, LIGHTGRAY}},/* HILITE_COLOR */
+    {YELLOW, BLACK},    /* FRAME_COLOR  */
+    {YELLOW, BLACK}},   /* HILITE_COLOR */
 
     /* ---------- MENUBAR ------------- */
-   {{BLACK, LIGHTGRAY}, /* STD_COLOR    */
-    {BLACK, CYAN},      /* SELECT_COLOR */
-    {BLACK, LIGHTGRAY}, /* FRAME_COLOR  */
-    {DARKGRAY, RED}},   /* HILITE_COLOR
+   {{WHITE, BLUE},      /* STD_COLOR    */
+    {BLACK, LIGHTGRAY}, /* SELECT_COLOR */
+    {WHITE, BLUE},      /* FRAME_COLOR  */
+    {YELLOW, BLUE}},    /* HILITE_COLOR
                           Inactive, Shortcut (both FG) */
 
     /* ---------- POPDOWNMENU --------- */
-   {{BLACK, CYAN},      /* STD_COLOR    */
+   {{WHITE, BLACK},     /* STD_COLOR    */
     {BLACK, LIGHTGRAY}, /* SELECT_COLOR */
-    {BLACK, CYAN},      /* FRAME_COLOR  */
-    {DARKGRAY, RED}},   /* HILITE_COLOR
+    {YELLOW, BLACK},    /* FRAME_COLOR  */
+    {YELLOW, YELLOW}},  /* HILITE_COLOR
                            Inactive ,Shortcut (both FG) */
 
 #ifdef INCLUDE_PICTUREBOX
     /* ------------ PICTUREBOX ----------- */
-   {{BLACK, LIGHTGRAY}, /* STD_COLOR    */
-    {LIGHTGRAY, BLACK}, /* SELECT_COLOR */
-    {BLACK, LIGHTGRAY}, /* FRAME_COLOR  */
-    {BLACK, LIGHTGRAY}},/* HILITE_COLOR */
+   {{WHITE, BLACK},     /* STD_COLOR    */
+    {BLACK, LIGHTGRAY}, /* SELECT_COLOR */
+    {YELLOW, BLACK},    /* FRAME_COLOR  */
+    {YELLOW, BLACK}},   /* HILITE_COLOR */
 #endif
 
     /* ------------- DIALOG ----------- */
-   {{BLACK, LIGHTGRAY}, /* STD_COLOR    */
+   {{WHITE, BLACK},     /* STD_COLOR    */
     {BLACK, LIGHTGRAY}, /* SELECT_COLOR */
-    {BLACK, LIGHTGRAY}, /* FRAME_COLOR  */
-    {LIGHTGRAY, BLUE}}, /* HILITE_COLOR */
+    {YELLOW, BLACK},    /* FRAME_COLOR  */
+    {YELLOW, BLACK}},   /* HILITE_COLOR */
 
 	/* ------------ BOX --------------- */
-   {{LIGHTGRAY, BLUE},  /* STD_COLOR    */
-    {LIGHTGRAY, BLUE},  /* SELECT_COLOR */
-    {LIGHTGRAY, BLUE},  /* FRAME_COLOR  */
-    {LIGHTGRAY, BLUE}}, /* HILITE_COLOR */
+   {{WHITE, BLACK},     /* STD_COLOR    */
+    {WHITE, BLACK},     /* SELECT_COLOR */
+    {YELLOW, BLACK},    /* FRAME_COLOR  */
+    {YELLOW, BLACK}},   /* HILITE_COLOR */
 
     /* ------------ BUTTON ------------ */
-   {{BLACK, CYAN},      /* STD_COLOR    */
-    {WHITE, CYAN},      /* SELECT_COLOR */
-    {BLACK, CYAN},      /* FRAME_COLOR  */
-    {DARKGRAY, RED}},   /* HILITE_COLOR
+   {{WHITE, BLUE},      /* STD_COLOR    */
+    {BLACK, LIGHTGRAY}, /* SELECT_COLOR */
+    {WHITE, BLUE},      /* FRAME_COLOR  */
+    {YELLOW, BLACK}},   /* HILITE_COLOR
                            Inactive ,Shortcut (both FG) */
     /* ------------ COMBOBOX ----------- */
-   {{BLACK, LIGHTGRAY}, /* STD_COLOR    */
-    {LIGHTGRAY, BLACK}, /* SELECT_COLOR */
-    {LIGHTGRAY, BLACK}, /* FRAME_COLOR  */
-    {BLACK, LIGHTGRAY}},/* HILITE_COLOR */
+   {{WHITE, BLACK},     /* STD_COLOR    */
+    {BLACK, LIGHTGRAY}, /* SELECT_COLOR */
+    {YELLOW, BLACK},    /* FRAME_COLOR  */
+    {YELLOW, BLACK}},   /* HILITE_COLOR */
 
     /* ------------- TEXT ----------- */
    {{0xff, 0xff},  /* STD_COLOR    */
@@ -87,64 +87,64 @@ unsigned char color[CLASSCOUNT] [4] [2] = {
     {0xff, 0xff}}, /* HILITE_COLOR */
 
     /* ------------- RADIOBUTTON ----------- */
-   {{LIGHTGRAY, BLUE},  /* STD_COLOR    */
+   {{WHITE, BLACK},     /* STD_COLOR    */
     {BLACK, LIGHTGRAY}, /* SELECT_COLOR */
-    {LIGHTGRAY, BLUE},  /* FRAME_COLOR  */
-    {LIGHTGRAY, BLUE}}, /* HILITE_COLOR */
+    {YELLOW, BLACK},    /* FRAME_COLOR  */
+    {YELLOW, BLACK}},   /* HILITE_COLOR */
 
     /* ------------- CHECKBOX ----------- */
-   {{LIGHTGRAY, BLUE},  /* STD_COLOR    */
+   {{WHITE, BLACK},     /* STD_COLOR    */
     {BLACK, LIGHTGRAY}, /* SELECT_COLOR */
-    {LIGHTGRAY, BLUE},  /* FRAME_COLOR  */
-    {LIGHTGRAY, BLUE}}, /* HILITE_COLOR */
+    {YELLOW, BLACK},    /* FRAME_COLOR  */
+    {YELLOW, BLACK}},   /* HILITE_COLOR */
 
     /* ------------ SPINBUTTON ----------- */
-   {{BLACK, LIGHTGRAY}, /* STD_COLOR    */
+   {{WHITE, BLACK},     /* STD_COLOR    */
     {BLACK, LIGHTGRAY}, /* SELECT_COLOR */
-    {LIGHTGRAY, BLACK}, /* FRAME_COLOR  */
-    {BLACK, LIGHTGRAY}},/* HILITE_COLOR */
+    {YELLOW, BLACK},    /* FRAME_COLOR  */
+    {YELLOW, BLACK}},   /* HILITE_COLOR */
 
     /* ----------- ERRORBOX ----------- */
-   {{YELLOW, RED},      /* STD_COLOR    */
-    {YELLOW, RED},      /* SELECT_COLOR */
-    {YELLOW, RED},      /* FRAME_COLOR  */
-    {YELLOW, RED}},     /* HILITE_COLOR */
+   {{WHITE, RED},       /* STD_COLOR    */
+    {WHITE, RED},       /* SELECT_COLOR */
+    {WHITE, RED},       /* FRAME_COLOR  */
+    {WHITE, RED}},      /* HILITE_COLOR */
 
     /* ----------- MESSAGEBOX --------- */
-   {{BLACK, LIGHTGRAY}, /* STD_COLOR    */
+   {{WHITE, BLACK},     /* STD_COLOR    */
     {BLACK, LIGHTGRAY}, /* SELECT_COLOR */
-    {BLACK, LIGHTGRAY}, /* FRAME_COLOR  */
-    {BLACK, LIGHTGRAY}},/* HILITE_COLOR */
+    {YELLOW, BLACK},    /* FRAME_COLOR  */
+    {YELLOW, BLACK}},   /* HILITE_COLOR */
 
     /* ----------- HELPBOX ------------ */
-   {{BLACK, LIGHTGRAY}, /* STD_COLOR    */
-    {LIGHTGRAY, BLUE},  /* SELECT_COLOR */
-    {BLACK, LIGHTGRAY}, /* FRAME_COLOR  */
-    {WHITE, LIGHTGRAY}},/* HILITE_COLOR */
+   {{WHITE, BLACK},     /* STD_COLOR    */
+    {BLACK, LIGHTGRAY}, /* SELECT_COLOR */
+    {YELLOW, BLACK},    /* FRAME_COLOR  */
+    {YELLOW, BLACK}},   /* HILITE_COLOR */
 
     /* ---------- STATUSBAR ------------- */
-   {{BLACK, CYAN},      /* STD_COLOR    */
-    {BLACK, CYAN},      /* SELECT_COLOR */
-    {BLACK, CYAN},      /* FRAME_COLOR  */
-    {BLACK, CYAN}},     /* HILITE_COLOR */
+   {{WHITE, BLUE},      /* STD_COLOR    */
+    {WHITE, BLUE},      /* SELECT_COLOR */
+    {WHITE, BLUE},      /* FRAME_COLOR  */
+    {YELLOW, BLUE}},    /* HILITE_COLOR */
 
     /* ----------- EDITOR ------------ */
-   {{LIGHTGRAY, BLUE},  /* STD_COLOR    */
+   {{WHITE, BLACK},     /* STD_COLOR    */
     {BLACK, LIGHTGRAY}, /* SELECT_COLOR */
-    {BLACK, LIGHTGRAY}, /* FRAME_COLOR  */
-    {BLACK, LIGHTGRAY}},/* HILITE_COLOR */
+    {YELLOW, BLACK},    /* FRAME_COLOR  */
+    {YELLOW, BLACK}},   /* HILITE_COLOR */
 
     /* ---------- TITLEBAR ------------ */
-   {{BLACK, CYAN},      /* STD_COLOR    */
-    {BLACK, CYAN},      /* SELECT_COLOR */
-    {CYAN, BLACK},      /* FRAME_COLOR  */
-    {WHITE, CYAN}},     /* HILITE_COLOR */
+   {{BLACK, YELLOW},    /* STD_COLOR    */
+    {BLACK, YELLOW},    /* SELECT_COLOR */
+    {BLACK, YELLOW},    /* FRAME_COLOR  */
+    {BLACK, YELLOW}},   /* HILITE_COLOR */
 
     /* ------------ DUMMY ------------- */
-   {{GREEN, LIGHTGRAY}, /* STD_COLOR    */
-    {GREEN, LIGHTGRAY}, /* SELECT_COLOR */
-    {GREEN, LIGHTGRAY}, /* FRAME_COLOR  */
-    {GREEN, LIGHTGRAY}} /* HILITE_COLOR */
+   {{WHITE, BLACK},     /* STD_COLOR    */
+    {WHITE, BLACK},     /* SELECT_COLOR */
+    {YELLOW, BLACK},    /* FRAME_COLOR  */
+    {YELLOW, BLACK}}    /* HILITE_COLOR */
 };
 
 /* ----- default colors for mono video system ----- */
@@ -215,7 +215,7 @@ unsigned char bw[CLASSCOUNT] [4] [2] = {
 
     /* ------------ BUTTON ------------ */
    {{BLACK, LIGHTGRAY}, /* STD_COLOR    */
-    {WHITE, LIGHTGRAY}, /* SELECT_COLOR */
+    {LIGHTGRAY, BLACK}, /* SELECT_COLOR */
     {BLACK, LIGHTGRAY}, /* FRAME_COLOR  */
     {DARKGRAY, WHITE}}, /* HILITE_COLOR
                            Inactive ,Shortcut (both FG) */
@@ -265,7 +265,7 @@ unsigned char bw[CLASSCOUNT] [4] [2] = {
    {{LIGHTGRAY, BLACK}, /* STD_COLOR    */
     {WHITE, BLACK},     /* SELECT_COLOR */
     {LIGHTGRAY, BLACK}, /* FRAME_COLOR  */
-    {WHITE, LIGHTGRAY}},/* HILITE_COLOR */
+    {BLACK, LIGHTGRAY}},/* HILITE_COLOR */
 
     /* ---------- STATUSBAR ------------- */
    {{BLACK, LIGHTGRAY}, /* STD_COLOR    */
@@ -409,7 +409,7 @@ unsigned char reverse[CLASSCOUNT] [4] [2] = {
    {{BLACK, LIGHTGRAY}, /* STD_COLOR    */
     {LIGHTGRAY, BLACK}, /* SELECT_COLOR */
     {BLACK, LIGHTGRAY}, /* FRAME_COLOR  */
-    {WHITE, LIGHTGRAY}},/* HILITE_COLOR */
+    {BLACK, LIGHTGRAY}},/* HILITE_COLOR */
 
     /* ---------- STATUSBAR ------------- */
    {{LIGHTGRAY, BLACK},      /* STD_COLOR    */
@@ -440,6 +440,7 @@ unsigned char reverse[CLASSCOUNT] [4] [2] = {
 CONFIG cfg = {
     VERSION,
     0,          /* Color			*/
+    0,          /* Amber theme            */
     FALSE,	/* Snowy CGA			*/
     TRUE,       /* Editor Insert Mode		*/
     8,          /* Editor tab stop size		*/ /* was 4 before 0.7b */
@@ -450,7 +451,7 @@ CONFIG cfg = {
     TRUE,       /* Status Bar			*/
 #endif
     FALSE,      /* Textured application window	*/
-    25,         /* Number of screen lines	*/
+    SCREENHEIGHT, /* Number of screen lines */
     "Lpt1",	/* Printer Port			*/
     66,         /* Lines per printer page	*/
     80,		/* characters per printer line	*/

@@ -43,7 +43,8 @@
 | SYSINFO / CALC / VIEW / HEX / SIZE | ⬜ 未做 | 数据全在内核，**1~2 天/个** 用户态即可 |
 | BUILD.ELF（封装 TCC） | ⬜ 未做 | TCC+crt+CMDS 已就绪，纯编排层 |
 | PACK/INSTALL(.AMN) | ◐ 部分 | INSTALL+CMDS.BIN 已存在，．AMN 容器在此上加 |
-| AMUN WRITE / SHEET / DRAW / PAINT | ⬜ 未做 | 依赖图形 API；规划见 [Studio 规划](AMUNOS_Studio_规划_WRITE_SHEET_DRAW_IME.md) |
+| AMUN WRITE 0.3 | ◐ 可用基础版 | 主窗口+菜单；新建/打开/另存为使用可复用文件选择子窗口；支持真实选区复制、光标/选区粘贴、保存、未保存确认、实时行列状态；仍缺撤销、搜索与富文本 |
+| SHEET / DRAW / PAINT | ⬜ 未做 | 依赖原生图形 API；规划见 [Studio 规划](AMUNOS_Studio_规划_WRITE_SHEET_DRAW_IME.md) |
 | BASIC | ⬜ 未做 | 解释器，独立工作量 |
 | SYNTH / MUSIC / TRACKER | ⬜ 未做 | 需音频驱动（PC 喇叭即 Ul 级可启动，再用 SoundBlaster/DMA） |
 | DATABASE / MATH / PLOT | ⬜ 未做 | PLOT 依赖图形 API；DATABASE 依赖文件系统（已有） |

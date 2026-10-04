@@ -1,6 +1,6 @@
-/* fb.c — 软件文本渲染器 (v6.8 中文支持, 里程碑 1)
+/* fb.c — 软件文本渲染器 (v6.8 中文支持, 80x30 文本网格)
  *
- * 架构: 保留 0xB8000 作为"逻辑文本缓冲" (80×25), 本文件把它的每个字符
+ * 架构: 保留 0xB8000 作为"逻辑文本缓冲" (80×30), 本文件把它的每个字符
  * 格用 8×16 VGA 字形画到 VBE 线性帧缓冲。汉字 (GB2312 双字节) 放不进单字节
  * 0xB8000, 走独立路径用 16×16 HZK16 字形直接画到帧缓冲 (当前由演示命令
  * zh 画到 80×25 网格以下的空行带, 不被 0xB8000 渲染覆盖)。
@@ -19,7 +19,7 @@
 
 #define VGA_BASE  0xB8000
 #define COLS      80
-#define ROWS      25
+#define ROWS      30
 #define FB_INFO   0x1500
 #define LATIN_FONT ((const unsigned char *)latin_font8x16)
 
@@ -29,6 +29,11 @@ static int fb_on = 0;                 /* 1 = 图形渲染器启用 */
 static unsigned char *hzk16 = 0;      /* HZK16 字库数据 (堆) */
 static unsigned int *u2gb = 0;        /* Unicode→GB2312 表 (堆): 高16位=Unicode 低16位=GB码, 按Unicode升序 */
 static int u2gb_n = 0;                /* u2gb 条目数 */
+static unsigned char rendered_cells[ROWS][COLS][2];
+static unsigned short rendered_cjk[ROWS][COLS];
+static int rendered_valid;
+static int rendered_mouse_x = -1, rendered_mouse_y = -1;
+static int rendered_cursor_x = -1, rendered_cursor_y = -1;
 
 /* Unicode 码点 → GB2312 码 (二分查找); 返回 0 表示该字符不在 GB2312 字库 */
 unsigned fb_uni_to_gb(unsigned uni) {
@@ -45,10 +50,10 @@ unsigned fb_uni_to_gb(unsigned uni) {
 
 /* VGA 16 色 → RGB565 (attr 高/低 4 位分别索引) */
 static const unsigned short vga_rgb565[16] = {
-    0x0000, 0x0015, 0x0540, 0x0555,   /* black blue green cyan   */
-    0xA800, 0xA815, 0xAAA0, 0xAAB5,   /* red magenta brown gray  */
-    0x52AA, 0x52BF, 0x57EA, 0x57FF,   /* dgray lblue lgreen lcyan*/
-    0xFAAA, 0xFABF, 0xFFEA, 0xFFFF,   /* lred lmag yellow white  */
+    0x0000, 0x314D, 0x05A0, 0x05BF,   /* black muted-blue green cyan */
+    0xB000, 0xB01B, 0x8A40, 0xC618,   /* red magenta brown gray  */
+    0x630C, 0x3D7F, 0x57EA, 0x57FF,   /* dgray lblue lgreen lcyan*/
+    0xFAAA, 0xFA1F, 0xFC00, 0xFFFF,   /* lred lmag orange white  */
 };
 
 int fb_active(void) { return fb_on; }
@@ -65,6 +70,68 @@ static inline void fb_put_px(int x, int y, unsigned short c) {
                                          + (unsigned)x * (unsigned)(fb_bpp / 8));
     p[0] = (unsigned char)(c & 0xFF);
     p[1] = (unsigned char)(c >> 8);
+}
+
+static void fb_overlay_bg_px(int x, int y, unsigned short bg, unsigned short color) {
+    unsigned short *p = (unsigned short *)(fb_base + (unsigned)y * (unsigned)fb_bpl
+                                           + (unsigned)x * 2);
+    if (*p == bg) *p = color;
+}
+
+static void fb_text_overlays(const unsigned char *vram) {
+    int x, y, shape;
+    if (vga_text_mouse_state(&x, &y)) {
+        int px = x * 8, py = y * 16;
+        /* Keep the mouse pointer as a stable white text-cell block. */
+        for (int row = 0; row < 16; row++)
+            for (int col = 0; col < 8; col++)
+                fb_put_px(px + col, py + row, vga_rgb565[15]);
+    }
+    if (vga_text_cursor_state(&x, &y, &shape)) {
+        unsigned char attr = vram[(y * COLS + x) * 2 + 1];
+        unsigned short bg = vga_rgb565[(attr >> 4) & 15];
+        /* Cursor contrast is independent from the orange shortcut color. */
+        unsigned short color = bg == vga_rgb565[15] ? vga_rgb565[0]
+                                                   : vga_rgb565[15];
+        int px = x * 8, py = y * 16;
+        if (shape == 0) {
+            for (int i = 0; i < 8; i++) fb_overlay_bg_px(px + i, py + 15, bg, color);
+        } else {
+            for (int i = 0; i < 16; i++) fb_overlay_bg_px(px, py + i, bg, color);
+        }
+    }
+}
+
+static void fb_draw_glyph(int px, int py, unsigned char idx,
+                          unsigned short fg, unsigned short bg);
+static void fb_draw_cjk(int px, int py, unsigned char gbH, unsigned char gbL,
+                        unsigned short fg, unsigned short bg);
+static void fb_draw_box(int px, int py, unsigned short fg, unsigned short bg);
+static void fb_draw_boxglyph(int px, int py, unsigned char g,
+                             unsigned short fg, unsigned short bg);
+
+static void fb_draw_text_cell(const unsigned char *vram, int col, int row) {
+    const unsigned char *cell;
+    unsigned short fg, bg, ck;
+    if (col < 0 || col >= COLS || row < 0 || row >= ROWS) return;
+    ck = vga_cjk_at(col, row);
+    if (ck == 0xFFFF && col > 0) {
+        col--;
+        ck = vga_cjk_at(col, row);
+    }
+    cell = vram + (row * COLS + col) * 2;
+    fg = vga_rgb565[cell[1] & 0x0F];
+    bg = vga_rgb565[(cell[1] >> 4) & 0x0F];
+    if (ck == 0xFFFF) return;
+    if (ck == 0xFFFE)
+        fb_draw_box(col * 8, row * 16, fg, bg);
+    else if (ck != 0)
+        fb_draw_cjk(col * 8, row * 16, (unsigned char)(ck >> 8),
+                    (unsigned char)ck, fg, bg);
+    else if (fb_is_boxcode(cell[0]))
+        fb_draw_boxglyph(col * 8, row * 16, cell[0], fg, bg);
+    else
+        fb_draw_glyph(col * 8, row * 16, cell[0], fg, bg);
 }
 
 /* 画一个 8×16 拉丁字形 (内嵌字库 latin_font8x16, 256 字形 × 16B) */
@@ -156,37 +223,39 @@ static void fb_draw_boxglyph(int px, int py, unsigned char g,
             fb_put_px(px + c, py + i, (row[i] & (0x80 >> c)) ? fg : bg);
 }
 
-/* 全屏渲染: 读 0xB8000 80×25 网格 → 画到帧缓冲顶部。
+/* 全屏渲染: 读 0xB8000 80×30 网格 → 画到帧缓冲顶部。
  * 挂到定时器 (task.c timer_schedule), 每 3 tick (~30Hz) 重绘一次。
- * 软件叠加 '_'/'█' 就在 0xB8000 里, 随网格一起渲染, 天然可见。 */
+ * 文本与光标分层绘制, 光标只落在字形之外的背景像素。 */
 void fb_render(void) {
     static unsigned tick = 0;
     if (!fb_on) return;
-    if (gui_active) return;          /* GUI 窗口服务器接管屏幕, 文本渲染停用 */
     if ((++tick % 3) != 0) return;
     const unsigned char *vram = vga_textbuf();   /* 软件文本缓冲 (图形模式) */
+    int mx = -1, my = -1, cx = -1, cy = -1, shape;
+    int has_mouse = vga_text_mouse_state(&mx, &my);
+    int has_cursor = vga_text_cursor_state(&cx, &cy, &shape);
+
     for (int row = 0; row < ROWS; row++) {
         for (int col = 0; col < COLS; col++) {
             const unsigned char *cell = vram + (row * COLS + col) * 2;
-            unsigned short fg = vga_rgb565[cell[1] & 0x0F];
-            unsigned short bg = vga_rgb565[(cell[1] >> 4) & 0x0F];
             unsigned short ck = vga_cjk_at(col, row);
-            if (ck == 0xFFFF) continue;              /* 汉字右格: 左格已画 16×16 覆盖 */
-            if (ck == 0xFFFE) {                      /* 替换框 □: 不在 GB2312 字库 */
-                fb_draw_box(col * 8, row * 16, fg, bg);
-                continue;
-            }
-            if (ck != 0) {                           /* 汉字左格: 画 16×16 HZK16 */
-                fb_draw_cjk(col * 8, row * 16, (unsigned char)(ck >> 8),
-                            (unsigned char)(ck & 0xFF), fg, bg);
-                continue;
-            }
-            if (fb_is_boxcode(cell[0]))              /* 框线/滑块/箭头: 像素形状 */
-                fb_draw_boxglyph(col * 8, row * 16, cell[0], fg, bg);
-            else
-                fb_draw_glyph(col * 8, row * 16, cell[0], fg, bg);
+            int dirty = !rendered_valid || cell[0] != rendered_cells[row][col][0] ||
+                        cell[1] != rendered_cells[row][col][1] ||
+                        ck != rendered_cjk[row][col];
+            if ((col == rendered_mouse_x && row == rendered_mouse_y) ||
+                (col == rendered_cursor_x && row == rendered_cursor_y)) dirty = 1;
+            if (dirty) fb_draw_text_cell(vram, col, row);
+            rendered_cells[row][col][0] = cell[0];
+            rendered_cells[row][col][1] = cell[1];
+            rendered_cjk[row][col] = ck;
         }
     }
+    rendered_valid = 1;
+    rendered_mouse_x = has_mouse ? mx : -1;
+    rendered_mouse_y = has_mouse ? my : -1;
+    rendered_cursor_x = has_cursor ? cx : -1;
+    rendered_cursor_y = has_cursor ? cy : -1;
+    fb_text_overlays(vram);
 }
 
 /* 演示: 画一段 GB2312 字符串 (双字节汉字 16 宽, ASCII 8 宽), 水平排列。

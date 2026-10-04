@@ -45,7 +45,7 @@ static unsigned ggb(const unsigned char *s); /* LFB 文本用 */
 /* 多行文本区: 内容放独立固定槽池 (每槽 TX_SIZE 字节), 而非塞进 gui_wid_t 的
  * txt[64] — 避免结构体阵列被放大几百 KB。槽由 gw_new 分配, 关闭/替换时释放。 */
 #define GW_TXPOOL 4
-#define TX_SIZE 2048
+#define TX_SIZE 2048 /* 2047 字节内容 + NUL，避免文本池尾部越界 */
 static char gui_txpool[GW_TXPOOL][TX_SIZE];
 static int gui_txused[GW_TXPOOL];
 
@@ -123,6 +123,8 @@ typedef struct {
  int rx, ry, rw, rh;
  int active; /* 文档: 活跃窗口 (只有一个 active=true, 点击激活) */
  int topmost; /* 1=置顶窗 (优先响应点击) */
+ int parent; /* 对话框父窗口，-1 表示普通窗口 */
+ int close_guard; /* 1=标题栏关闭只投递事件，由应用决定何时真正关闭 */
 } gui_win_t;
 
 static gui_win_t GUW[GW_MAXWIN];
@@ -171,7 +173,14 @@ static gui_menubar_t gui_mb = {0};
 static int gstrlen(const char *s) { const char *p = s; while (*p) p++; return (int)(p - s); }
 static void gcopy(char *d, const char *s, int cap) {
  int i = 0;
- while (s[i] && i < cap - 1) { d[i] = s[i]; i++; }
+ while (s[i] && i < cap - 1) {
+  int cl, cj;
+  gadv((const unsigned char*)s + i, &cl, &cj);
+  if (cl < 1) cl = 1;
+  if (i + cl >= cap) break;
+  for (int k = 0; k < cl; k++) d[i + k] = s[i + k];
+  i += cl;
+ }
  d[i] = 0;
 }
 
@@ -382,15 +391,25 @@ static void gtx_lshift(char *b, int at, int n, int len) {
  for (int i = at; i < len - n; i++) b[i] = b[i + n];
 }
 /* 截掉尾部残缺字形 (cap 截断可能把 UTF-8/GB 掐半) */
-static void gtx_trim(char *b, int len) {
+static int gtx_valid_len(const char *b, int len) {
  int i = 0;
  while (i < len) {
- int cl, cj; gadv((const unsigned char*)b + i, &cl, &cj);
- if (cl < 1) cl = 1;
- if (i + cl > len) break;
+ unsigned char c = (unsigned char)b[i];
+ int cl = 1;
+ if (c >= 0xE0 && c <= 0xEF && i + 3 <= len
+  && (unsigned char)b[i + 1] >= 0x80 && (unsigned char)b[i + 1] <= 0xBF
+  && (unsigned char)b[i + 2] >= 0x80 && (unsigned char)b[i + 2] <= 0xBF) cl = 3;
+ else if (c >= 0xC2 && c <= 0xDF && i + 2 <= len
+  && (unsigned char)b[i + 1] >= 0x80 && (unsigned char)b[i + 1] <= 0xA0) cl = 2;
+ else if (c >= 0xA1 && c <= 0xF7 && i + 2 <= len
+  && (unsigned char)b[i + 1] >= 0xA1 && (unsigned char)b[i + 1] <= 0xFE) cl = 2;
  i += cl;
  }
- b[i] = 0;
+ return i;
+}
+static void gtx_trim(char *b, int len) {
+ int keep = gtx_valid_len(b, len);
+ b[keep] = 0;
 }
 
 /* ── 文本选择 + 窗口 chrome 助手 ── */
@@ -1557,7 +1576,7 @@ int gui_win(int x, int y, int w, int h, const char *title) {
  wd->used = 1; wd->x = x; wd->y = y; wd->w = w; wd->h = h;
  wd->z = ++gui_zmax; wd->foc_wid = -1; wd->nwid = 0;
  wd->state = W_NORM; wd->rx = x; wd->ry = y; wd->rw = w; wd->rh = h;
- wd->topmost = 0;
+ wd->topmost = 0; wd->parent = -1; wd->close_guard = 0;
  gcopy(wd->title, title ? title : "", GW_TITLE);
  wd->buf = (unsigned short *)mem_alloc((unsigned)w * (unsigned)h * 2);
  if (!wd->buf) { wd->used = 0; gui_zmax--; return -1; }
@@ -1565,12 +1584,7 @@ int gui_win(int x, int y, int w, int h, const char *title) {
  int olda = active_win;
  if (olda >= 0 && olda < GW_MAXWIN && GUW[olda].used) {
  GUW[olda].active = 0;
- for (int i = 0; i < GUW[olda].nwid; i++) { /* 旧活跃窗选区塌缩 */
- gui_wid_t *od = &GUW[olda].wd[i];
- if (od->type == GW_EDIT || od->type == GW_TEXTAREA)
- od->sel_anchor = od->sel_active = 0;
- }
- gw_redraw(&GUW[olda]); /* 旧活跃窗标题转灰 */
+  gw_redraw(&GUW[olda]); /* 旧活跃窗标题转灰 */
  }
  wd->active = 1;
  active_win = k;
@@ -1623,11 +1637,6 @@ int gui_win_raise(int id) {
  if (olda != id) {
  if (olda >= 0 && olda < GW_MAXWIN && GUW[olda].used) {
  GUW[olda].active = 0;
- for (int i = 0; i < GUW[olda].nwid; i++) { /* 旧活跃窗选区塌缩 */
- gui_wid_t *od = &GUW[olda].wd[i];
- if (od->type == GW_EDIT || od->type == GW_TEXTAREA)
- od->sel_anchor = od->sel_active = 0;
- }
  }
  GUW[id].active = 1;
  active_win = id;
@@ -1643,6 +1652,20 @@ int gui_win_raise(int id) {
  gfull_force = 1; /* 切活跃立即刷 (消"卡一帧") */
  }
  gcompose();
+ return 0;
+}
+
+int gui_win_title(int id, const char *title) {
+ if (!gui_active || id < 0 || id >= GW_MAXWIN || !GUW[id].used) return -1;
+ gcopy(GUW[id].title, title ? title : "", GW_TITLE);
+ gw_redraw(&GUW[id]);
+ gcompose_expose(GUW[id].x, GUW[id].y, GUW[id].w, w_draw_h(&GUW[id]));
+ return 0;
+}
+
+int gui_win_close_guard(int id, int enabled) {
+ if (!gui_active || id < 0 || id >= GW_MAXWIN || !GUW[id].used) return -1;
+ GUW[id].close_guard = enabled ? 1 : 0;
  return 0;
 }
 
@@ -1674,6 +1697,17 @@ int gui_edit(int win, int cx, int cy, int w) {
  if (!gui_active || win < 0 || win >= GW_MAXWIN || !GUW[win].used) return -1;
  if (w > 56 * 8) w = 56 * 8; if (w < 20) w = 20;
  return gw_new(&GUW[win], GW_EDIT, cx, cy, w, 22);
+}
+
+int gui_edit_get(int win, int ctl, char *buf, int max) {
+ gui_wid_t *wd = gw_get(win, ctl);
+ if (!wd || wd->type != GW_EDIT) return -1;
+ int n = gstrlen(wd->txt);
+ if (!buf || max <= 0) return n;
+ if (n > max - 1) n = max - 1;
+ for (int i = 0; i < n; i++) buf[i] = wd->txt[i];
+ buf[n] = 0;
+ return n;
 }
 
 int gui_list(int win, int x, int y, int w, int h) {
@@ -1711,12 +1745,13 @@ int gui_tarea(int win, int x, int y, int w, int h) {
  return id;
 }
 
-/* 设文本区内容 (从 user buf 拷 len 字节, 截到 TX_SIZE, 去尾部残缺字形) */
+/* 设文本区内容 (从 user buf 拷 len 字节, 预留 NUL, 去尾部残缺字形) */
 int gui_tarea_set(int win, int ctl, const char *str, int len) {
  gui_wid_t *wd = gw_get(win, ctl);
  if (!wd || wd->type != GW_TEXTAREA) return -1;
+ if (!str) len = 0;
  if (len < 0) len = 0;
- if (len > TX_SIZE) len = TX_SIZE;
+ if (len > TX_SIZE - 1) len = TX_SIZE - 1;
  char *b = gui_txpool[wd->txid];
  for (int i = 0; i < len; i++) b[i] = str[i];
  gtx_trim(b, len);
@@ -1753,6 +1788,58 @@ int gui_tarea_info(int win, int ctl, int *out) {
  out[4] = wd->txsc + 1;
  out[5] = len;
  return 0;
+}
+
+/* 将 bytes 插入光标处；若有选择则以新内容替换。所有长度均按 UTF-8/GB 字形边界截断。 */
+int gui_tarea_insert(int win, int ctl, const char *str, int len) {
+ gui_wid_t *wd = gw_get(win, ctl);
+ if (!wd || wd->type != GW_TEXTAREA || wd->txid < 0) return -1;
+ if (!str || len < 0) len = 0;
+ char *b = gui_txpool[wd->txid];
+ int oldlen = wd->txlen, lo, hi; sel_range(wd, &lo, &hi);
+ int kept = oldlen - (hi - lo);
+ int room = TX_SIZE - 1 - kept;
+ if (room < 0) room = 0;
+ if (len > room) len = room;
+ if (len > 0) len = gtx_valid_len(str, len);
+ if (hi > lo) gtx_lshift(b, lo, hi - lo, oldlen);
+ if (len > 0) {
+  gtx_rshift(b, lo, len, kept, TX_SIZE - 1);
+  for (int i = 0; i < len; i++) b[lo + i] = str[i];
+ }
+ wd->txlen = kept + len;
+ b[wd->txlen] = 0;
+ wd->txc = lo + len;
+ wd->sel_anchor = wd->sel_active = wd->txc;
+ int ls = gtx_line_start(b, wd->txlen, wd->txc);
+ wd->txcol = gtx_px(b, ls, wd->txc, gtx_line_end(b, wd->txlen, wd->txc));
+ gw_redraw_ctl_expose(&GUW[win], ctl);
+ return wd->txlen;
+}
+
+int gui_tarea_selection_get(int win, int ctl, char *buf, int max) {
+ gui_wid_t *wd = gw_get(win, ctl);
+ if (!wd || wd->type != GW_TEXTAREA || wd->txid < 0) return -1;
+ int lo, hi; sel_range(wd, &lo, &hi);
+ int n = hi - lo;
+ if (!buf || max <= 0) return n;
+ const char *src = gui_txpool[wd->txid];
+ if (n > max - 1) n = gtx_valid_len(src + lo, max - 1);
+ for (int i = 0; i < n; i++) buf[i] = src[lo + i];
+ buf[n] = 0;
+ return n;
+}
+
+int gui_tarea_select_all(int win, int ctl) {
+ gui_wid_t *wd = gw_get(win, ctl);
+ if (!wd || wd->type != GW_TEXTAREA || wd->txid < 0) return -1;
+ wd->sel_anchor = 0;
+ wd->sel_active = wd->txc = wd->txlen;
+ int ls = gtx_line_start(gui_txpool[wd->txid], wd->txlen, wd->txc);
+ wd->txcol = gtx_px(gui_txpool[wd->txid], ls, wd->txc,
+  gtx_line_end(gui_txpool[wd->txid], wd->txlen, wd->txc));
+ gw_redraw_ctl_expose(&GUW[win], ctl);
+ return wd->txlen;
 }
 
 int gui_list_set(int win, int ctl, const char *str) {
@@ -1989,12 +2076,12 @@ int gui_tarea_char(int win, int ctl, int ch) {
  gtx_lshift(buf, c - d, d, len); len -= d; c -= d;
  }
  } else if (ch == '\n' || ch == '\r') { /* 回车: 光标处换行 */
- if (len < TX_SIZE) {
+ if (len < TX_SIZE - 1) {
  gtx_rshift(buf, c, 1, len, TX_SIZE);
  buf[c] = '\n'; c++; len++; wd->txcol = 0;
  }
  } else if (ch >= 0x20 && ch <= 0x7E) { /* 可打印: 光标处插入 */
- if (len < TX_SIZE) {
+ if (len < TX_SIZE - 1) {
  gtx_rshift(buf, c, 1, len, TX_SIZE);
  buf[c] = (char)ch; c++; len++;
  }
@@ -2038,10 +2125,14 @@ int gui_text(int win, int x, int y, const char *str) {
 }
 
 int gui_dialog(int parent, int w, int h, const char *title) {
- (void)parent;
  if (!gui_active) return -1;
  int sw = fb_vbe_w(), sh = gui_buf_h;
- return gui_win((sw - w) / 2, (sh - h) / 2, w, h, title ? title : "消息");
+ int id = gui_win((sw - w) / 2, (sh - h) / 2, w, h, title ? title : "消息");
+ if (id >= 0) {
+  GUW[id].parent = (parent >= 0 && parent < GW_MAXWIN && GUW[parent].used) ? parent : -1;
+  GUW[id].topmost = 1;
+ }
+ return id;
 }
 
 /* 事件轮询: 每批最多 max 个 gui_ev_t {type,win,ctl,ch}。 */
@@ -2210,15 +2301,27 @@ int gui_events(void *buf, int max) {
   && my >= gui_mb.pop_y && my < gui_mb.pop_y + gui_mb.pop_h);
  if (pop_hit && gui_mb.win >= 0 && gui_mb.win < GW_MAXWIN && GUW[gui_mb.win].used) {
   top = gui_mb.win; /* 弹层可能伸出窗沿, 不能靠几何命中判定 */
- } else {
-  for (int k = 0; k < GW_MAXWIN; k++) {
+  } else {
+   int modal = -1, modalz = -1;
+   for (int k = 0; k < GW_MAXWIN; k++)
+   if (GUW[k].used && GUW[k].topmost && GUW[k].z > modalz) {
+    modal = k; modalz = GUW[k].z;
+   }
+   if (modal >= 0) {
+    gui_win_t *mw = &GUW[modal];
+    if (mx >= mw->x && mx < mw->x + mw->w && my >= mw->y && my < mw->y + w_draw_h(mw))
+    top = modal;
+    else { gui_win_raise(modal); goto kbd; }
+   } else {
+   for (int k = 0; k < GW_MAXWIN; k++) {
   gui_win_t *w = &GUW[k];
   if (!w->used) continue;
   /* 可见高度用 w_draw_h: 最小化条只占 18px, 不可见主体不得命中 */
   if (mx >= w->x && mx < w->x + w->w && my >= w->y && my < w->y + w_draw_h(w))
-  if (w->z > topz) { topz = w->z; top = k; }
+   if (w->z > topz) { topz = w->z; top = k; }
+   }
+   }
   }
- }
  if (top >= 0) {
  gui_win_t *w = &GUW[top];
  int in_title = (my >= w->y && my < w->y + 18);
@@ -2242,19 +2345,7 @@ int gui_events(void *buf, int max) {
  /* 点在活跃窗口 → 正常处理 (raise), 绝不下落到下层窗 */
  w->z = ++gui_zmax;
  }
- if (foc_win != active_win && active_win >= 0 && active_win < GW_MAXWIN
- && GUW[active_win].used) {
- gui_win_t *ow = &GUW[foc_win]; /* 焦点变更 → 塌缩旧窗选区 */
- if (foc_win >= 0 && foc_win < GW_MAXWIN && ow->used) {
- for (int i = 0; i < ow->nwid; i++) {
- gui_wid_t *od = &ow->wd[i];
- if (od->type == GW_EDIT || od->type == GW_TEXTAREA)
- od->sel_anchor = od->sel_active = 0;
- }
- gw_redraw(ow); need_full = 1; /* 旧窗重画(去选区) + 标题转灰 */
- }
- }
- foc_win = active_win; /* 键盘焦点始终跟随活跃窗口 */
+  foc_win = active_win; /* 键盘焦点始终跟随活跃窗口 */
 
  int chrome_x = w->x + w->w - CHROME_N * CHROME_W;
 
@@ -2315,11 +2406,12 @@ int gui_events(void *buf, int max) {
  else
  gcompose();
  goto kbd;
- } else if (ci == 2) { /* ✕ 关闭: 立即关窗 + 通知程序 */
- gui_win_close(top);
- if (n < max) { ev[0] = GEV_CLOSE; ev[1] = top; ev[2] = 0; ev[3] = 0;
- n += 4; ev += 4; }
- gcompose();
+  } else if (ci == 2) { /* ✕ 关闭: 立即关窗 + 通知程序 */
+  int guarded = w->close_guard;
+  if (!guarded) gui_win_close(top);
+  if (n < max) { ev[0] = GEV_CLOSE; ev[1] = top; ev[2] = 0; ev[3] = 0;
+  n += 4; ev += 4; }
+  if (!guarded) gcompose();
  goto kbd;
  }
  }
@@ -2396,12 +2488,7 @@ int gui_events(void *buf, int max) {
  if (ctl >= 0) {
  gui_wid_t *g = &w->wd[ctl];
  int old_focus = w->foc_wid;
- for (int i = 0; i < w->nwid; i++) {
- gui_wid_t *od = &w->wd[i];
- if ((od->type == GW_EDIT || od->type == GW_TEXTAREA) && i != ctl)
- od->sel_anchor = od->sel_active = 0;
- }
- if (g->type == GW_EDIT) {
+  if (g->type == GW_EDIT) {
  w->foc_wid = ctl;
  g->caret = gcaret_from_px(g->txt,
  mx - (w->x + g->x) - 3);
@@ -2481,15 +2568,10 @@ int gui_events(void *buf, int max) {
   gcompose_expose(w->x, w->y, w->w, w_draw_h(w));
  } else if (need_full || g->type == GW_RADIO) gw_redraw(w);
  else gw_redraw_ctl_pair(w, old_focus, w->foc_wid);
- } else {
- int old_focus = w->foc_wid;
- w->foc_wid = -1;
- for (int i = 0; i < w->nwid; i++) {
- gui_wid_t *od = &w->wd[i];
- if (od->type == GW_EDIT || od->type == GW_TEXTAREA)
- od->sel_anchor = od->sel_active = 0;
- }
- if (need_full) gw_redraw(w); /* 跨窗激活仍需更新标题/遮挡 */
+  } else {
+  int old_focus = w->foc_wid;
+  w->foc_wid = -1;
+  if (need_full) gw_redraw(w); /* 跨窗激活仍需更新标题/遮挡 */
  else gw_redraw_ctl_expose(w, old_focus); /* 同窗空白点击只清旧焦点 */
  }
  if (need_full) dirty_win = -1; /* 焦点变更塌扩了旧窗 → 整屏重合成 */

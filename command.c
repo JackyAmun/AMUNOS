@@ -42,7 +42,7 @@ static void put_fatname(const char *n8, const char *e3){
         for(int i=0;i<3 && e3[i] && e3[i]!=' ';i++) buf[k++] = e3[i];
     }
     buf[k] = 0;
-    put_cjk_str((const unsigned char*)buf, 0x07);
+    put_cjk_str((const unsigned char*)buf, 0x0E);
 }
 
 /* ── DIR ── */
@@ -59,7 +59,7 @@ void cmd_dir(char* arg){
         if(b[i].name[0]=='.'&&(b[i].attr&0x10)){put_str(b[i].name[1]==' '?".  <DIR>\n":".. <DIR>\n");shown++;line++;continue;}
         put_fatname(b[i].name, b[i].ext);
         if(!wide){put_str("  ");if(b[i].attr&0x10)put_str("<DIR>         ");else{put_str("      ");put_num(b[i].size);put_str(" B");}}
-        put_char('\n',0x07);shown++;line++;
+        put_char('\n',0x0E);shown++;line++;
         if(page && line >= 21){
             put_str("-- Press any key to continue (Ctrl+C to stop) --\n");
             if(!wait_key_or_abort()) goto ed;
@@ -138,8 +138,8 @@ void cmd_type(char* arg){
         put_str("Disk read error.\n"); return;
     }
     if(od>=0)fs_drive_restore(octx);
-    put_cjk_str((const unsigned char*)b,0x07);   /* GB2312 感知: 中文文件也能显示 (v6.8) */
-    put_char('\n',0x07);
+    put_cjk_str((const unsigned char*)b,0x0E);   /* GB2312 感知: 中文文件也能显示 (v6.8) */
+    put_char('\n',0x0E);
     mem_free(b);
 }
 
@@ -153,7 +153,7 @@ void cmd_echo(char* arg){
         int dc=fs_resolve_path(g);if(dc<0){if(od>=0)fs_drive_restore(octx);put_str("Not found.\n");return;}
         if(fs_create_file_in_dir(dc,g,t,tl)==0)put_str("Written.\n");
         if(od>=0)fs_drive_restore(octx);}
-    else{put_str(arg);put_char('\n',0x07);}
+    else{put_str(arg);put_char('\n',0x0E);}
 }
 
 /* ── SER / LPT — 串口/并口输出 (v6.5) ──
@@ -262,16 +262,16 @@ void cmd_zh(){
         "AMUNOS"
         "\xA1\xA3\xD6\xD0\xCE\xC4\xD6\xA7\xB3\xD6";  /* 。中文支持 */
     if (fb_active()) {
-        put_cjk_str(s, 0x0F);               /* 白字黑底, 画到当前光标行 (可见区) */
-        put_char('\n', 0x07);
+        put_cjk_str(s, 0x0E);
+        put_char('\n', 0x0E);
         put_str("zh: CJK rendered\n");
     } else {
         put_str("zh: no graphics (fb inactive)\n");
     }
 }
 static unsigned char r(unsigned char r){io_out8(0x70,r);return io_in8(0x71);}
-static void pb(unsigned char v){put_char('0'+((v>>4)&0x0F),0x07);put_char('0'+(v&0x0F),0x07);}
-void cmd_time(){pb(r(0x04));put_char(':',0x07);pb(r(0x02));put_char(':',0x07);pb(r(0x00));put_str(" ");pb(r(0x09));put_char('-',0x07);pb(r(0x08));put_char('-',0x07);pb(r(0x07));put_char('\n',0x07);}
+static void pb(unsigned char v){put_char('0'+((v>>4)&0x0F),0x0E);put_char('0'+(v&0x0F),0x0E);}
+void cmd_time(){pb(r(0x04));put_char(':',0x0E);pb(r(0x02));put_char(':',0x0E);pb(r(0x00));put_str(" ");pb(r(0x09));put_char('-',0x0E);pb(r(0x08));put_char('-',0x0E);pb(r(0x07));put_char('\n',0x0E);}
 
 /* ── HELP ── */
 void cmd_help(char* arg){
@@ -327,14 +327,14 @@ void cmd_help(char* arg){
     int nlines = (int)(sizeof(h)/sizeof(h[0]));
     int lc = 0;
     for (int i = 0; i < nlines; i++) {
-        put_str(h[i]);put_char('\n',0x07);lc++;
+        put_str(h[i]);put_char('\n',0x0E);lc++;
         if (page && lc >= 20) {
             put_str("-- Press any key to continue (Ctrl+C to stop) --\n");
             if(!wait_key_or_abort()){put_str("\n");return;}
             lc = 0;
         }
     }
-    put_char('\n',0x07);
+    put_char('\n',0x0E);
 }
 
 /* ── ELF: 加载并运行静态 ELF 可执行文件 (v6.5) ── */
@@ -343,7 +343,7 @@ static void put_hex(unsigned n){
     char b[9]; int i=0;
     do{ b[i++]=d[n&0xF]; n>>=4; }while(n);
     put_str("0x");
-    while(i>0) put_char(b[--i],0x07);
+    while(i>0) put_char(b[--i],0x0E);
 }
 
 /* ── argv 块 (供 crt0.S 的 _start 读取) ──
@@ -440,7 +440,7 @@ void cmd_elf(char* arg){
         key_pressed = 0;       /* 消费 Ctrl+C 事件, 避免 REPL 重复清行 */
         put_str("^C terminated\n");
     } else {
-        put_str("exit="); put_num((unsigned)prog_exit_status); put_char('\n', 0x07);
+        put_str("exit="); put_num((unsigned)prog_exit_status); put_char('\n', 0x0E);
     }
 }
 
@@ -469,7 +469,7 @@ void cmd_tcc(char* arg){
     full[n] = 0;
     cmd_elf(full);
     unsigned dt = task_ticks() - t0;
-    put_str("TCC done (");put_num(dt/100);put_char('.',0x07);put_num((dt/10)%10);put_str("s)\n");
+    put_str("TCC done (");put_num(dt/100);put_char('.',0x0E);put_num((dt/10)%10);put_str("s)\n");
 }
 
 /* ═══════════════ DISPATCH ═══════════════ */

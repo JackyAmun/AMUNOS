@@ -105,6 +105,7 @@ enum commands {
     ID_TEXTURE,
 	ID_SNOWY,
     ID_COLOR,
+    ID_BLUE,
     ID_MONO,
     ID_REVERSE,
     ID_25LINES,

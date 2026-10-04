@@ -44,7 +44,7 @@ make run-trio-gui               # QEMU 三盘图形运行
 
 ## 3. 测试习惯（像素级回归）
 
-- 每轮 GUI 改动后跑 `python3 validate_gui.py`（16 项，QEMU headless + monitor
+- 每轮 GUI 改动后跑 `make gui-check`（360 秒上限、逐阶段输出；QEMU headless + monitor
   `sendkey`/`mouse_move` 注入 + `pmemsave` 抓帧断言），要求 16/16 OVERALL PASS。
 - 其他回归：`validate_zh.py` / `validate_editzh.py` / `validate_box.py` /
   `validate_menupopup.py`。

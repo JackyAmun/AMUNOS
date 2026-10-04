@@ -9,7 +9,7 @@ BOOTFLAGS   = -f bin
 CFLAGS      = -m32 -c -fno-builtin -ffreestanding -fno-pie -std=gnu99 -I.
 LDFLAGS     = -m elf_i386 -T linker.ld
 
-OBJS = head.o kernel.o command.o fault.o mem.o syscall.o task.o vga.o kbd.o idt.o mouse.o fs.o disk_io.o dev.o fdc.o atapi.o iso9660.o ahci.o elf.o serial.o fb.o gui.o
+OBJS = head.o kernel.o command.o fault.o mem.o syscall.o task.o vga.o kbd.o idt.o mouse.o fs.o disk_io.o dev.o fdc.o atapi.o iso9660.o ahci.o elf.o serial.o fb.o
 
 BOOT_BIN   = boot.bin
 KERNEL_BIN = kernel.bin
@@ -19,13 +19,11 @@ C_IMG      = C.img
 HELLO_ELF  = hello.elf
 INP_ELF    = inp.elf
 EDIT_ELF   = edit.elf
-GUI_ELF    = gui-demo.elf
 SYSINFO_ELF = sysinfo.elf
-WRITE_ELF = write.elf
+DFLAT_ELF = dflat-demo.elf
 CRT_OBJS   = libc/crt1.o libc/crti.o libc/crtn.o
 
-.PHONY: all clean run run-gui run-dual run-dual-gui run-serial \
-        run-trio run-trio-gui run-trio-serial run-floppy floppy
+.PHONY: all clean run run-dual run-serial run-trio run-trio-serial run-floppy floppy
 
 all: $(A_IMG)
 
@@ -44,7 +42,9 @@ $(KERNEL_BIN): $(OBJS) linker.ld
 # 避免内核 fb_font_init 加载不到 U2GB → UTF-8 汉字全画成 □。
 u2gb.bin: gen_u2gb.py
 	python3 gen_u2gb.py
-$(A_IMG): $(BOOT_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) $(GUI_ELF) $(SYSINFO_ELF) $(WRITE_ELF) $(CRT_OBJS) mka_img.py u2gb.bin
+# Release image intentionally ships the text stack only. GUI sources and
+# the previous build configuration are preserved in the GUI archive.
+$(A_IMG): $(BOOT_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) $(SYSINFO_ELF) $(DFLAT_ELF) $(CRT_OBJS) mka_img.py u2gb.bin
 	@echo "[IMG] Building A.img..."
 	python3 mka_img.py $@
 
@@ -105,18 +105,28 @@ $(EDIT_ELF): $(EDIT_SRCS) libc/libc.a libc/crt0.o
 	rm -rf .edit-obj
 	@echo "[EDIT.ELF] size: $$(wc -c < edit.elf) bytes"
 
-# ── GUI 控件库演示 (v6.9, 用户态, 内核图形 syscall 28-43) ──
-$(GUI_ELF): gui/gui-demo.c libc/libc.a libc/crt0.o
-	@echo "[ELF] Building gui/gui-demo.c -> gui-demo.elf (libc-linked)"
-	rm -rf .gui-obj && mkdir -p .gui-obj
+# ── DFLAT 控件展示 (复用 EDIT 的 DFLAT 控件/消息循环, 独立入口) ──
+DFLAT_SRCS = $(filter-out edit-fdos/source/edit.c,$(EDIT_SRCS))
+DFLAT_OBJS = $(addprefix .dflat-obj/,$(notdir $(DFLAT_SRCS:.c=.o))) .dflat-obj/demo.o
+$(DFLAT_ELF): edit-fdos/demo.c $(DFLAT_SRCS) libc/libc.a libc/crt0.o
+	@echo "[ELF] Building DFLAT control showcase -> dflat-demo.elf"
+	mkdir -p .dflat-obj
+	for f in $(DFLAT_SRCS); do \
+	  gcc -m32 -ffreestanding -fno-builtin -fno-pie -fno-stack-protector \
+	      -fno-asynchronous-unwind-tables -fno-unwind-tables -nostdinc \
+	      -I libc -I edit-fdos/source -funsigned-char -c $$f \
+	      -o .dflat-obj/$$(basename $$f .c).o || exit 1; \
+	done
 	gcc -m32 -ffreestanding -fno-builtin -fno-pie -fno-stack-protector \
 	    -fno-asynchronous-unwind-tables -fno-unwind-tables -nostdinc \
-	    -I libc -c gui/gui-demo.c -o .gui-obj/gui-demo.o
+	    -I libc -I edit-fdos/source -funsigned-char -c edit-fdos/demo.c \
+	    -o .dflat-obj/demo.o
 	LIBGCC=$$(gcc -m32 -print-libgcc-file-name); \
 	ld -m elf_i386 -no-pie -T libc/link.ld -nostdlib -static \
-	    libc/crt0.o .gui-obj/gui-demo.o libc/libc.a $$LIBGCC -o gui-demo.elf
-	rm -rf .gui-obj
-	@echo "[GUI.ELF] size: $$(wc -c < gui-demo.elf) bytes"
+	    libc/crt0.o $(DFLAT_OBJS) libc/libc.a $$LIBGCC -o $@
+	rm -f $(DFLAT_OBJS)
+	rmdir .dflat-obj 2>/dev/null || true
+	@echo "[DFLAT.ELF] size: $$(wc -c < $@) bytes"
 
 $(SYSINFO_ELF): sysinfo.c libc/libc.a libc/crt0.o
 	@echo "[ELF] Building sysinfo.c -> sysinfo.elf (libc-linked)"
@@ -127,16 +137,6 @@ $(SYSINFO_ELF): sysinfo.c libc/libc.a libc/crt0.o
 	ld -m elf_i386 -no-pie -T libc/link.ld -nostdlib -static \
 	    libc/crt0.o sysinfo.o libc/libc.a $$LIBGCC -o sysinfo.elf
 	@echo "[SYSINFO.ELF] size: $$(wc -c < sysinfo.elf) bytes"
-
-$(WRITE_ELF): write.c libc/libc.a libc/crt0.o
-	@echo "[ELF] Building write.c -> write.elf (libc-linked)"
-	gcc -m32 -ffreestanding -fno-builtin -fno-pie -fno-stack-protector \
-	    -fno-asynchronous-unwind-tables -fno-unwind-tables -nostdinc \
-	    -I libc -c write.c -o write.o
-	LIBGCC=$$(gcc -m32 -print-libgcc-file-name); \
-	ld -m elf_i386 -no-pie -T libc/link.ld -nostdlib -static \
-	    libc/crt0.o write.o libc/libc.a $$LIBGCC -o write.elf
-	@echo "[WRITE.ELF] size: $$(wc -c < write.elf) bytes"
 
 # ── Compile rules ──
 %.o: %.c common.h
@@ -151,14 +151,8 @@ $(WRITE_ELF): write.c libc/libc.a libc/crt0.o
 run: $(A_IMG)
 	qemu-system-i386 -hda $(A_IMG) -nographic
 
-run-gui: $(A_IMG)
-	qemu-system-i386 -hda $(A_IMG)
-
 run-dual: $(A_IMG) $(B_IMG)
 	qemu-system-i386 -hda $(A_IMG) -hdb $(B_IMG) -nographic
-
-run-dual-gui: $(A_IMG) $(B_IMG)
-	qemu-system-i386 -rtc base=localtime -hda $(A_IMG) -hdb $(B_IMG)
 
 # ── 串口远程控制台运行 (v6.5): 交互式串口, 另开终端 ./serial-console.sh 连接 ──
 run-serial: $(A_IMG) $(B_IMG)
@@ -172,9 +166,6 @@ run-trio: $(A_IMG) $(B_IMG) $(C_IMG)
 	qemu-system-i386 -rtc base=localtime -hda $(A_IMG) -hdb $(B_IMG) -hdc $(C_IMG) -nographic
 
 # v6.7: 去掉 -show-cursor — 鼠标指针由内核软件叠加 '█' 绘制
-run-trio-gui: $(A_IMG) $(B_IMG) $(C_IMG)
-	qemu-system-i386 -rtc base=localtime -hda $(A_IMG) -hdb $(B_IMG) -hdc $(C_IMG)
-
 run-trio-serial: $(A_IMG) $(B_IMG) $(C_IMG)
 	qemu-system-i386 -nographic -rtc base=localtime -hda $(A_IMG) -hdb $(B_IMG) -hdc $(C_IMG) \
 	  -monitor telnet:127.0.0.1:45454,server,nowait \

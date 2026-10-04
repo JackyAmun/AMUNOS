@@ -62,7 +62,7 @@ static char sys_clipboard[2048];
 static int sys_clipboard_len = 0;
 
 /* ── 旧 syscall ── */
-static int sys_putchar(int c) { put_char((char)c, 0x0F); return 0; }
+static int sys_putchar(int c) { put_char((char)c, 0x0E); return 0; }
 
 /* 读一个键盘字符: 带回显 + 回车→'\n' + 退格→'\b'。
  * 阻塞等待; hlt 让出 CPU (定时器 10ms 唤醒后重试), 避免忙等空转。 */
@@ -76,17 +76,17 @@ static int kbd_read_char(void) {
  }
  key_pressed = 0;
  if (kp == 1) { /* 可打印字符: 回显 */
- put_char(current_char, 0x0F);
+ put_char(current_char, 0x0E);
  return current_char;
  }
  if (kp == 2) { /* 回车 → 换行 */
- put_char('\n', 0x07);
+ put_char('\n', 0x0E);
  return '\n';
  }
  if (kp == 3) { /* 退格: 视觉擦除 + 返回 '\b' */
- put_char('\b', 0x07);
- put_char(' ', 0x07);
- put_char('\b', 0x07);
+ put_char('\b', 0x0E);
+ put_char(' ', 0x0E);
+ put_char('\b', 0x0E);
  return '\b';
  }
  /* 其它键 (方向键/ESC 等) 忽略, 继续等 */
@@ -236,7 +236,7 @@ static int sys_read(int fd, void *buf, int len) {
 static int sys_write(int fd, const void *buf, int len) {
  if (fd == 1 || fd == 2) { /* 控制台输出 */
  const char *p = (const char*)buf;
- for (int i = 0; i < len; i++) put_char(p[i], 0x0F);
+ for (int i = 0; i < len; i++) put_char(p[i], 0x0E);
  return len;
  }
  if (fd == 0) return -1;
@@ -296,7 +296,6 @@ static void close_all_fds(void) {
 static void prog_cleanup(void) {
  close_all_fds();
  user_break = USER_BRK_BASE;
- if (gui_active) gui_leave(); /* GUI 演示退出/被强杀 → 回 shell 文本渲染 */
 }
 
 /* ── 13. exit ── */
@@ -444,7 +443,6 @@ int sys_collect_info(sysinfo_t *out) {
  out->fs_root_lba = fs_root_lba;
  out->fs_data_lba = fs_data_lba;
  out->fb_active = fb_active();
- out->gui_active = gui_active;
  for (int i = 0; i < 7; i++) {
   out->dev_present[i] = devs[i].present;
   out->dev_sectors[i] = devs[i].sectors;
@@ -561,6 +559,8 @@ void syscall_handler(unsigned *frame) {
  * EDIT 等把 UTF-8 字符转成 HZK16 可渲染的 GB 码。 */
  result = (int)fb_uni_to_gb((unsigned)a1);
  break;
+ /* GUI syscall range 28-58 is retired; DFLAT owns the active text UI. */
+#if 0
  case 28: result = gui_enter(); break;
  case 29: gui_leave(); result = 0; break;
  case 30: result = gui_win(a1 & 0xFFFF, (a1 >> 16) & 0xFFFF,
@@ -576,8 +576,16 @@ void syscall_handler(unsigned *frame) {
  case 57: result = gui_scrollbar_set(a1 & 0xFF, (a1 >> 8) & 0xFF,
   a2 & 0xFFFF, (a2 >> 16) & 0xFFFF, a3 & 0xFFFF, (a3 >> 16) & 0xFFFF); break;
  case 58: result = gui_tarea_info(a1 & 0xFF, (a1 >> 8) & 0xFF, (int*)a2); break;
+#endif
  case 59: result = sys_clip_set((const char*)a1, a2); break;
  case 60: result = sys_clip_get((char*)a1, a2); break;
+#if 0
+ case 62: result = gui_tarea_insert(a1 & 0xFF, (a1 >> 8) & 0xFF, (const char*)a2, a3); break;
+ case 63: result = gui_tarea_selection_get(a1 & 0xFF, (a1 >> 8) & 0xFF, (char*)a2, a3); break;
+ case 64: result = gui_tarea_select_all(a1 & 0xFF, (a1 >> 8) & 0xFF); break;
+ case 65: result = gui_win_title(a1, (const char*)a2); break;
+ case 66: result = gui_edit_get(a1 & 0xFF, (a1 >> 8) & 0xFF, (char*)a2, a3); break;
+ case 67: result = gui_win_close_guard(a1, a2); break;
  case 36: result = gui_edit(a1, a2 & 0xFFFF, (a2 >> 16) & 0xFFFF, a3 & 0xFFFF); break;
  case 37: result = gui_list(a1, a2 & 0xFFFF, (a2 >> 16) & 0xFFFF,
  a3 & 0xFFFF, (a3 >> 16) & 0xFFFF); break;
@@ -619,16 +627,27 @@ void syscall_handler(unsigned *frame) {
  case 52: result = gui_menubar(a1); break;
  case 53: result = gui_menu_add(a1 & 0xFFFF, a2, (const char*)a3); break;
  case 54: result = gui_menu_item(a1, a2 & 0xFFFF, (a2 >> 16) & 0xFFFF, (const char*)a3); break;
+#endif
  case 61: result = sys_collect_info((sysinfo_t*)a1); break;
  case 27: { /* SYS_CJKWCHAR: 在绝对格 (x,y) 放一个汉字 (占两格).
  * a1=x a2=y; packed 低16=GB 码 (0=替换框□), 高位=attr.
  * EDIT 文本行渲染用它把中文字节画成真实汉字。 */
  unsigned packed = (unsigned)a3;
  vga_cjk_place_gb((int)a1, (int)a2, packed & 0xFFFFu,
- (int)((packed >> 16) & 0x0F), (int)((packed >> 20) & 0x07));
+ (int)((packed >> 16) & 0x0F), (int)((packed >> 20) & 0x0F));
  result = 0;
  break;
  }
+ case 74: /* SYS_CJKCLEAR: DFLAT 覆盖字符前清除汉字左/右格标记 */
+ vga_cjk_ascii((int)a1, (int)a2);
+ result = 0;
+ break;
+ case 68: result = dflat_cursor_set(a1, a2, a3); break;
+ case 69: result = dflat_cursor_get((int*)a1); break;
+ case 70: result = dflat_cursor_push(); break;
+ case 71: result = dflat_cursor_pop(); break;
+ case 72: result = dflat_cursor_visible(a1); break;
+ case 73: result = dflat_cursor_swap(); break;
  default: result = -1; break;
  }
 

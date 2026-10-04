@@ -20,29 +20,50 @@ static int altconvert[] = {
 unsigned video_mode;
 unsigned video_page;
 
-static int cursorpos[MAXSAVES];
-static int cursorshape[MAXSAVES];
-static int cs;
-
 /* ── AMUNOS 平台后端 ────────────────────────────────────── */
 
 /* 光标位置/形状的当前值 (setcursor/set_cursor_type 维护,
  * getcursor/savecursor/restorecursor 查询) */
-static int cur_x, cur_y, cur_shape;
+static int cur_x, cur_y, cur_shape = 0x0E0F;
+
+static int cursor_style(unsigned shape)
+{
+    if (shape == 0x0E0F)
+        return 0;               /* DFLAT underline */
+    if (shape == 0x0607)
+        return 1;               /* DFLAT insert-bar */
+    if (shape == 0x0106)
+        return 2;               /* DFLAT block */
+    if (shape == 0)
+        return 0;
+    return 2;                   /* DFLAT block */
+}
 
 /* 画软件输入光标 '|': 调 sys_cur → 内核叠加层写 0xB8000 对应格 (v6.7)。
  * 不再写 0x3D4/0x3D5 — 硬件文本光标被内核隐藏, 统一由软件 '|' 表示。 */
 static void setcursor(int x, int y)
 {
+    int state[4];
+    if (x < 0) x = 0;
+    if (x >= SCREENWIDTH) x = SCREENWIDTH - 1;
+    if (y < 0) y = 0;
+    if (y >= SCREENHEIGHT) y = SCREENHEIGHT - 1;
     cur_x = x;
     cur_y = y;
-    sys_cur(x, y);
+    sys_dflat_cursor_set(x, y, cursor_style((unsigned)cur_shape));
+    if (sys_dflat_cursor_get(state) == 0) {
+        cur_x = state[0]; cur_y = state[1];
+    }
 }
 
-/* 读光标: 位置/形状用本地跟踪值, 不读端口 (硬件光标已隐藏, 端口无有效值) */
+/* 读内核当前状态，避免 DFLAT 的焦点光标与叠加层位置失步。 */
 static void getcursor(void)
 {
-    /* cur_x/cur_y/cur_shape 由 setcursor/set_cursor_type 持续维护 */
+    int state[4];
+    if (sys_dflat_cursor_get(state) == 0) {
+        cur_x = state[0]; cur_y = state[1];
+        cur_shape = state[2] == 0 ? 0x0E0F : state[2] == 1 ? 0x0607 : 0x0106;
+    }
 }
 
 /* ------------- clear the screen -------------- */
@@ -58,10 +79,7 @@ void clearscreen(void)
 
 void SwapCursorStack(void)
 {
-    if (cs > 1)	{
-        swap(cursorpos[cs-2], cursorpos[cs-1]);
-        swap(cursorshape[cs-2], cursorshape[cs-1]);
-    }
+    sys_dflat_cursor_swap();
 }
 
 /* ---- Test for keystroke ----
@@ -162,13 +180,13 @@ void videomode(void)
 /* ------ position the cursor ------ */
 void cursor(int x, int y)
 {
-    if (y >= SCREENHEIGHT) y = SCREENHEIGHT - 1; /* 0.7c */
     setcursor(x, y);
 }
 
 /* ------- get the current cursor position ------- */
 void curr_cursor(int *x, int *y)
 {
+    if (!x || !y) return;
     getcursor();
     *x = cur_x;
     *y = cur_y;
@@ -177,26 +195,14 @@ void curr_cursor(int *x, int *y)
 /* ------ save the current cursor configuration ------ */
 void savecursor(void)
 {
-    if (cs < MAXSAVES)    {
-        getcursor();
-        cursorshape[cs] = cur_shape;
-        cursorpos[cs] = cur_y * SCREENWIDTH + cur_x;
-        cs++;
-    }
+    sys_dflat_cursor_push();
 }
 
 /* ---- restore the saved cursor configuration ---- */
 void restorecursor(void)
 {
-    if (cs)    {
-        --cs;
-        int y = cursorpos[cs] / SCREENWIDTH;
-        int x = cursorpos[cs] % SCREENWIDTH;
-        if (y >= SCREENHEIGHT)
-            y = SCREENHEIGHT - 1;	/* 0.7c */
-        setcursor(x, y);
-        set_cursor_type(cursorshape[cs]);
-    }
+    sys_dflat_cursor_pop();
+    getcursor();
 }
 
 /* ------ make a normal cursor ------
@@ -210,19 +216,21 @@ void normalcursor(void)
 /* ------ hide the cursor ------ */
 void hidecursor(void)
 {
-    sys_curhide();      /* 内核叠加层把 '|' 从屏上抹掉 (位置已记, 可恢复) */
+    sys_dflat_cursor_visible(0);
 }
 
 /* ------ unhide the cursor ------ */
 void unhidecursor(void)
 {
-    sys_curshow();      /* 在内核记住的最后位置重画 '|' */
+    sys_dflat_cursor_visible(1);
 }
 
-/* ---- set the cursor type: 形状仅记录, 不写端口 (内核统一画 '|') ---- */
+/* ---- set cursor position and shape atomically in the kernel ---- */
 void set_cursor_type(unsigned t)
 {
+    getcursor();
     cur_shape = t;
+    sys_dflat_cursor_set(cur_x, cur_y, cursor_style(t));
 }
 
 /* ---- set underline cursor ---- */
@@ -248,7 +256,7 @@ BOOL isVGA(void)
     return TRUE;
 }
 
-/* ---------- 行数切换: AMUNOS 固定 80x25, 空操作 ---------- */
+/* ---------- 行数切换: AMUNOS 固定 80x30 ---------- */
 void Set25(void) { clearscreen(); }
 void Set43(void) { clearscreen(); }
 void Set50(void) { clearscreen(); }

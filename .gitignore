@@ -30,6 +30,7 @@ lpt.log
 # ── QEMU 验证产物 (vga dump / 串口日志) ──
 vga.*.bin
 *.serial
+gui-check.log
 
 # ── VMware 虚拟机文件 (vmx/vmdk/日志, 机器相关) ──
 VMware/

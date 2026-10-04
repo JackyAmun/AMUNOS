@@ -16,6 +16,7 @@ enum grounds { FG, BG };
 typedef struct config {
     char version[sizeof VERSION];
     char mono;         /* 0=color, 1=mono, 2=reverse mono    */
+    char theme;        /* Color theme: 0=amber, 1=blue       */
 	BOOL snowy;        /* TRUE = snowy CGA display           */
     BOOL InsertMode;   /* Editor insert mode                 */
     int Tabs;          /* Editor tab stops                   */
@@ -26,7 +27,7 @@ typedef struct config {
 	BOOL StatusBar;    /* True for appl'n window status bar  */
 #endif
     BOOL Texture;      /* True for textured appl window      */
-    int ScreenLines;   /* Number of screen lines (25/43/50)  */
+    int ScreenLines;   /* AMUNOS fixed text screen height    */
 	char PrinterPort[5];
 	int LinesPage;     /* Lines per printer page             */
 	int CharsLine;	   /* Characters per printer line        */
@@ -44,4 +45,3 @@ extern unsigned char bw[CLASSCOUNT] [4] [2];
 extern unsigned char reverse[CLASSCOUNT] [4] [2];
 
 #endif
-
