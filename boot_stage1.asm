@@ -80,6 +80,12 @@ boot_code:
     jc .fail
 
 .loaded:
+    mov ax, 0xB800
+    mov es, ax
+    mov byte [es:0], '1'
+    mov byte [es:1], 0x0E
+    xor ax, ax
+    mov es, ax
     mov dl, [bpb_drive_num]
     jmp 0x0800:0x0000
 

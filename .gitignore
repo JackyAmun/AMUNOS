@@ -2,6 +2,7 @@
 *.o
 *.bin
 *.img
+*.vmdk
 *.vol
 *.flp
 *.elf

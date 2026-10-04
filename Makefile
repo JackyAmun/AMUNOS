@@ -17,6 +17,8 @@ KERNEL_BIN = kernel.bin
 A_IMG      = A.img
 B_IMG      = B.img
 C_IMG      = C.img
+B_VMDK     = B.vmdk
+C_VMDK     = C.vmdk
 HELLO_ELF  = hello.elf
 INP_ELF    = inp.elf
 EDIT_ELF   = edit.elf
@@ -28,7 +30,7 @@ INSTALL_ELF = sysinstall/sysinstall.elf
 INSTALL_IMG = AMUNOS.flp
 CRT_OBJS   = libc/crt1.o libc/crti.o libc/crtn.o
 
-.PHONY: all clean run run-gui run-net run-net-gui run-flp-gui run-install run_install install-image run-dual run-serial run-trio run-trio-serial run-floppy floppy storage-test-images
+.PHONY: all clean run run-gui run-net run-net-gui run-flp-gui run-install run_install install-image vmdk-images run-dual run-serial run-trio run-trio-serial run-floppy floppy storage-test-images
 
 all: $(A_IMG)
 
@@ -98,6 +100,16 @@ $(C_IMG): C.vol mkmbr.py
 C.vol: mkcimg.py $(HELLO_ELF)
 	@echo "[IMG] Building C FAT volume..."
 	python3 mkcimg.py $@
+
+# VMware/QEMU secondary IDE media.  Keep A.img as the boot disk so it can
+# still be written directly to a disk; data disks use VMware's sparse format.
+$(B_VMDK): $(B_IMG)
+	qemu-img convert -U -f raw -O vmdk $(B_IMG) $@
+
+$(C_VMDK): $(C_IMG)
+	qemu-img convert -U -f raw -O vmdk $(C_IMG) $@
+
+vmdk-images: $(B_VMDK) $(C_VMDK)
 
 # ── TinyCC 交叉编译 (vendor/tinycc -> tcc.elf + libtcc1.a + crt*) ──
 tcc.elf: build-tcc.sh
@@ -211,40 +223,40 @@ run: $(A_IMG)
 	qemu-system-i386 -drive file=$(A_IMG),format=raw,if=ide,index=0 -nographic
 
 # 图形模式：默认从 A.img 硬盘启动，启动扇区会请求 VBE 640x480x16bpp。
-run-gui: $(A_IMG) $(B_IMG) $(C_IMG)
+run-gui: $(A_IMG) $(B_VMDK) $(C_VMDK)
 	qemu-system-i386 -drive file=$(A_IMG),format=raw,if=ide,index=0 \
-	  -drive file=$(B_IMG),format=raw,if=ide,index=1 \
-	  -drive file=$(C_IMG),format=raw,if=ide,index=2 \
+	  -drive file=$(B_VMDK),format=vmdk,if=ide,index=1 \
+	  -drive file=$(C_VMDK),format=vmdk,if=ide,index=2 \
 	  -audiodev driver=sdl,id=audio0 -machine pc,pcspk-audiodev=audio0 -display gtk
 
 # 网络模式：默认从 A.img 硬盘启动，B:/C: 作为后续 IDE 数据盘。
-run-net: $(A_IMG) $(B_IMG) $(C_IMG)
+run-net: $(A_IMG) $(B_VMDK) $(C_VMDK)
 	qemu-system-i386 -drive file=$(A_IMG),format=raw,if=ide,index=0 \
-	  -drive file=$(B_IMG),format=raw,if=ide,index=1 \
-	  -drive file=$(C_IMG),format=raw,if=ide,index=2 \
+	  -drive file=$(B_VMDK),format=vmdk,if=ide,index=1 \
+	  -drive file=$(C_VMDK),format=vmdk,if=ide,index=2 \
 	  -netdev user,id=n0 -device rtl8139,netdev=n0 \
 	  -audiodev driver=sdl,id=audio0 -machine pc,pcspk-audiodev=audio0 -nographic
 
 # 网络 + GUI：从 A.img 硬盘启动，B:/C: 作为后续 IDE 数据盘。
-run-net-gui: $(A_IMG) $(B_IMG) $(C_IMG)
+run-net-gui: $(A_IMG) $(B_VMDK) $(C_VMDK)
 	qemu-system-i386 -drive file=$(A_IMG),format=raw,if=ide,index=0 \
-	  -drive file=$(B_IMG),format=raw,if=ide,index=1 \
-	  -drive file=$(C_IMG),format=raw,if=ide,index=2 \
+	  -drive file=$(B_VMDK),format=vmdk,if=ide,index=1 \
+	  -drive file=$(C_VMDK),format=vmdk,if=ide,index=2 \
 	  -netdev user,id=n0 -device rtl8139,netdev=n0 \
 	  -audiodev driver=sdl,id=audio0 -machine pc,pcspk-audiodev=audio0 -display gtk
 
 # 网络 + GUI：从 A.flp 软盘启动，B:/C: 作为 IDE 数据盘。
-run-flp-gui: A.flp $(B_IMG) $(C_IMG)
+run-flp-gui: A.flp $(B_VMDK) $(C_VMDK)
 	qemu-system-i386 -drive file=A.flp,format=raw,if=floppy,index=0 -boot a \
-	  -drive file=$(B_IMG),format=raw,if=ide,index=0 \
-	  -drive file=$(C_IMG),format=raw,if=ide,index=1 \
+	  -drive file=$(B_VMDK),format=vmdk,if=ide,index=0 \
+	  -drive file=$(C_VMDK),format=vmdk,if=ide,index=1 \
 	  -netdev user,id=n0 -device rtl8139,netdev=n0 \
 	  -audiodev driver=sdl,id=audio0 -machine pc,pcspk-audiodev=audio0 -display gtk
 
 # 安装盘 GUI 调试：从软盘启动安装程序，B.img 作为可写目标硬盘。
-run-install: $(INSTALL_IMG) $(B_IMG)
+run-install: $(INSTALL_IMG) $(B_VMDK)
 	qemu-system-i386 -drive file=$(INSTALL_IMG),format=raw,if=floppy,index=0 -boot a \
-	  -drive file=$(B_IMG),format=raw,if=ide,index=0 \
+	  -drive file=$(B_VMDK),format=vmdk,if=ide,index=0 \
 	  -display gtk
 
 # 兼容旧的下划线写法。

@@ -79,6 +79,8 @@ void kmain(){
     serial_init();
     init_idt();
     mem_init();
+    put_str("BOOT: S1>S2>KERNEL\n");
+    serial_puts("BOOT: S1>S2>KERNEL\n");
     timer_init();
     dev_scan();           /* v6.5.6 阶段B: IDE IDENTIFY 自动发现 4 槽 */
     dev_automount();      /* 引导盘恒 A:, 其余按槽序补位 (内含 fs_init) */

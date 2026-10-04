@@ -45,6 +45,15 @@ boot_code:
     ; (兼容有边界/批量长度限制的 BIOS); 无(软盘)→ 02h 分块 CHS
     ; (跨道读会失败)。失败复位重试 3 次(公共 int13_retry)。保存真实 DL。
     mov [bpb_drive_num], dl
+    ; Visible breadcrumb for the second-stage loader.  Preserve DL first;
+    ; BIOS video services may modify it.
+    mov byte [0x7B11], '2'
+    mov ax, 0xB800
+    mov es, ax
+    mov byte [es:2], '2'
+    mov byte [es:3], 0x0E
+    xor ax, ax
+    mov es, ax
     mov dl, [bpb_drive_num]
     ; A floppy must use CHS even if a BIOS advertises an EDD extension.
     ; This avoids VMware virtual-floppy BIOS paths that return bad AH=42 data.
@@ -130,6 +139,15 @@ boot_code:
     jmp .chs_loop
 
 .load_ok:
+
+    ; Mark that stage2 finished loading the kernel image.
+    mov byte [0x7B12], 'K'
+    mov ax, 0xB800
+    mov es, ax
+    mov byte [es:4], 'K'
+    mov byte [es:5], 0x0E
+    xor ax, ax
+    mov es, ax
 
     ; The installation floppy deliberately uses BIOS text mode.  VMware can
     ; report a nominal VBE mode while exposing an unusable linear framebuffer;
