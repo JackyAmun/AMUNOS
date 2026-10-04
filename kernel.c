@@ -100,7 +100,9 @@ void kmain(){
     put_str("AMUNOS 6.5.7(dev) (Multi-Drive)\n");
     serial_puts("AMUNOS 6.5.7(dev) serial ready\n");
     task_init();
-    task_create(demo_clock_task, 2048);
+    /* Keep boot single-task until the timer context-switch frame is fixed.
+     * VMware delivers the first PIT tick early enough to expose that path;
+     * with only the shell task timer_schedule safely returns no switch. */
     __asm__ volatile("sti");
 
     print_prompt();
