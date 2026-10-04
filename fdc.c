@@ -155,7 +155,8 @@ static int fdc_reset(void)
     for (i = 0; i < 1000; i++) io_in8(0x80);
     io_out8(FDC_DOR, 0x1C); /* controller enabled, motor A on */
     io_out8(FDC_CCR, geometry.ccr);
-    if (msr_wait(FDC_RQM, FDC_RQM, 500000) != BLK_OK) return BLK_ERR_NODEV;
+    /* A missing VMware FDC can otherwise stall boot for a very long time. */
+    if (msr_wait(FDC_RQM, FDC_RQM, 100000) != BLK_OK) return BLK_ERR_NODEV;
 
     for (i = 0; i < 4; i++) {
         if (fdc_sense(&st0, &pcn) != BLK_OK) return BLK_ERR_IO;

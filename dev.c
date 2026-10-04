@@ -352,6 +352,7 @@ void dev_scan(void)
         devs[d].model[0] = 0;
         mount_letter[d] = -1;
     }
+    put_str("[FDC] ");
     if (fdc_init() == 0) {
         unsigned char fb0[512];
         devs[4].present = 1;
@@ -364,6 +365,7 @@ void dev_scan(void)
             strcpy(devs[4].model, fdc_media_name());
         } else strcpy(devs[4].model, "FLOPPY FD0");
     }
+    put_str("[ATAPI] ");
     /* 槽 5 = 扫描传统 IDE 两通道上的 ATAPI 光驱。 */
     if (atapi_probe() == BLK_OK) {
         devs[5].present = 1;
