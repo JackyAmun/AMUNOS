@@ -4,7 +4,7 @@
 #   python3 qtest.py "dir" "type hello.txt" "d:"     # 逐条 sendkey 输入并回车
 #   python3 qtest.py --wait 14 --keydelay 0.05 ...   # 自定义开机等待/键间隔
 #   串口输出打到最后 (来自 /tmp/ser.log)
-import socket, subprocess, sys, time, os
+import socket, subprocess, sys, time, os, shutil
 
 SOCK = '/tmp/mon.sock'
 LOG = '/tmp/ser.log'
@@ -40,22 +40,35 @@ def main():
     kd = 0.06
     cd = None
     ahci = False
+    floppy = False
+    mbr = False
     if args and args[0] == '--cd':
         cd = args[1]; args = args[2:]
     if args and args[0] == '--ahci':
         ahci = True; args = args[1:]
+    if args and args[0] == '--floppy':
+        floppy = True; args = args[1:]
+    if args and args[0] == '--mbr':
+        mbr = True; args = args[1:]
     if args and args[0] == '--wait':
         wait = float(args[1]); args = args[2:]
     subprocess.run(['rm', '-f', LOG])
-    qargs = ['qemu-system-i386', '-nographic', '-rtc', 'base=localtime',
-             '-hda', 'A.img', '-hdb', 'B.img', '-hdc', 'C.img']
+    qargs = ['qemu-system-i386', '-nographic', '-rtc', 'base=localtime']
+    if floppy:
+        floppy_image = '/tmp/amunos-fdc-test.img'
+        shutil.copyfile('A.flp', floppy_image)
+        qargs += ['-fda', floppy_image, '-boot', 'a',
+                  '-hda', 'B.img', '-hdb', 'C.img']
+    else:
+        qargs += ['-snapshot']
+        qargs += ['-hda', 'A.img', '-hdb', 'B.img', '-hdc', 'C.img']
     if ahci:
         # q35 内置 ICH9 AHCI (bus ide.0..ide.5): D32 挂 bus=ide.1 避开 -hdb
         qargs += ['-M', 'q35',
                   '-drive', 'if=none,id=s0,file=D32.img,format=raw',
                   '-device', 'ide-hd,drive=s0,bus=ide.4,unit=0']
-    elif not cd:
-        qargs += ['-hdd', 'D32.img']
+    elif not cd and not floppy:
+        qargs += ['-hdd', 'C.img' if mbr else 'D32.img']
     if cd:
         qargs += ['-drive', 'if=none,id=cd0,file=' + cd + ',media=cdrom',
                   '-device', 'ide-cd,drive=cd0,bus=ide.1,unit=1']

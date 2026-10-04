@@ -21,6 +21,8 @@ int fs_data_lba = 0;
 int fs_spc = 1;                 // 每簇扇区数 (BPB off 13; FAT12=1, FAT16 通常 8)
 int fs_fat_bits = 12;           // FAT 位宽: 12/16/32 (v6.5.6 P2 起 FAT32)
 int fs_iso = 0;                 // v6.5.6 P3: 当前盘是 ISO9660 只读卷
+unsigned int fs_volume_lba = 0; /* P2a: VBR 在物理设备内的起始 LBA */
+unsigned int fs_volume_sectors = 0;
 static int iso_cur_size512 = 0; /* ISO 当前目录 512B 扇数 (find 命中目录时更新) */
 static unsigned int fs_root_cluster = 0;  /* FAT32 根目录首簇 (BPB+44) */
 static int fs_fat_lba = 0;
@@ -49,10 +51,63 @@ void to_fat12_name(char* src, char* dest) {
 
 static void load_fat_cache(void);   /* 定义见下; fs_init 须先声明 (fs.c 内部) */
 
+static unsigned int le32(const unsigned char *p)
+{
+    return (unsigned int)p[0] | ((unsigned int)p[1] << 8) |
+           ((unsigned int)p[2] << 16) | ((unsigned int)p[3] << 24);
+}
+
+/* Keep raw FAT volumes working while distinguishing them from an MBR. */
+static int looks_like_fat_vbr(const unsigned char *b)
+{
+    unsigned short bps = (unsigned short)(b[11] | ((unsigned short)b[12] << 8));
+    unsigned short reserved = (unsigned short)(b[14] | ((unsigned short)b[15] << 8));
+    unsigned short spf16 = (unsigned short)(b[22] | ((unsigned short)b[23] << 8));
+    return b[510] == 0x55 && b[511] == 0xAA &&
+           (b[0] == 0xEB || b[0] == 0xE9) && bps == 512 &&
+           b[13] >= 1 && b[13] <= 128 && reserved >= 1 && b[16] >= 1 &&
+           (spf16 != 0 || le32(b + 36) != 0);
+}
+
+/* Fallback for an MBR disk whose partitions could not be represented as slots. */
+static int mbr_find_primary(const unsigned char *mbr, unsigned int capacity,
+                            unsigned int *lba, unsigned int *sectors)
+{
+    int pass, i;
+    for (pass = 0; pass < 2; pass++) {
+        for (i = 0; i < 4; i++) {
+            const unsigned char *p = mbr + 446 + i * 16;
+            unsigned int start, count;
+            if (!p[4] || p[4] == 0x05 || p[4] == 0x0F || p[4] == 0x85) continue;
+            if (p[0] != 0 && p[0] != 0x80) continue;
+            if ((pass == 0) != (p[0] == 0x80)) continue;
+            start = le32(p + 8);
+            count = le32(p + 12);
+            if (!start || !count || start >= capacity || count > capacity - start) continue;
+            *lba = start;
+            *sectors = count;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static int has_partition_volumes(int physical_slot)
+{
+    int i;
+    for (i = DEV_PHYSICAL_COUNT; i < DEV_SLOT_COUNT; i++)
+        if (devs[i].present && devs[i].parent_slot == physical_slot) return 1;
+    return 0;
+}
+
 /* ── 初始化: 读取 BPB ── */
-/* 返回 0=成功, -1=失败 (dev_automount 依此判定挂载) */
-int fs_init() {
+/* report_errors=0 用于开机探测，避免空设备/非文件系统介质产生用户错误。 */
+static int fs_init_impl(int report_errors) {
     unsigned char bpb[512];
+    unsigned int device_sectors;
+    fs_volume_lba = 0;
+    fs_volume_sectors = (current_drive_idx >= 0 && current_drive_idx < DEV_SLOT_COUNT) ?
+                        devs[current_drive_idx].sectors : 0;
     /* v6.5.6 P3: 光驱 → ISO9660 检测 (PVD 扇16 验 CD001), 不走 FAT/BPB */
     fs_iso = 0;
     if (current_drive_idx == 5 && atapi_ready()) {
@@ -64,17 +119,34 @@ int fs_init() {
     }
     int ret = blk_read(0, bpb, current_drive_idx);
     if (ret != 0) {
-        put_str("Error: Disk read failed\n");
+        if (report_errors) put_str("Error: Disk read failed\n");
         return -1;
     }
     if (bpb[510] != 0x55 || bpb[511] != 0xAA) {
-        put_str("Error: Invalid Disk Format\n");
+        if (report_errors) put_str("Error: Invalid Disk Format\n");
         return -1;
+    }
+    device_sectors = devs[current_drive_idx].sectors;
+    fs_volume_sectors = device_sectors;
+    if (!looks_like_fat_vbr(bpb)) {
+        unsigned int part_lba, part_sectors;
+        if (current_drive_idx < DEV_PHYSICAL_COUNT && has_partition_volumes(current_drive_idx)) {
+            if (report_errors) put_str("Error: Select a partition volume\n");
+            return -1;
+        }
+        if (mbr_find_primary(bpb, device_sectors, &part_lba, &part_sectors) != 0 ||
+            blk_read(part_lba, bpb, current_drive_idx) != BLK_OK ||
+            !looks_like_fat_vbr(bpb)) {
+            if (report_errors) put_str("Error: Unsupported partition table\n");
+            return -1;
+        }
+        fs_volume_lba = part_lba;
+        fs_volume_sectors = part_sectors;
     }
     int reserved_sectors = *(unsigned short*)(bpb + 14);
     int fat_count = bpb[16];
     int sectors_per_fat = *(unsigned short*)(bpb + 22);
-    int total_sectors = *(unsigned short*)(bpb + 19);
+    unsigned int total_sectors = *(unsigned short*)(bpb + 19);
     fs_root_entries = *(unsigned short*)(bpb + 17);
     { int spc = bpb[13]; fs_spc = (spc >= 1 && spc <= 128) ? spc : 1; }
 
@@ -86,7 +158,7 @@ int fs_init() {
         fs_fat_bits = 32;
         fs_root_cluster = *(unsigned int*)(bpb + 44);
         if (fs_root_cluster < 2) {
-            put_str("Error: Invalid BPB geometry\n");
+            if (report_errors) put_str("Error: Invalid BPB geometry\n");
             fat_cached = 0;
             return -1;
         }
@@ -97,18 +169,27 @@ int fs_init() {
     if (reserved_sectors < 1 || fat_count < 1 || fat_count > 4 ||
         sectors_per_fat < 1 || sectors_per_fat > FAT_CACHE_CAP / 512 ||
         (!is32 && fs_root_entries < 1)) {
-        put_str("Error: Invalid BPB geometry\n");
+        if (report_errors) put_str("Error: Invalid BPB geometry\n");
         fat_cached = 0;
         return -1;
     }
     fs_sectors_per_fat = sectors_per_fat;
 
-    fs_fat_lba = reserved_sectors;
+    if (total_sectors == 0) total_sectors = le32(bpb + 32);
+    if (!total_sectors || total_sectors > fs_volume_sectors) {
+        if (report_errors) put_str("Error: Invalid BPB size\n");
+        fat_cached = 0;
+        return -1;
+    }
+
+    fs_fat_lba = (int)(fs_volume_lba + (unsigned int)reserved_sectors);
     fs_root_lba = fs_fat_lba + (fat_count * sectors_per_fat);
     fs_data_lba = fs_root_lba + ((fs_root_entries * 32 + 511) / 512);
-    if (total_sectors == 0) total_sectors = *(unsigned int*)(bpb + 32);  /* >65535 扇区大容量 */
     {   /* v6.5.1: 按簇数判定 FAT 位宽 (FAT12≤4084 簇, FAT16≤65524; FAT32 上面已定) */
-        unsigned int data_secs = (total_sectors > fs_data_lba) ? (total_sectors - fs_data_lba) : 0;
+        unsigned int fs_overhead = (unsigned int)reserved_sectors +
+            (unsigned int)fat_count * sectors_per_fat +
+            (unsigned int)((fs_root_entries * 32 + 511) / 512);
+        unsigned int data_secs = (total_sectors > fs_overhead) ? (total_sectors - fs_overhead) : 0;
         unsigned int clusters = data_secs / fs_spc;
         if (!is32) {
             fs_fat_bits = (clusters <= 4084) ? 12 : 16;
@@ -121,14 +202,24 @@ int fs_init() {
     return 0;
 }
 
+/* 交互式调用保留完整错误提示。 */
+int fs_init() {
+    return fs_init_impl(1);
+}
+
+/* 开机设备枚举只关心可否挂载，失败由设备检查行统一呈现。 */
+int fs_probe_init() {
+    return fs_init_impl(0);
+}
+
 /* ── 盘符限定路径 (v6.5.1): "A:\..." / "B:..." / "./..." 统一入口 ──
  * drive_ctx_t 类型见 common.h §5.1 (勿在此重复 typedef, 匿名结构会冲突) */
 
-/* 解析路径开头的盘符 "[A-D]:" (大小写均可): 命中则前移 *pp 并返回 0-3, 否则 -1 */
+/* 解析路径开头的盘符 "[A-Z]:" (大小写均可): 返回挂载槽; 未挂载返回 -1 */
 int parse_drive(char **pp) {
     char *p = *pp;
-    if ((p[0] >= 'A' && p[0] <= 'F' && p[1] == ':') ||
-        (p[0] >= 'a' && p[0] <= 'f' && p[1] == ':')) {
+    if ((p[0] >= 'A' && p[0] <= 'Z' && p[1] == ':') ||
+        (p[0] >= 'a' && p[0] <= 'z' && p[1] == ':')) {
         *pp = p + 2;
         /* v6.5.6 P1: 盘符 → 槽号走挂载表 (软盘引导时 A:=软盘槽4, IDE 顺延) */
         return dev_slot_from_letter((p[0] & ~0x20) - 'A');
@@ -173,7 +264,8 @@ int is_cmds_file(char *fat11) {
  * 再读扇区 0 验 0x55AA (IDENTIFY 在但非 FAT 盘仍由这里兜底) */
 int fs_drive_present(int d) {
     unsigned char b[512];
-    if (d >= 0 && d < 6 && !devs[d].present) return 0;
+    if (d >= 0 && d < DEV_SLOT_COUNT && !devs[d].present) return 0;
+    if (d >= 0 && d < DEV_PHYSICAL_COUNT && has_partition_volumes(d)) return 0;
     int sv = current_drive_idx, sc = cwd_cluster;
     current_drive_idx = d;
     int ret = blk_read(0, b, d);
@@ -421,6 +513,79 @@ int fs_find_entry(char* name, FAT12Entry* out_entry) {
     return fs_find_entry_in_dir(cwd_cluster, name, out_entry);
 }
 
+/* FAT long names are stored in one or more entries before the short entry.
+ * Keep the on-disk FAT12Entry ABI unchanged and decode the extra entries only
+ * while searching/listing.  This first pass supports BMP Unicode and UTF-8
+ * lookup; file creation still uses the existing short-name writer. */
+typedef struct {
+    unsigned short chars[260];
+    int active;
+    int max_ord;
+} lfn_state_t;
+
+static void lfn_reset(lfn_state_t *st) {
+    st->active = 0;
+    st->max_ord = 0;
+}
+
+static void lfn_add(lfn_state_t *st, const FAT12Entry *entry) {
+    unsigned char *raw = (unsigned char *)entry;
+    unsigned char ord = raw[0];
+    int n = ord & 0x1F;
+    if (!n || n > 20) { lfn_reset(st); return; }
+    if (ord & 0x40) lfn_reset(st);
+    st->active = 1;
+    if (n > st->max_ord) st->max_ord = n;
+    int base = (n - 1) * 13;
+    int pos = 0;
+    for (int i = 1; i < 11; i += 2) st->chars[base + pos++] = raw[i] | ((unsigned short)raw[i + 1] << 8);
+    for (int i = 14; i < 26; i += 2) st->chars[base + pos++] = raw[i] | ((unsigned short)raw[i + 1] << 8);
+    for (int i = 28; i < 32; i += 2) st->chars[base + pos++] = raw[i] | ((unsigned short)raw[i + 1] << 8);
+}
+
+static int lfn_to_utf8(const lfn_state_t *st, char *out, int cap) {
+    if (!st->active || !st->max_ord || cap < 2) return 0;
+    int n = 0;
+    for (int i = 0; i < st->max_ord * 13; i++) {
+        unsigned int c = st->chars[i];
+        if (!c || c == 0xFFFF) break;
+        if (c >= 0xD800 && c <= 0xDFFF) c = '?';
+        if (c < 0x80) {
+            if (n + 1 >= cap) break;
+            out[n++] = (char)c;
+        } else if (c < 0x800) {
+            if (n + 2 >= cap) break;
+            out[n++] = (char)(0xC0 | (c >> 6));
+            out[n++] = (char)(0x80 | (c & 0x3F));
+        } else {
+            if (n + 3 >= cap) break;
+            out[n++] = (char)(0xE0 | (c >> 12));
+            out[n++] = (char)(0x80 | ((c >> 6) & 0x3F));
+            out[n++] = (char)(0x80 | (c & 0x3F));
+        }
+    }
+    out[n] = 0;
+    return n;
+}
+
+static int lfn_name_equal(const char *a, const char *b) {
+    while (*a && *b) {
+        unsigned char ca = (unsigned char)*a++, cb = (unsigned char)*b++;
+        if (ca < 0x80 && cb < 0x80 && ca >= 'a' && ca <= 'z') ca -= 'a' - 'A';
+        if (ca < 0x80 && cb < 0x80 && cb >= 'a' && cb <= 'z') cb -= 'a' - 'A';
+        if (ca != cb) return 0;
+    }
+    return *a == 0 && *b == 0;
+}
+
+static char fs_list_names[80][128];
+static int fs_list_name_count;
+
+const char *fs_list_name(int index) {
+    if (index < 0 || index >= fs_list_name_count) return "";
+    return fs_list_names[index];
+}
+
 int fs_find_entry_in_dir(int dir_cluster, char* name, FAT12Entry* out_entry) {
     if (fs_iso) {
         int d = (dir_cluster == 0) ? iso_root_lba() : dir_cluster;
@@ -433,6 +598,9 @@ int fs_find_entry_in_dir(int dir_cluster, char* name, FAT12Entry* out_entry) {
     char fat_name[11];
     to_fat12_name(name, fat_name);
     FAT12Entry buf[16];
+    lfn_state_t lfn;
+    char long_name[128];
+    lfn_reset(&lfn);
     int max_sectors = fs_dir_secs(dir_cluster);
 
     for (int s = 0; s < max_sectors; s++) {
@@ -440,15 +608,19 @@ int fs_find_entry_in_dir(int dir_cluster, char* name, FAT12Entry* out_entry) {
         if (ret != 0) break;
         for (int i = 0; i < 16; i++) {
             if (buf[i].name[0] == 0) return -1;
-            if ((unsigned char)buf[i].name[0] == 0xE5) continue;
+            if ((unsigned char)buf[i].name[0] == 0xE5) { lfn_reset(&lfn); continue; }
+            if (buf[i].attr == 0x0F) { lfn_add(&lfn, &buf[i]); continue; }
+            long_name[0] = 0;
+            lfn_to_utf8(&lfn, long_name, sizeof(long_name));
             int match = 1;
             for (int k = 0; k < 11; k++) {
                 if (buf[i].name[k] != fat_name[k]) { match = 0; break; }
             }
-            if (match) {
+            if ((long_name[0] && lfn_name_equal(long_name, name)) || match) {
                 if (out_entry) *out_entry = buf[i];
                 return (s * 16) + i;
             }
+            lfn_reset(&lfn);
         }
     }
     return -1;
@@ -857,12 +1029,16 @@ void fs_delete_directory(char* dirname) {
 
 /* ── 列出目录 (完整链) ── */
 int fs_list_dir(int dir_cluster, FAT12Entry* out_buf, int max_entries) {
+    fs_list_name_count = 0;
     if (fs_iso) {
         int d = (dir_cluster == 0) ? iso_root_lba() : dir_cluster;
         int sz = (dir_cluster == 0) ? iso_root_size() : iso_cur_size512;
         return iso_list(d, sz, out_buf, max_entries);
     }
     FAT12Entry buf[16];
+    lfn_state_t lfn;
+    char long_name[128];
+    lfn_reset(&lfn);
     int max_sectors = fs_dir_secs(dir_cluster);
     int count = 0;
 
@@ -871,9 +1047,18 @@ int fs_list_dir(int dir_cluster, FAT12Entry* out_buf, int max_entries) {
         if (ret != 0) break;
         for (int i = 0; i < 16 && count < max_entries; i++) {
             if (buf[i].name[0] == 0) return count;
-            if ((unsigned char)buf[i].name[0] == 0xE5) continue;
-            if (buf[i].attr == 0x0F) continue;  // LFN
+            if ((unsigned char)buf[i].name[0] == 0xE5) { lfn_reset(&lfn); continue; }
+            if (buf[i].attr == 0x0F) { lfn_add(&lfn, &buf[i]); continue; }
             out_buf[count++] = buf[i];
+            long_name[0] = 0;
+            lfn_to_utf8(&lfn, long_name, sizeof(long_name));
+            for (int k = 0; k < (int)sizeof(fs_list_names[0]); k++) {
+                fs_list_names[count - 1][k] = long_name[k];
+                if (!long_name[k]) break;
+                if (k == (int)sizeof(fs_list_names[0]) - 1) fs_list_names[count - 1][k] = 0;
+            }
+            fs_list_name_count = count;
+            lfn_reset(&lfn);
         }
     }
     return count;

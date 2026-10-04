@@ -474,6 +474,33 @@ static int sys_clip_get(char *buf, int max) {
  return n;
 }
 
+static volatile int speaker_busy;
+
+int sys_beep(unsigned frequency, unsigned duration_ms)
+{
+ unsigned divisor, ticks, start;
+ unsigned char control;
+ if (frequency < 37 || frequency > 20000 || !duration_ms || duration_ms > 5000)
+  return -1;
+ if (__sync_lock_test_and_set(&speaker_busy, 1)) return -1;
+ divisor = 1193182u / frequency;
+ if (!divisor) divisor = 1;
+ if (divisor > 65535) divisor = 65535;
+ io_out8(0x43, 0xB6);
+ io_out8(0x42, (unsigned char)divisor);
+ io_out8(0x42, (unsigned char)(divisor >> 8));
+ control = io_in8(0x61);
+ io_out8(0x61, control | 0x03);
+ ticks = (duration_ms + 9) / 10;
+ start = task_ticks();
+ __asm__ volatile("sti" : : : "memory");
+ while ((unsigned)(task_ticks() - start) < ticks)
+  __asm__ volatile("pause");
+ io_out8(0x61, control & (unsigned char)~0x03);
+ __sync_lock_release(&speaker_busy);
+ return 0;
+}
+
 /* ── 分发器 (由 head.asm 的 asm_syscall_handler 调用) ──
  * frame: [4]=edi [5]=esi [6]=ebp [7]=esp [8]=ebx [9]=edx [10]=ecx [11]=eax */
 void syscall_handler(unsigned *frame) {
@@ -629,6 +656,10 @@ void syscall_handler(unsigned *frame) {
  case 54: result = gui_menu_item(a1, a2 & 0xFFFF, (a2 >> 16) & 0xFFFF, (const char*)a3); break;
 #endif
  case 61: result = sys_collect_info((sysinfo_t*)a1); break;
+ case 75: result = sys_beep((unsigned)a1, (unsigned)a2); break;
+ case 76: result = nic_mac((unsigned char*)a1); break;
+ case 77: result = nic_send((const void*)a1, (unsigned)a2); break;
+ case 78: result = nic_receive((void*)a1, (unsigned)a2); break;
  case 27: { /* SYS_CJKWCHAR: 在绝对格 (x,y) 放一个汉字 (占两格).
  * a1=x a2=y; packed 低16=GB 码 (0=替换框□), 高位=attr.
  * EDIT 文本行渲染用它把中文字节画成真实汉字。 */

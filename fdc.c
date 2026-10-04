@@ -1,168 +1,342 @@
-/* fdc.c — 软盘控制器 (82077AA) 运行时驱动 (v6.5.6 阶段 P1)
+/* fdc.c - 82077-compatible floppy controller.
  *
- * 设计: **非 DMA (ND) 全轮询** — SPECIFY 置 ND=1, 数据相 MSR.RQM+DIO
- * 每字节就绪后从 FIFO (0x3F5) 读写, 不需要 8237 DMA 控制器代码, 也
- * 不接 IRQ6 (内核 PIC 目前只开 IRQ0/1/2/12, 保持不动)。
- * 电机: fdc_init 时开 A 电机并常开 (QEMU 无代价; 真机后续加电机超时),
- * 从而任何上下文 (含 task_init 之前的 kmain 早期) 都可安全调用。
- * 几何: 1.44MB = 80 柱 × 2 头 × 18 扇, 512B/扇, 仅驱动器 0。
+ * The driver keeps the simple AMUNOS polling backend, but now exposes device
+ * errors, retries failed commands, detects common FAT floppy geometries and
+ * supports sector writes. Reads use polled non-DMA PIO; writes use 8237 DMA
+ * channel 2. IRQ6 and a sleeping request queue remain later optimizations.
  */
 #include "common.h"
 #include "fdc.h"
 
-#define FDC_DOR   0x3F2   /* 数字输出: 电机/复位/DMA使能/驱动选择 */
-#define FDC_MSR   0x3F4   /* 主状态: RQM(0x80) DIO(0x40) NDMA(0x20) BUSY(0x10) */
+#define FDC_DOR   0x3F2
+#define FDC_MSR   0x3F4
 #define FDC_FIFO  0x3F5
-#define FDC_CCR   0x3F7   /* 数据速率 500kbps */
+#define FDC_DIR   0x3F7
+#define FDC_CCR   0x3F7
 
-#define FDC_SPT   18
-#define FDC_HPC   2
+#define FDC_RQM   0x80
+#define FDC_DIO   0x40
 
-#define RQM 0x80
-#define DIO 0x40
+#define ST1_NW    0x02
+#define ST1_ND    0x04
+#define ST1_OR    0x10
+#define ST1_DE    0x20
+#define ST2_DD    0x20
 
-static int fdc_ok = 0;
+#define DMA_MASK       0x0A
+#define DMA_MODE       0x0B
+#define DMA_CLEAR_FF   0x0C
+#define DMA_CH2_ADDR   0x04
+#define DMA_CH2_COUNT  0x05
+#define DMA_CH2_PAGE   0x81
 
-/* 本地串口十进制 (调试用) */
-static void fdc_dbgdec(unsigned v)
+typedef struct {
+    unsigned short sectors_per_track;
+    unsigned short heads;
+    unsigned short tracks;
+    unsigned char ccr;
+    const char *name;
+} fdc_geometry_t;
+
+static fdc_geometry_t geometry = { 18, 2, 80, 0, "FLOPPY 1.44M" };
+static int fdc_ok;
+static unsigned char dma_buffer[512] __attribute__((aligned(512)));
+
+static void fdc_log_number(unsigned value)
 {
-    char b[12]; int i = 0;
-    if (!v) { serial_putc('0'); return; }
-    while (v) { b[i++] = '0' + (char)(v % 10); v /= 10; }
-    while (--i >= 0) serial_putc(b[i]);
+    char digits[12];
+    int n = 0;
+    if (!value) { serial_putc('0'); return; }
+    while (value) { digits[n++] = (char)('0' + value % 10); value /= 10; }
+    while (n) serial_putc(digits[--n]);
 }
 
-/* 轮询 MSR 直到 (st & mask)==val; iter 用尽返回 -1。
- * 每 4096 次 inb 让一步 (无 task_sleep 依赖, task_init 前也可用)。 */
-static int msr_wait(unsigned mask, unsigned val, unsigned iter)
+static int msr_wait(unsigned mask, unsigned value, unsigned limit)
 {
     unsigned i;
-    for (i = 0; i < iter; i++) {
-        unsigned st = io_in8(FDC_MSR);
-        if ((st & mask) == val) return 0;
-        if ((i & 0xFFF) == 0xFFF) io_in8(0x80);   /* 微延时 */
+    for (i = 0; i < limit; i++) {
+        unsigned status = io_in8(FDC_MSR);
+        if ((status & mask) == value) return BLK_OK;
+        if ((i & 0xFFF) == 0xFFF) io_in8(0x80);
     }
-    return -1;
+    return BLK_ERR_BUSY;
 }
 
-/* 命令相写一字节: 等 RQM 且 DIO=0 */
-static int fdc_out(unsigned char b)
+static int fdc_out(unsigned char value)
 {
-    if (msr_wait(0xC0, RQM, 200000)) return -1;
-    io_out8(FDC_FIFO, b);
-    return 0;
+    int rc = msr_wait(FDC_RQM | FDC_DIO, FDC_RQM, 250000);
+    if (rc != BLK_OK) return rc;
+    io_out8(FDC_FIFO, value);
+    return BLK_OK;
 }
 
-/* 结果相读一字节: 等 RQM 且 DIO=1 */
-static int fdc_in(unsigned char *b)
+static int fdc_in(unsigned char *value)
 {
-    if (msr_wait(0xC0, RQM | DIO, 200000)) return -1;
-    *b = io_in8(FDC_FIFO);
-    return 0;
+    int rc = msr_wait(FDC_RQM | FDC_DIO, FDC_RQM | FDC_DIO, 250000);
+    if (rc != BLK_OK) return rc;
+    *value = io_in8(FDC_FIFO);
+    return BLK_OK;
 }
 
-/* Sense Interrupt Status: 返回 ST0 (PCN 存 *pcn) */
 static int fdc_sense(unsigned char *st0, unsigned char *pcn)
 {
-    unsigned char s;
-    if (fdc_out(0x08)) return -1;
-    if (fdc_in(&s)) return -1;
-    if (fdc_in(pcn)) return -1;
-    *st0 = s;
-    return 0;
+    int rc;
+    if ((rc = fdc_out(0x08)) != BLK_OK) return rc;
+    if ((rc = fdc_in(st0)) != BLK_OK) return rc;
+    return fdc_in(pcn);
 }
 
-static int fdc_seek(unsigned cyl, unsigned head)
+static int fdc_specify(int non_dma)
+{
+    int rc;
+    if ((rc = fdc_out(0x03)) != BLK_OK) return rc;
+    if ((rc = fdc_out(0xCF)) != BLK_OK) return rc;
+    return fdc_out((unsigned char)(0x02 | (non_dma ? 1 : 0)));
+}
+
+/* 8237 DMA channel 2. write_to_disk means memory -> FDC (mode 0x4A). */
+static int fdc_dma_program(int write_to_disk)
+{
+    unsigned address = (unsigned)dma_buffer;
+    unsigned count = sizeof(dma_buffer) - 1;
+    unsigned flags;
+    if (address >= 0x1000000u || ((address & 0xFFFFu) + 511u) > 0xFFFFu)
+        return BLK_ERR_RANGE;
+
+    __asm__ volatile("pushfl; popl %0; cli" : "=r"(flags) : : "memory");
+    io_out8(DMA_MASK, 0x06);              /* mask channel 2 */
+    io_out8(DMA_CLEAR_FF, 0xFF);
+    io_out8(DMA_CH2_ADDR, (unsigned char)address);
+    io_out8(DMA_CH2_ADDR, (unsigned char)(address >> 8));
+    io_out8(DMA_CH2_PAGE, (unsigned char)(address >> 16));
+    io_out8(DMA_CLEAR_FF, 0xFF);
+    io_out8(DMA_CH2_COUNT, (unsigned char)count);
+    io_out8(DMA_CH2_COUNT, (unsigned char)(count >> 8));
+    io_out8(DMA_MODE, (unsigned char)(write_to_disk ? 0x4A : 0x46));
+    io_out8(DMA_MASK, 0x02);              /* unmask channel 2 */
+    if (flags & 0x200) __asm__ volatile("sti" : : : "memory");
+    return BLK_OK;
+}
+
+static int fdc_recalibrate(void)
 {
     unsigned char st0, pcn;
-    int tries;
-    if (fdc_out(0x0F)) return -1;               /* SEEK */
-    if (fdc_out((unsigned char)((head << 2) | 0))) return -1;
-    if (fdc_out((unsigned char)cyl)) return -1;
-    for (tries = 0; tries < 8; tries++) {       /* SEEK 需 Sense Interrupt 收尾 */
-        if (fdc_sense(&st0, &pcn)) return -1;
-        if ((st0 & 0x20) && pcn == cyl) return 0;   /* 寻道完成位 */
+    int i, rc;
+    if ((rc = fdc_out(0x07)) != BLK_OK) return rc;
+    if ((rc = fdc_out(0x00)) != BLK_OK) return rc;
+    for (i = 0; i < 16; i++) {
+        if (fdc_sense(&st0, &pcn) != BLK_OK) continue;
+        if ((st0 & 0x20) && pcn == 0) return BLK_OK;
     }
-    return -1;
+    return BLK_ERR_SEEK;
 }
 
-int fdc_init(void)
+static int fdc_seek(unsigned cylinder, unsigned head)
+{
+    unsigned char st0, pcn;
+    int i, rc;
+    if ((rc = fdc_out(0x0F)) != BLK_OK) return rc;
+    if ((rc = fdc_out((unsigned char)(head << 2))) != BLK_OK) return rc;
+    if ((rc = fdc_out((unsigned char)cylinder)) != BLK_OK) return rc;
+    for (i = 0; i < 16; i++) {
+        if (fdc_sense(&st0, &pcn) != BLK_OK) continue;
+        if ((st0 & 0x20) && pcn == cylinder) return BLK_OK;
+    }
+    return BLK_ERR_SEEK;
+}
+
+static int fdc_reset(void)
 {
     unsigned char st0, pcn;
     int i;
 
-    io_out8(FDC_CCR, 0x00);                     /* 500kbps */
-    io_out8(FDC_DOR, 0x00);                     /* 进复位 */
-    for (i = 0; i < 1000; i++) io_in8(0x80);    /* ≥ 复位脉宽 */
-    io_out8(FDC_DOR, 0x1C);                     /* 出复位 + 电机A + IRQ/DMA 使能 */
-    if (msr_wait(RQM, RQM, 400000)) return -1;  /* 复位完成 → RQM */
+    fdc_ok = 0;
+    io_out8(FDC_DOR, 0x00);
+    for (i = 0; i < 1000; i++) io_in8(0x80);
+    io_out8(FDC_DOR, 0x1C); /* controller enabled, motor A on */
+    io_out8(FDC_CCR, geometry.ccr);
+    if (msr_wait(FDC_RQM, FDC_RQM, 500000) != BLK_OK) return BLK_ERR_NODEV;
 
-    for (i = 0; i < 4; i++) {                   /* 复位产生 4 个中断, 全部吃掉 */
-        if (fdc_sense(&st0, &pcn)) return -1;
+    for (i = 0; i < 4; i++) {
+        if (fdc_sense(&st0, &pcn) != BLK_OK) return BLK_ERR_IO;
     }
-    /* SPECIFY: SRT=0xC(步进) HUT=0xF(保持), HLT=1(2ms) ND=1 → 非DMA */
-    if (fdc_out(0x03) || fdc_out(0xCF) || fdc_out(0x03)) return -1;
-    /* RECALIBRATE 到 0 柱 */
-    if (fdc_out(0x07) || fdc_out(0x00)) return -1;
-    for (i = 0; i < 8; i++) {
-        if (fdc_sense(&st0, &pcn)) return -1;
-        if ((st0 & 0x20) && pcn == 0) { fdc_ok = 1; return 0; }
+    /* SRT/HUT plus HLT=2ms, ND=1. */
+    if (fdc_specify(1) != BLK_OK) return BLK_ERR_IO;
+    if (fdc_recalibrate() != BLK_OK) return BLK_ERR_SEEK;
+    fdc_ok = 1;
+    return BLK_OK;
+}
+
+static int fdc_result_error(const unsigned char st[7])
+{
+    if ((st[0] & 0xC0) == 0 && st[1] == 0 && st[2] == 0) return BLK_OK;
+    serial_puts("[FDC] result st0="); fdc_log_number(st[0]);
+    serial_puts(" st1="); fdc_log_number(st[1]);
+    serial_puts(" st2="); fdc_log_number(st[2]); serial_putc('\n');
+    if (st[1] & ST1_NW) return BLK_ERR_READ_ONLY;
+    if ((st[1] & ST1_DE) || (st[2] & ST2_DD)) return BLK_ERR_CRC;
+    if (st[1] & ST1_ND) return BLK_ERR_SEEK;
+    if (st[1] & ST1_OR) return BLK_ERR_IO;
+    return BLK_ERR_IO;
+}
+
+static int fdc_transfer_once(unsigned lba, void *buffer, int write)
+{
+    unsigned cylinder, head, sector, i;
+    unsigned char result[7];
+    unsigned char *bytes = (unsigned char *)buffer;
+    int rc;
+
+    cylinder = lba / (geometry.sectors_per_track * geometry.heads);
+    head = (lba / geometry.sectors_per_track) % geometry.heads;
+    sector = lba % geometry.sectors_per_track + 1;
+    if (cylinder >= geometry.tracks) return BLK_ERR_RANGE;
+
+    if ((rc = fdc_seek(cylinder, head)) != BLK_OK) return rc;
+    if (write) {
+        for (i = 0; i < 512; i++) dma_buffer[i] = bytes[i];
+        if ((rc = fdc_specify(0)) != BLK_OK) return rc;
+        if ((rc = fdc_dma_program(1)) != BLK_OK) {
+            fdc_specify(1);
+            return rc;
+        }
     }
-    return -1;
+    if ((rc = fdc_out(write ? 0x45 : 0x46)) != BLK_OK) goto command_failed;
+    if ((rc = fdc_out((unsigned char)(head << 2))) != BLK_OK) goto command_failed;
+    if ((rc = fdc_out((unsigned char)cylinder)) != BLK_OK) goto command_failed;
+    if ((rc = fdc_out((unsigned char)head)) != BLK_OK) goto command_failed;
+    if ((rc = fdc_out((unsigned char)sector)) != BLK_OK) goto command_failed;
+    if ((rc = fdc_out(2)) != BLK_OK) goto command_failed; /* 512-byte sector */
+    if ((rc = fdc_out((unsigned char)sector)) != BLK_OK) goto command_failed;
+    if ((rc = fdc_out(0x1B)) != BLK_OK) goto command_failed;
+    if ((rc = fdc_out(0xFF)) != BLK_OK) goto command_failed;
+
+    if (!write) {
+        for (i = 0; i < 512; i++) {
+            rc = msr_wait(FDC_RQM | FDC_DIO, FDC_RQM | FDC_DIO, 250000);
+            if (rc != BLK_OK) {
+                /* No-media probing retries this path; report the final
+                 * mount result once instead of flooding the boot log. */
+                return rc;
+            }
+            bytes[i] = io_in8(FDC_FIFO);
+        }
+    }
+    for (i = 0; i < 7; i++) {
+        if ((rc = fdc_in(&result[i])) != BLK_OK) {
+            if (write) fdc_specify(1);
+            return rc;
+        }
+    }
+    rc = fdc_result_error(result);
+    if (write && fdc_specify(1) != BLK_OK && rc == BLK_OK) rc = BLK_ERR_IO;
+    return rc;
+
+command_failed:
+    if (write) fdc_specify(1);
+    return rc;
+}
+
+static int fdc_transfer(unsigned lba, unsigned count, void *buffer, int write)
+{
+    unsigned n;
+    unsigned char *bytes = (unsigned char *)buffer;
+    unsigned capacity = fdc_capacity();
+    if (!fdc_ok) return BLK_ERR_NODEV;
+    if (!buffer || !count) return BLK_ERR_IO;
+    if (lba >= capacity || count > capacity - lba) return BLK_ERR_RANGE;
+
+    for (n = 0; n < count; n++) {
+        int attempt, rc = BLK_ERR_IO;
+        for (attempt = 0; attempt < 3; attempt++) {
+            rc = fdc_transfer_once(lba + n, bytes + n * 512, write);
+            if (rc == BLK_OK || rc == BLK_ERR_READ_ONLY) break;
+            if (attempt == 0) fdc_recalibrate();
+            else fdc_reset();
+        }
+        if (rc != BLK_OK) {
+            serial_puts(write ? "[FDC] write failed rc=" : "[FDC] read failed rc=");
+            fdc_log_number((unsigned)(-rc));
+            serial_puts(" lba="); fdc_log_number(lba + n); serial_putc('\n');
+            return rc;
+        }
+    }
+    return BLK_OK;
+}
+
+int fdc_init(void)
+{
+    geometry.sectors_per_track = 18;
+    geometry.heads = 2;
+    geometry.tracks = 80;
+    geometry.ccr = 0;
+    geometry.name = "FLOPPY 1.44M";
+    return fdc_reset();
 }
 
 int fdc_ready(void) { return fdc_ok; }
+unsigned int fdc_capacity(void)
+{
+    return (unsigned)geometry.sectors_per_track * geometry.heads * geometry.tracks;
+}
+const char *fdc_media_name(void) { return geometry.name; }
+
+int fdc_media_changed(void)
+{
+    if (!fdc_ok) return BLK_ERR_NODEV;
+    return (io_in8(FDC_DIR) & 0x80) ? 1 : 0;
+}
+
+int fdc_probe_media(void *boot_sector)
+{
+    static const fdc_geometry_t probes[] = {
+        { 18, 2, 80, 0, "FLOPPY 1.44M" },
+        { 15, 2, 80, 0, "FLOPPY 1.20M" },
+        {  9, 2, 80, 2, "FLOPPY 720K" },
+        {  9, 2, 40, 2, "FLOPPY 360K" }
+    };
+    unsigned char local[512];
+    unsigned char *b = boot_sector ? (unsigned char *)boot_sector : local;
+    unsigned i;
+
+    if (!fdc_ok) return BLK_ERR_NODEV;
+    for (i = 0; i < sizeof(probes) / sizeof(probes[0]); i++) {
+        unsigned short bps, spt, heads;
+        unsigned total;
+        geometry = probes[i];
+        io_out8(FDC_CCR, geometry.ccr);
+        fdc_recalibrate();
+        if (fdc_transfer_once(0, b, 0) != BLK_OK) continue;
+
+        bps = (unsigned short)(b[11] | ((unsigned short)b[12] << 8));
+        spt = (unsigned short)(b[24] | ((unsigned short)b[25] << 8));
+        heads = (unsigned short)(b[26] | ((unsigned short)b[27] << 8));
+        total = (unsigned)(b[19] | ((unsigned)b[20] << 8));
+        if (!total)
+            total = (unsigned)b[32] | ((unsigned)b[33] << 8) |
+                    ((unsigned)b[34] << 16) | ((unsigned)b[35] << 24);
+        if (bps == 512 && spt >= 8 && spt <= 36 && heads >= 1 && heads <= 2 &&
+            total >= (unsigned)spt * heads) {
+            geometry.sectors_per_track = spt;
+            geometry.heads = heads;
+            geometry.tracks = (unsigned short)(total / ((unsigned)spt * heads));
+        }
+        return BLK_OK;
+    }
+    geometry.sectors_per_track = 18;
+    geometry.heads = 2;
+    geometry.tracks = 80;
+    geometry.ccr = 0;
+    geometry.name = "FLOPPY 1.44M";
+    return BLK_ERR_NO_MEDIA;
+}
 
 int fdc_read_sectors(unsigned lba, unsigned count, void *buf)
 {
-    unsigned char st[7], r0;
-    unsigned char *p = buf;
-    unsigned cyl, head, sect, i, n;
+    return fdc_transfer(lba, count, buf, 0);
+}
 
-    if (!fdc_ok || count == 0 || count > 18) return -1;
-    if (lba >= 2880 || lba + count > 2880) return -1;
-
-    for (n = 0; n < count; n++) {
-        unsigned l = lba + n;
-        cyl = l / (FDC_SPT * FDC_HPC);
-        head = (l / FDC_SPT) % FDC_HPC;
-        sect = l % FDC_SPT + 1;
-
-        if (fdc_seek(cyl, head)) return -1;
-        /* READ (MFM|MT): 头, C, H, R, N=2(512B), EOT=18, GPL, DTL */
-        if (fdc_out(0x46) || fdc_out((unsigned char)(head << 2)) ||
-            fdc_out((unsigned char)cyl) || fdc_out(head) ||
-            fdc_out((unsigned char)sect) || fdc_out(2) ||
-            fdc_out((unsigned char)sect) || fdc_out(0x1B) || fdc_out(0xFF)) return -1;
-        /* EOT=当前扇号: 无 DMA 无 TC 引脚, 命令读完本扇即自然结束 (0x46 无 MT) */
-
-        /* 数据相: 512B 全轮询读入 (QEMU ND 模式每字节 RQM|DIO) */
-        for (i = 0; i < 512; i++) {
-            unsigned char b;
-            if (msr_wait(0xC0, RQM | DIO, 200000)) return -1;
-            b = io_in8(FDC_FIFO);
-            if (n * 512 + i < count * 512) p[n * 512 + i] = b;
-        }
-        /* 结果相 7 字节 */
-        for (i = 0; i < 7; i++) {
-            if (fdc_in(&st[i])) {
-                serial_puts("[FDC] result byte fail i=");
-                fdc_dbgdec(i);
-                serial_puts(" msr=");
-                fdc_dbgdec(io_in8(FDC_MSR));
-                serial_puts("\n");
-                return -1;
-            }
-        }
-        r0 = st[0];
-        if ((r0 & 0xC0) != 0x00 && (r0 & 0xC0) != 0x40) {
-            serial_puts("[FDC] st0=");
-            fdc_dbgdec(r0);
-            serial_puts(" st1=");
-            fdc_dbgdec(st[1]);
-            serial_puts("\n");
-            return -1;                          /* ST0 bit7-6: 00=正常结束 */
-        }
-    }
-    return 0;
+int fdc_write_sectors(unsigned lba, unsigned count, const void *buf)
+{
+    return fdc_transfer(lba, count, (void *)buf, 1);
 }

@@ -8,9 +8,9 @@
  * 关键: 现有所有写 0xB8000 的代码 (内核 put_char / EDIT DFLAT / 软件叠加
  * 光标鼠标) 一行不改 — 渲染器每 tick 读 0xB8000 画一遍即可。
  *
- * boot.asm 在进保护模式前切 VBE 640x480x16bpp, fb 参数写到 0x1500:
- *   0x1500 flag(1,=0x01 VBE ok) 0x1502 base(4) 0x1506 w(2) 0x1508 h(2)
- *   0x150A bpp(1) 0x150B bpl(2)
+ * boot.asm 在进保护模式前切 VBE 640x480x16bpp, fb 参数写到 0x6000:
+ *   0x6000 flag(1,=0x01 VBE ok) 0x6002 base(4) 0x6006 w(2) 0x6008 h(2)
+ *   0x600A bpp(1) 0x600B bpl(2)
  * 英文字库内嵌 (latin_font.h), 不依赖 BIOS INT 10h 1130h —
  * QEMU SeaBIOS 返回的字库指针错位, 直接复制会得到乱码 (v6.8 修复)。
  */
@@ -20,7 +20,7 @@
 #define VGA_BASE  0xB8000
 #define COLS      80
 #define ROWS      30
-#define FB_INFO   0x1500
+#define FB_INFO   0x6000
 #define LATIN_FONT ((const unsigned char *)latin_font8x16)
 
 static unsigned int fb_base = 0;
@@ -280,7 +280,7 @@ void fb_put_str_cjk(int cellx, int celly, const unsigned char *s,
     }
 }
 
-/* 从 boot.asm 的 0x1500 读 fb 参数, 启用渲染器 */
+/* 从 boot.asm 的 0x6000 读 fb 参数, 启用渲染器 */
 void fb_init(void) {
     unsigned char *p = (unsigned char *)FB_INFO;
     if (p[0] != 0x01) { fb_on = 0; return; }              /* VBE 未切成功 */
@@ -301,10 +301,9 @@ void fb_init(void) {
  * (v6.8) — 文件不落 C 盘。 */
 void fb_font_init(void) {
     if (!fb_on) return;
-    /* v6.5.6 阶段B: 字库跨盘搜索 — 按盘符 A..D 逐盘找 HZK16 / U2GB.BIN
-     * (软盘引导时 A: 运行时不可读, 字库落在 IDE 数据盘上) */
+    /* Search mounted logical volumes as well as directly-mounted devices. */
     int d;
-    for (d = 0; d < 6 && !hzk16; d++) {
+    for (d = 0; d < DEV_SLOT_COUNT && !hzk16; d++) {
         if (!fs_drive_present(d)) continue;
         drive_ctx_t c = fs_drive_enter(d);
         FAT12Entry e;
@@ -323,7 +322,7 @@ void fb_font_init(void) {
     if (!hzk16) put_str("fb: HZK16 not found on any drive (Latin only)\n");
 
     /* Unicode→GB2312 映射表 (UTF-8 支持): 每 4 字节 [uni u16][gb u16], 按 uni 升序 */
-    for (d = 0; d < 6 && !u2gb; d++) {
+    for (d = 0; d < DEV_SLOT_COUNT && !u2gb; d++) {
         if (!fs_drive_present(d)) continue;
         drive_ctx_t c = fs_drive_enter(d);
         FAT12Entry e;

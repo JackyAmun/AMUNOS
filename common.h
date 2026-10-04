@@ -78,6 +78,8 @@ extern int fs_root_entries;
 extern int fs_data_lba;
 extern int fs_spc; // 每簇扇区数 (BPB off 13; v6.5.1 FAT16)
 extern int fs_fat_bits; // FAT 位宽 12/16 (v6.5.1 自动识别)
+extern unsigned int fs_volume_lba;     // 当前卷在物理设备中的起始 LBA（MBR 分区）
+extern unsigned int fs_volume_sectors; // 当前卷的逻辑扇区数
 
 extern void put_num(unsigned int n);
 extern void update_cursor();
@@ -89,14 +91,25 @@ extern int write_sector_asm(unsigned int lba, void* buf, int drive_idx);
 // v6.5.6 P1: 块设备统一入口 — drive_idx 0-3=IDE 槽, 4=软盘(FDC), 其余按 dev.c 表分发
 int blk_read(unsigned int lba, void* buf, int drive_idx);
 int blk_write(unsigned int lba, const void* buf, int drive_idx);
+int blk_read_n(unsigned int lba, unsigned int count, void* buf, int drive_idx);
+int blk_write_n(unsigned int lba, unsigned int count, const void* buf, int drive_idx);
 int  fdc_init(void);
 int  fdc_read_sectors(unsigned lba, unsigned count, void *buf);
+int  fdc_write_sectors(unsigned lba, unsigned count, const void *buf);
+int  fdc_probe_media(void *boot_sector);
+int  fdc_media_changed(void);
+unsigned int fdc_capacity(void);
+const char *fdc_media_name(void);
 /* v6.5.6 P3: ATAPI 光驱 + ISO9660 只读 */
 int  atapi_probe(void);
 int  atapi_ready(void);
+int  atapi_media_present(void);
+int  atapi_refresh_media(void);
 unsigned int atapi_capacity(void);              /* 2048B 扇数 */
 int  atapi_read_sectors_2048(unsigned lba, unsigned count, void *buf);
 int  atapi_read_sectors(unsigned lba512, unsigned count, void *buf);
+int  atapi_write_sectors(unsigned lba512, unsigned count, const void *buf);
+const char *atapi_model(void);
 int  iso_mount(void);
 int  iso_root_lba(void);
 int  iso_root_size(void);
@@ -107,9 +120,18 @@ int  ahci_scan(void);
 int  ahci_ready(void);
 int  ahci_port(void);
 int  ahci_read_sectors(int portidx, unsigned lba, unsigned count, void *buf);
+int  nic_init(void);
+int  nic_present(void);
+int  nic_mac(unsigned char out[6]);
+int  nic_send(const void *frame, unsigned length);
+int  nic_receive(void *frame, unsigned capacity);
+int  nic_received_count(void);
+int  nic_transmitted_count(void);
+int  sys_beep(unsigned frequency, unsigned duration_ms);
 
 // --- 5. 文件系统接口 (fs.c) ---
 int fs_init();     /* v6.5.6: 返回 0=成功/-1=失败 (dev_automount 判定挂载) */
+int fs_probe_init(); /* 开机枚举使用的静默文件系统探测 */
 void dev_scan(void);       /* v6.5.6 阶段B: IDE IDENTIFY 自动发现 (dev.c) */
 void dev_automount(void);  /* 引导盘恒 A:, 其余按槽序补位 */
 void pci_scan(void);       /* PCI bus0 枚举 (仅列出 01xx/02xx) */
@@ -127,6 +149,7 @@ int fs_delete_file_in_dir(int dir_cluster, char* name);
 int fs_resolve_path(char* path);
 int fs_write_file_in_dir(int dir_cluster, char* name, char* data, int size);
 int fs_list_dir(int dir_cluster, FAT12Entry* out_buf, int max_entries);
+const char *fs_list_name(int index); /* LFN display name for the last fs_list_dir call */
 unsigned int fat12_get_next_cluster(unsigned int cluster);
 unsigned int fat_entry_cluster(FAT12Entry* e); /* v6.5.6 P2: 32 位起始簇 (FAT32) */
 int fs_is_root_dir(int dc);   /* v6.5.6 P2: FAT32 根有两种表示 (0 / root_cluster) */

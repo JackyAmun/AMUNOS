@@ -9,9 +9,10 @@ BOOTFLAGS   = -f bin
 CFLAGS      = -m32 -c -fno-builtin -ffreestanding -fno-pie -std=gnu99 -I.
 LDFLAGS     = -m elf_i386 -T linker.ld
 
-OBJS = head.o kernel.o command.o fault.o mem.o syscall.o task.o vga.o kbd.o idt.o mouse.o fs.o disk_io.o dev.o fdc.o atapi.o iso9660.o ahci.o elf.o serial.o fb.o
+OBJS = head.o kernel.o command.o fault.o mem.o syscall.o task.o vga.o kbd.o idt.o mouse.o fs.o disk_io.o dev.o fdc.o atapi.o iso9660.o ahci.o nic.o elf.o serial.o fb.o
 
 BOOT_BIN   = boot.bin
+STAGE2_BIN = stage2.bin
 KERNEL_BIN = kernel.bin
 A_IMG      = A.img
 B_IMG      = B.img
@@ -21,15 +22,24 @@ INP_ELF    = inp.elf
 EDIT_ELF   = edit.elf
 SYSINFO_ELF = sysinfo.elf
 DFLAT_ELF = dflat-demo.elf
+SOUND_ELF = beep.elf
+NET_ELF = net.elf
 CRT_OBJS   = libc/crt1.o libc/crti.o libc/crtn.o
 
-.PHONY: all clean run run-dual run-serial run-trio run-trio-serial run-floppy floppy
+.PHONY: all clean run run-gui run-net run-net-gui run-dual run-serial run-trio run-trio-serial run-floppy floppy storage-test-images
 
 all: $(A_IMG)
 
 # ── Boot sector ──
-$(BOOT_BIN): boot.asm
+$(BOOT_BIN): boot_stage1.asm
 	@echo "[BOOT] Compiling..."
+	$(ASM) $(BOOTFLAGS) -o $@ $<
+
+$(STAGE2_BIN): boot_stage2.asm boot.asm
+	@echo "[BOOT] Compiling stage2..."
+	$(ASM) $(BOOTFLAGS) -o $@ $<
+
+mbr_boot.bin: mbr_boot.asm
 	$(ASM) $(BOOTFLAGS) -o $@ $<
 
 # ── Kernel ──
@@ -44,18 +54,30 @@ u2gb.bin: gen_u2gb.py
 	python3 gen_u2gb.py
 # Release image intentionally ships the text stack only. GUI sources and
 # the previous build configuration are preserved in the GUI archive.
-$(A_IMG): $(BOOT_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) $(SYSINFO_ELF) $(DFLAT_ELF) $(CRT_OBJS) mka_img.py u2gb.bin
-	@echo "[IMG] Building A.img..."
-	python3 mka_img.py $@
+$(A_IMG): A.vol mbr_boot.bin mkmbr.py
+	python3 mkmbr.py A.vol $@ mbr_boot.bin
+
+A.vol: $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) $(SYSINFO_ELF) $(DFLAT_ELF) $(SOUND_ELF) $(NET_ELF) $(CRT_OBJS) mka_img.py u2gb.bin
+	@echo "[IMG] Building A FAT boot volume..."
+	python3 mka_img.py $@ 2048
+
+A.flp: $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) $(SYSINFO_ELF) $(DFLAT_ELF) $(SOUND_ELF) $(NET_ELF) $(CRT_OBJS) mka_img.py u2gb.bin
+	python3 mka_img.py $@ 0
 
 # ── B.img: FAT12 data disk (secondary master) ──
-$(B_IMG): mkbimg.py $(HELLO_ELF) $(INP_ELF) $(EDIT_ELF)
-	@echo "[IMG] Building B.img..."
+$(B_IMG): B.vol mkmbr.py
+	python3 mkmbr.py B.vol $@
+
+B.vol: mkbimg.py $(HELLO_ELF) $(INP_ELF) $(EDIT_ELF)
+	@echo "[IMG] Building B FAT volume..."
 	python3 mkbimg.py $@
 
 # ── C.img: FAT12 data disk (secondary channel, -hdc) ──
-$(C_IMG): mkcimg.py $(HELLO_ELF)
-	@echo "[IMG] Building C.img..."
+$(C_IMG): C.vol mkmbr.py
+	python3 mkmbr.py C.vol $@
+
+C.vol: mkcimg.py $(HELLO_ELF)
+	@echo "[IMG] Building C FAT volume..."
 	python3 mkcimg.py $@
 
 # ── TinyCC 交叉编译 (vendor/tinycc -> tcc.elf + libtcc1.a + crt*) ──
@@ -109,7 +131,7 @@ $(EDIT_ELF): $(EDIT_SRCS) libc/libc.a libc/crt0.o
 DFLAT_SRCS = $(filter-out edit-fdos/source/edit.c,$(EDIT_SRCS))
 DFLAT_OBJS = $(addprefix .dflat-obj/,$(notdir $(DFLAT_SRCS:.c=.o))) .dflat-obj/demo.o
 $(DFLAT_ELF): edit-fdos/demo.c $(DFLAT_SRCS) libc/libc.a libc/crt0.o
-	@echo "[ELF] Building DFLAT control showcase -> dflat-demo.elf"
+	@echo "[ELF] Building DFLAT 0.1 control showcase -> dflat-demo.elf"
 	mkdir -p .dflat-obj
 	for f in $(DFLAT_SRCS); do \
 	  gcc -m32 -ffreestanding -fno-builtin -fno-pie -fno-stack-protector \
@@ -138,6 +160,24 @@ $(SYSINFO_ELF): sysinfo.c libc/libc.a libc/crt0.o
 	    libc/crt0.o sysinfo.o libc/libc.a $$LIBGCC -o sysinfo.elf
 	@echo "[SYSINFO.ELF] size: $$(wc -c < sysinfo.elf) bytes"
 
+$(SOUND_ELF): beep.c libc/libc.a libc/crt0.o
+	@echo "[ELF] Building beep.elf"
+	gcc -m32 -ffreestanding -fno-builtin -fno-pie -fno-stack-protector \
+	    -fno-asynchronous-unwind-tables -fno-unwind-tables -nostdinc \
+	    -I libc -c beep.c -o beep.o
+	LIBGCC=$$(gcc -m32 -print-libgcc-file-name); \
+	ld -m elf_i386 -no-pie -T libc/link.ld -nostdlib -static \
+	    libc/crt0.o beep.o libc/libc.a $$LIBGCC -o $@
+
+$(NET_ELF): net.c libc/libc.a libc/crt0.o
+	@echo "[ELF] Building net.elf"
+	gcc -m32 -ffreestanding -fno-builtin -fno-pie -fno-stack-protector \
+	    -fno-asynchronous-unwind-tables -fno-unwind-tables -nostdinc \
+	    -I libc -c net.c -o net.o
+	LIBGCC=$$(gcc -m32 -print-libgcc-file-name); \
+	ld -m elf_i386 -no-pie -T libc/link.ld -nostdlib -static \
+	    libc/crt0.o net.o libc/libc.a $$LIBGCC -o $@
+
 # ── Compile rules ──
 %.o: %.c common.h
 	@echo "[CC] $<"
@@ -149,7 +189,29 @@ $(SYSINFO_ELF): sysinfo.c libc/libc.a libc/crt0.o
 
 # ── Run ──
 run: $(A_IMG)
-	qemu-system-i386 -hda $(A_IMG) -nographic
+	qemu-system-i386 -drive file=$(A_IMG),format=raw,if=ide,index=0 -nographic
+
+# 图形模式：启动扇区会请求 VBE 640x480x16bpp，内核自动切换 framebuffer 文本层。
+run-gui: A.flp $(B_IMG) $(C_IMG)
+	qemu-system-i386 -drive file=A.flp,format=raw,if=floppy,index=0 -boot a \
+	  -drive file=$(B_IMG),format=raw,if=ide,index=0 \
+	  -drive file=$(C_IMG),format=raw,if=ide,index=1 \
+	  -audiodev driver=sdl,id=audio0 -machine pc,pcspk-audiodev=audio0 -display gtk
+
+run-net: A.flp $(B_IMG) $(C_IMG)
+	qemu-system-i386 -drive file=A.flp,format=raw,if=floppy,index=0 -boot a \
+	  -drive file=$(B_IMG),format=raw,if=ide,index=0 \
+	  -drive file=$(C_IMG),format=raw,if=ide,index=1 \
+	  -netdev user,id=n0 -device rtl8139,netdev=n0 \
+	  -audiodev driver=sdl,id=audio0 -machine pc,pcspk-audiodev=audio0 -nographic
+
+# 网络 + GUI + PC speaker 音频后端。
+run-net-gui: A.flp $(B_IMG) $(C_IMG)
+	qemu-system-i386 -drive file=A.flp,format=raw,if=floppy,index=0 -boot a \
+	  -drive file=$(B_IMG),format=raw,if=ide,index=0 \
+	  -drive file=$(C_IMG),format=raw,if=ide,index=1 \
+	  -netdev user,id=n0 -device rtl8139,netdev=n0 \
+	  -audiodev driver=sdl,id=audio0 -machine pc,pcspk-audiodev=audio0 -display gtk
 
 run-dual: $(A_IMG) $(B_IMG)
 	qemu-system-i386 -hda $(A_IMG) -hdb $(B_IMG) -nographic
@@ -178,16 +240,21 @@ $(D32_IMG): mkd32.py
 	@echo "[IMG] Building FAT32 D32.img..."
 	python3 mkd32.py $(D32_IMG)
 
+MBR_IMG = MBR.img
+$(MBR_IMG): C.img mkmbr.py
+	cp C.img $(MBR_IMG)
+
+storage-test-images: $(A_IMG) $(B_IMG) $(C_IMG) $(D32_IMG) $(CD_IMG) $(MBR_IMG)
+
 run-fat32: $(A_IMG) $(B_IMG) $(C_IMG) $(D32_IMG)
 	qemu-system-i386 -nographic -rtc base=localtime -hda $(A_IMG) -hdb $(B_IMG) -hdc $(C_IMG) -hdd $(D32_IMG) \
 	  -monitor unix:/tmp/mon.sock,server,nowait \
 	  -serial file:/tmp/ser.log -display none
 
-# ── 软盘引导 (v6.5.6 阶段A): A.img 作软盘 (-fda) 启动, IDE 上挂 B:/C: 数据盘。
-#    注意: 内核无 FDC 驱动, 运行时读不了 A: 自身 (无 TCC/BIN) — 数据与字库
-#    由 B:/C: 提供 (fb_font_init 跨盘搜索)。CHS 分块引导路径在此模式生效。
-run-floppy: $(A_IMG) $(B_IMG) $(C_IMG)
-	qemu-system-i386 -rtc base=localtime -fda $(A_IMG) -boot a -hda $(B_IMG) -hdb $(C_IMG)
+# ── 软盘引导: A.img 作软盘 (-fda) 启动, IDE 上挂 B:/C: 数据盘。
+#    FDC 运行时支持常见 FAT 软盘几何的读写；CHS 分块引导路径在此模式生效。
+run-floppy: A.flp $(B_IMG) $(C_IMG)
+	qemu-system-i386 -rtc base=localtime -fda A.flp -boot a -hda $(B_IMG) -hdb $(C_IMG)
 
 # floppy: A.img 本身即 1.44MB 软盘几何, 可直接写物理软盘 (Linux):
 #   dd if=A.img of=/dev/fd0 bs=512 conv=notrunc
@@ -196,7 +263,7 @@ floppy: $(A_IMG)
 	@echo "  dd if=A.img of=/dev/fd0 bs=512 conv=notrunc"
 
 clean:
-	rm -f *.o *.bin *.img
+	rm -f *.o *.bin *.img *.vol
 	@echo "[CLEAN] Done"
 
 # ── ATAPI 光驱 (v6.5.6 P3): CD.iso 挂 -cdrom (IDE1 从属, CD0), ISO9660 只读 ──

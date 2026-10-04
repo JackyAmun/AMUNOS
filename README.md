@@ -11,12 +11,16 @@ HELLO.C -> TCC HELLO.C -o HELLO.ELF -> HELLO.ELF
 
 ## 当前版本
 
+`AMUNOS 6.5.7(dev)` 使用 `DFLAT 0.1` 作为当前文本窗口与控件框架版本。
+
 发行镜像 `A.img` 默认包含：
 
 - TinyCC：系统内自举 C 编译器
 - EDIT：基于 FreeDOS EDIT 的文本编辑器移植
 - DFLAT：控件展示和文本窗口实验程序
 - SYSINFO：查看内核、文件系统和设备信息
+- BEEP：以指定频率和时长驱动 PC speaker
+- NET：查看 RTL8139 网卡 MAC，并收发原始以太网帧
 - AMUNOS libc、头文件、链接脚本和示例源码
 
 当前版本不启用 GUI syscall，也不把 GUI 演示程序和 WRITE 放入发行镜像。
@@ -49,7 +53,12 @@ make run
 | `edit.elf` | EDIT 编辑器 |
 | `dflat-demo.elf` | DFLAT 控件展示程序 |
 | `sysinfo.elf` | 系统信息工具 |
+| `beep.elf` | PC speaker 频率/时长演示程序 |
+| `net.elf` | RTL8139 原始帧收发工具 |
 | `u2gb.bin` | Unicode 到 GB2312 映射表 |
+
+`BEEP [频率Hz] [时长ms]` 支持 37..20000 Hz、1..5000 ms，例如 `BEEP 440 500`。
+`NET` 显示网卡地址，`NET SEND text` 广播实验 EtherType `0x88B5` 帧，`NET RX` 轮询接收一帧。网络目前只有 RTL8139 原始帧收发，没有 ARP、IPv4、DHCP、TCP/UDP 协议栈。
 
 ## DFLAT 开发方向
 
@@ -104,12 +113,13 @@ edit-fdos/demo.c          DFLAT 展示程序入口
 | 设备 | 当前能力 | 文件系统或格式 |
 | --- | --- | --- |
 | IDE ATA 主从盘 | 读写 | FAT12/FAT16 稳定，FAT32 受限 |
-| AHCI SATA | 只读 | FAT 卷，首个可用端口 |
+| MBR 分区 | 读写（IDE）/只读（AHCI） | 最多 25 个逻辑卷槽；主分区及 EBR 链中的 FAT 卷分配独立盘符 |
+| AHCI SATA | 只读 | 扫描首个可用端口；支持读取 MBR 分区 |
 | ATAPI 光驱 | 只读 | ISO9660 |
-| FDC 软盘 | 主要只读 | 1.44MB FAT12 |
-| MBR/GPT 分区盘 | 受限 | 暂无统一分区解析层 |
+| FDC 软盘 | 读写 | 1.44MB/1.2MB/720KB/360KB FAT12；驱动器 0 |
+| RTL8139 | 原始帧收发 | 轮询模式；无 IP 协议栈 |
 
-当前文件系统把卷作为整体处理，尚未提供完整 MBR/GPT、UUID、热插拔和跨设备写入事务。软件安装应优先使用可写 FAT 盘。
+当前文件系统支持直接 FAT 卷、MBR 主分区和有界 EBR 扩展分区链；GPT、UUID、热插拔和跨设备写入事务尚未实现。软件安装应优先使用可写 IDE/FDC FAT 盘。
 
 ## 软件安装规划
 

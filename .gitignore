@@ -2,6 +2,8 @@
 *.o
 *.bin
 *.img
+*.vol
+*.flp
 *.elf
 *.a
 *.com
@@ -9,6 +11,9 @@
 
 # ── 第三方 / 参考资料 (各自独立, 与 AMUNOS 源码无关) ──
 FreeBASIC-1.10.1-source/
+FreeBASIC-*.tar
+FreeBASIC-*.tar.xz
+kernel-master.zip
 kernel-master/
 mikanos/
 makar/

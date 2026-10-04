@@ -1,14 +1,9 @@
 #!/usr/bin/env python3
-r"""A.img for AMUNOS — boot + kernel (sectors 1..384) + FAT12 system disk
+r"""A.img for AMUNOS — stage1 + stage2 + kernel + FAT12 system disk
 with a two-level directory tree (BOOT\ BIN\ USR\LIB USR\INCLUDE USR\SRC).
 
-Geometry (matches boot.asm BPB: reserved=385 sectors for boot+kernel):
-  sector 0        boot.bin
-  sector 1..384   kernel.bin (must stay < 384 sectors = 192KB)
-  sector 385..393  FAT1 (9 sectors)
-  sector 394..402  FAT2 (9 sectors)
-  sector 403..416  root dir (224 entries = 14 sectors)
-  sector 417..     data area (root files + subdirectories)
+Geometry: sector 0 is stage1, sectors 1..4 are stage2, and sectors 5..388
+contain kernel.bin (must stay below 384 sectors = 192KB).
 
 Tree:
   A:\
@@ -22,10 +17,14 @@ Tree:
 """
 import struct, sys, os
 
-path = sys.argv[1] if len(sys.argv) > 1 else 'A.img'
+path = sys.argv[1] if len(sys.argv) > 1 else 'A.vol'
+partition_lba = int(sys.argv[2]) if len(sys.argv) > 2 else 2048
 d = bytearray(2880 * 512)
 
-RESV   = 385              # reserved sectors (1 boot + 384 kernel, kernel<=192KB)
+STAGE2_SECTORS = 4
+KERNEL_START = 1 + STAGE2_SECTORS
+KERNEL_SECTORS = 384
+RESV   = KERNEL_START + KERNEL_SECTORS
 FATSEC = 9                # sectors per FAT
 ROOTENT= 224              # root directory entries
 FAT1   = RESV * 512       # offset of FAT1
@@ -33,14 +32,22 @@ FAT2   = FAT1 + FATSEC * 512
 ROOT   = FAT2 + FATSEC * 512              # = sector 403
 DATA   = ROOT + (ROOTENT * 32)            # = sector 417
 
-# ── boot + kernel preamble ──
+# ── stage1 + stage2 + kernel preamble ──
 with open('boot.bin', 'rb') as f:
     d[0:512] = f.read(512)
+with open('stage2.bin', 'rb') as f:
+    stage2 = f.read()
+if len(stage2) > STAGE2_SECTORS * 512:
+    raise SystemExit(f'stage2.bin too big: {len(stage2)} > {STAGE2_SECTORS * 512}')
+d[512:512 + len(stage2)] = stage2
 with open('kernel.bin', 'rb') as f:
     k = f.read()
-if len(k) > (RESV - 1) * 512:
-    raise SystemExit(f'kernel.bin too big: {len(k)} > {(RESV-1)*512}')
-d[512:512 + len(k)] = k
+if len(k) > KERNEL_SECTORS * 512:
+    raise SystemExit(f'kernel.bin too big: {len(k)} > {KERNEL_SECTORS * 512}')
+d[KERNEL_START * 512:KERNEL_START * 512 + len(k)] = k
+
+# A.vol is partition-booted; A.flp is the zero-offset floppy counterpart.
+struct.pack_into('<I', d, 28, partition_lba)
 
 # ── FAT reserved clusters 0/1 ──
 d[FAT1:FAT1 + 3] = b'\xf0\xff\xff'
@@ -108,6 +115,52 @@ def add_to(parent, name8, ext3, content, attr=0x20):
     parent.entries.append(mk_entry(name8, ext3, attr, c, len(C)))
     return nc
 
+def lfn_entry(order, name, checksum):
+    """Build one FAT VFAT long-name entry (UTF-16LE, BMP names)."""
+    e = bytearray(32)
+    e[0] = order
+    e[11] = 0x0F
+    e[12] = 0
+    e[13] = checksum
+    e[26:28] = b'\x00\x00'
+    chars = [ord(c) for c in name]
+    slots = chars[:13]
+    if len(slots) < 13:
+        slots.append(0)
+    slots += [0xFFFF] * (13 - len(slots))
+    pos = 0
+    for off in (1, 14, 28):
+        count = 5 if off == 1 else (6 if off == 14 else 2)
+        for _ in range(count):
+            struct.pack_into('<H', e, off, slots[pos])
+            off += 2
+            pos += 1
+    return e
+
+def short_checksum(name8, ext3):
+    raw = _b8(name8, 8) + _b8(ext3, 3)
+    s = 0
+    for b in raw:
+        s = ((s & 1) << 7) + (s >> 1) + b
+        s &= 0xFF
+    return s
+
+def add_long_to(parent, longname, alias8, ext3, content):
+    """Add a long-name entry plus a conventional 8.3 alias."""
+    before = len(parent.entries)
+    add_to(parent, alias8, ext3, content)
+    short = parent.entries.pop()
+    name_chars = list(longname)
+    chunks = [name_chars[i:i + 13] for i in range(0, len(name_chars), 13)]
+    checksum = short_checksum(alias8, ext3)
+    for idx in range(len(chunks) - 1, -1, -1):
+        order = idx + 1
+        if idx == len(chunks) - 1:
+            order |= 0x40
+        parent.entries.append(lfn_entry(order, ''.join(chunks[idx]), checksum))
+    parent.entries.append(short)
+    assert len(parent.entries) > before
+
 def add_file_to(parent, name8, ext3, path):
     with open(path, 'rb') as f:
         return add_to(parent, name8, ext3, f.read())
@@ -141,6 +194,8 @@ add_opt_to(BIN, 'TCC',  'ELF', 'tcc.elf')
 add_opt_to(BIN, 'EDIT', 'ELF', 'edit.elf')
 add_opt_to(BIN, 'SYSINFO', 'ELF', 'sysinfo.elf')
 add_opt_to(BIN, 'DFLAT', 'ELF', 'dflat-demo.elf')
+add_opt_to(BIN, 'BEEP', 'ELF', 'beep.elf')
+add_opt_to(BIN, 'NET', 'ELF', 'net.elf')
 
 # ── USR\LIB\ : TCC 链接库 (cmd_tcc 注入 -L/-B) ──
 add_opt_to(USR_LIB, 'LIBC',    'A  ', 'libc/libc.a')
@@ -195,6 +250,8 @@ CMDS_BIN = '''\
 EDIT /BIN/EDIT.ELF
 SYSINFO /BIN/SYSINFO.ELF
 DFLAT /BIN/DFLAT.ELF
+BEEP /BIN/BEEP.ELF
+NET /BIN/NET.ELF
 '''
 add_to(root, 'CMDS', 'BIN', CMDS_BIN)
 
@@ -208,6 +265,8 @@ add_to(root, 'UTF8_CN', 'TXT',
        '这是 UTF-8 编码的中文内容\n第二行 456 def\n')
 add_to(root, 'GB_CN', 'TXT',
        '这是 GB2312 编码的中文内容\n第二行 789 ghi\n'.encode('gb2312'))
+add_long_to(root, 'A longer filename example.txt', 'LONGNAM1', 'TXT',
+            'This file is addressed through a FAT long filename.\n')
 
 # ── 布局落盘: 根目录 + 各子目录 + FAT2 ──
 for i, e in enumerate(root.entries):

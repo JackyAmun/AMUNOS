@@ -83,11 +83,12 @@ void kmain(){
     dev_scan();           /* v6.5.6 阶段B: IDE IDENTIFY 自动发现 4 槽 */
     dev_automount();      /* 引导盘恒 A:, 其余按槽序补位 (内含 fs_init) */
     pci_scan();           /* PCI bus0 枚举, 串口列 01xx/02xx */
+    nic_init();           /* 可选 RTL8139 原始以太网轮询驱动 */
     fb_init();            /* 读 boot.asm 的 VBE fb 参数; 图形模式切软件文本缓冲 */
     cls();                /* 清当前 vram (图形=软件缓冲 / 文本=0xB8000) */
     fb_font_init();       /* 从 C:HZK16 加载字库 (v6.8 中文) */
-    put_str("AMUNOS Kernel v6.5.6 (Multi-Drive)\n");
-    serial_puts("AMUNOS v6.5.6 serial ready\n");   /* 冒烟标记: serial_puts 把 \n 翻成 CRLF */
+    put_str("AMUNOS 6.5.7(dev) (Multi-Drive)\n");
+    serial_puts("AMUNOS 6.5.7(dev) serial ready\n");
     task_init();
     task_create(demo_clock_task, 2048);
     __asm__ volatile("sti");

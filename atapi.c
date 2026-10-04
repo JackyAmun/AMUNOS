@@ -1,184 +1,308 @@
-/* atapi.c — ATAPI 光驱驱动 (v6.5.6 P3, 只读)
+/* atapi.c - legacy IDE ATAPI packet device support.
  *
- * 探测: IDE1 从属 (0x170, dev=1) 发 IDENTIFY PACKET DEVICE (0xA1);
- * 读:   PACKET (0xA0) + SCSI READ(10), PIO 一次 2048 字节 (= 4 个 512 扇)。
- * 全轮询, 无中断/DMA。仅支持 QEMU 标准位置 (-cdrom = IDE1 slave)。
+ * Scans both primary/secondary channels and master/slave positions. The block
+ * interface exposes 512-byte logical windows over 2048-byte optical sectors.
+ * CD-ROM media is intentionally read-only; recording requires a separate MMC
+ * writer, cache management and disc finalization implementation.
  */
 #include "common.h"
 #include "atapi.h"
 
-#define AT_BASE   0x170
-#define AT_DATA   (AT_BASE + 0)   /* 数据 (16bit) */
-#define AT_ERR    (AT_BASE + 1)   /* = Feature */
-#define AT_SCNT   (AT_BASE + 2)
-#define AT_LBAM   (AT_BASE + 3)
-#define AT_LBAH   (AT_BASE + 4)
-#define AT_DH     (AT_BASE + 6)   /* 驱动/头 */
-#define AT_STAT   (AT_BASE + 7)
-#define AT_CMD    (AT_BASE + 7)
-#define AT_CTL    (AT_BASE + 0x206)
+#define ATA_DATA  0
+#define ATA_ERR   1
+#define ATA_FEAT  1
+#define ATA_SCNT  2
+#define ATA_LBAM  3
+#define ATA_LBAH  4
+#define ATA_DH    6
+#define ATA_STAT  7
+#define ATA_CMD   7
 
-#define SRST 0x04
-#define nIEN 0x02
+#define ATA_BSY   0x80
+#define ATA_DRQ   0x08
+#define ATA_DF    0x20
+#define ATA_ERRF  0x01
 
-static int atapi_ok = 0;
-static int in_sense = 0;   /* REQUEST SENSE 递归防护 */
-static unsigned int atapi_sectors = 0;   /* 2048B 扇区数 (READ CAPACITY) */
+static unsigned short at_base = 0x170;
+static unsigned short at_ctl = 0x376;
+static unsigned char at_slave = 1;
+static int atapi_ok;
+static int media_ok;
+static unsigned int atapi_sectors;
+static unsigned char sense_key, sense_asc, sense_ascq;
+static char model[21] = "ATAPI CD-ROM";
+static unsigned char sector_window[2048];
+static unsigned int window_lba = 0xFFFFFFFFu;
 
-static int wait_not_busy(int iter)
+static void ata_delay(void)
 {
-    int i;
-    for (i = 0; i < iter; i++) {
-        unsigned char st = io_in8(AT_STAT);
-        if (!(st & 0x80)) return 0;      /* BSY 清零 */
-        if ((st & 0x01) || (st & 0x20)) return -1;   /* ERR / DF */
-        if ((i & 0xFFF) == 0xFFF) io_in8(0x80);
-    }
-    return -1;
+    io_in8(at_ctl); io_in8(at_ctl); io_in8(at_ctl); io_in8(at_ctl);
 }
 
-static int wait_drq(void)
+static void ata_select(unsigned char slave)
 {
-    int i;
-    for (i = 0; i < 400000; i++) {
-        unsigned char st = io_in8(AT_STAT);
-        if (st & 0x08) return 0;         /* DRQ */
-        if (st & 0x01) return -1;        /* ERR */
-        if ((i & 0xFFF) == 0xFFF) io_in8(0x80);
-    }
-    return -1;
+    io_out8(at_base + ATA_DH, (unsigned char)(0xA0 | (slave ? 0x10 : 0)));
+    ata_delay();
 }
 
-/* 12 字节 packet 命令 (PIO); 失败打印位置码 f1-f4 + status/error */
-static int atapi_packet(const unsigned char *pkt, unsigned short *buf, int words)
+static int ata_wait_not_busy(unsigned limit)
 {
-    io_out8(AT_DH, 0xB0);                /* LBA 从属 */
-    if (wait_not_busy(400000)) return -1;
-    io_out8(AT_SCNT, 0);                 /* 特性: 无重叠/无 DMA */
-    io_out8(AT_LBAM, 0xFE);   /* byte count limit = 0xFFFE (PIO-in 最大) */
-    io_out8(AT_LBAH, 0xFF);
-    io_out8(AT_CTL, nIEN);               /* 关中断 (轮询) */
-    io_out8(AT_CMD, 0xA0);               /* PACKET */
-    if (wait_drq()) return -1;
-    for (int i = 0; i < 6; i++)
-        io_out16(AT_DATA, ((unsigned short *)pkt)[i]);
-    for (int i = 0; i < words; i++) {
-        if (wait_drq()) return -1;
-        buf[i] = io_in16(AT_DATA);
+    unsigned i;
+    for (i = 0; i < limit; i++) {
+        unsigned char status = io_in8(at_base + ATA_STAT);
+        if (status == 0xFF) return BLK_ERR_NODEV;
+        if (!(status & ATA_BSY)) return BLK_OK;
+        if ((i & 0xFFF) == 0xFFF) io_in8(0x80);
     }
-    if (wait_not_busy(400000)) {
-        serial_puts("[ATAPI] f3"); serial_putc(10);
-        return -1;
+    return BLK_ERR_BUSY;
+}
+
+static int ata_wait_phase(unsigned limit, unsigned char *status)
+{
+    unsigned i;
+    for (i = 0; i < limit; i++) {
+        unsigned char st = io_in8(at_base + ATA_STAT);
+        if (st == 0xFF) return BLK_ERR_NODEV;
+        if (!(st & ATA_BSY)) {
+            *status = st;
+            if (st & (ATA_ERRF | ATA_DF)) return BLK_ERR_IO;
+            return BLK_OK;
+        }
+        if ((i & 0xFFF) == 0xFFF) io_in8(0x80);
     }
-    if (io_in8(AT_STAT) & 0x01) return -1;
-    return 0;
+    return BLK_ERR_BUSY;
+}
+
+static int ata_wait_drq(unsigned limit)
+{
+    unsigned i;
+    for (i = 0; i < limit; i++) {
+        unsigned char status = io_in8(at_base + ATA_STAT);
+        if (status == 0xFF) return BLK_ERR_NODEV;
+        if (!(status & ATA_BSY) && (status & ATA_DRQ)) return BLK_OK;
+        if (!(status & ATA_BSY) && (status & (ATA_ERRF | ATA_DF))) return BLK_ERR_IO;
+        if ((i & 0xFFF) == 0xFFF) io_in8(0x80);
+    }
+    return BLK_ERR_BUSY;
+}
+
+static int atapi_packet_raw(const unsigned char packet[12], void *buffer,
+                            unsigned expected_bytes)
+{
+    unsigned char status;
+    unsigned char *dst = (unsigned char *)buffer;
+    unsigned received = 0;
+    unsigned phase_guard = 0;
+    int rc;
+
+    ata_select(at_slave);
+    if ((rc = ata_wait_not_busy(600000)) != BLK_OK) return rc;
+    io_out8(at_base + ATA_FEAT, 0);       /* PIO, no overlap */
+    io_out8(at_base + ATA_SCNT, 0);
+    io_out8(at_base + ATA_LBAM, 0xFE);
+    io_out8(at_base + ATA_LBAH, 0xFF);
+    io_out8(at_ctl, 0x02);                /* nIEN: polling mode */
+    io_out8(at_base + ATA_CMD, 0xA0);     /* PACKET */
+    if ((rc = ata_wait_drq(600000)) != BLK_OK) return rc;
+
+    for (unsigned i = 0; i < 6; i++) {
+        unsigned short word = (unsigned short)packet[i * 2] |
+                              ((unsigned short)packet[i * 2 + 1] << 8);
+        io_out16(at_base + ATA_DATA, word);
+    }
+
+    while (phase_guard++ < 32) {
+        if ((rc = ata_wait_phase(1200000, &status)) != BLK_OK) return rc;
+        if (!(status & ATA_DRQ))
+            return received >= expected_bytes ? BLK_OK : BLK_ERR_IO;
+        {
+            unsigned bytes = io_in8(at_base + ATA_LBAM) |
+                             ((unsigned)io_in8(at_base + ATA_LBAH) << 8);
+            unsigned words;
+            if (!bytes) bytes = 0x10000u;
+            words = (bytes + 1) / 2;
+            for (unsigned i = 0; i < words; i++) {
+                unsigned short word = io_in16(at_base + ATA_DATA);
+                if (received < expected_bytes && dst) dst[received] = (unsigned char)word;
+                received++;
+                if (received < expected_bytes && dst) dst[received] = (unsigned char)(word >> 8);
+                received++;
+            }
+        }
+    }
+    return BLK_ERR_BUSY;
+}
+
+static void atapi_request_sense(void)
+{
+    unsigned char packet[12] = { 0x03, 0, 0, 0, 18, 0, 0, 0, 0, 0, 0, 0 };
+    unsigned char sense[18];
+    sense_key = sense_asc = sense_ascq = 0;
+    if (atapi_packet_raw(packet, sense, sizeof(sense)) == BLK_OK) {
+        sense_key = sense[2] & 0x0F;
+        sense_asc = sense[12];
+        sense_ascq = sense[13];
+    }
+}
+
+static int atapi_test_unit_ready(void)
+{
+    unsigned char packet[12] = { 0 };
+    int rc = atapi_packet_raw(packet, 0, 0);
+    if (rc == BLK_OK) return BLK_OK;
+    atapi_request_sense();
+    if (sense_key == 0x02 || sense_asc == 0x3A) return BLK_ERR_NO_MEDIA;
+    if (sense_key == 0x06) return BLK_ERR_BUSY; /* unit attention: retry */
+    return rc;
+}
+
+static int atapi_read_capacity(void)
+{
+    unsigned char packet[12] = { 0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    unsigned char capacity[8];
+    unsigned block_size;
+    int rc = atapi_packet_raw(packet, capacity, sizeof(capacity));
+    if (rc != BLK_OK) return rc;
+    atapi_sectors = ((unsigned)capacity[0] << 24) |
+                    ((unsigned)capacity[1] << 16) |
+                    ((unsigned)capacity[2] << 8) | capacity[3];
+    atapi_sectors++;
+    block_size = ((unsigned)capacity[4] << 24) |
+                 ((unsigned)capacity[5] << 16) |
+                 ((unsigned)capacity[6] << 8) | capacity[7];
+    if (block_size != 2048 || !atapi_sectors) return BLK_ERR_IO;
+    return BLK_OK;
+}
+
+static void atapi_decode_model(const unsigned short id[256])
+{
+    const unsigned char *src = (const unsigned char *)id + 54;
+    int i, end = 20;
+    for (i = 0; i < 20; i++) model[i] = src[(i & ~1) + 1 - (i & 1)];
+    while (end > 0 && model[end - 1] == ' ') end--;
+    model[end] = 0;
+    if (!model[0]) strcpy(model, "ATAPI CD-ROM");
 }
 
 int atapi_probe(void)
 {
+    static const unsigned short bases[2] = { 0x1F0, 0x170 };
+    static const unsigned short controls[2] = { 0x3F6, 0x376 };
     unsigned short id[256];
 
-    /* 软复位通道 */
-    io_out8(AT_CTL, SRST | nIEN);
-    { volatile int d; for (d = 0; d < 100000; d++) io_in8(0x80); }
-    io_out8(AT_CTL, nIEN);
-    if (wait_not_busy(1000000)) { serial_puts("[ATAPI] busy after reset\n"); return -1; }
+    atapi_ok = 0;
+    media_ok = 0;
+    atapi_sectors = 0;
+    window_lba = 0xFFFFFFFFu;
 
-    /* IDENTIFY PACKET DEVICE (0xA1) 是普通 ATA 命令: 直接写命令寄存器,
-     * 数据相 256 字 DRQ PIO; 不能当作 SCSI 包塞进 PACKET (0xA0) — 会 ABRT */
-    io_out8(AT_DH, 0xB0);
-    if (wait_not_busy(400000)) { serial_puts("[ATAPI] sel busy\n"); return -1; }
-    io_out8(AT_CMD, 0xA1);
-    if (wait_drq()) {
-        { char hb[] = "0123456789ABCDEF";
-          serial_puts("[ATAPI] id fail st=");
-          serial_putc(hb[(io_in8(AT_STAT)>>4)&0xF]); serial_putc(hb[io_in8(AT_STAT)&0xF]);
-          serial_puts(" er="); serial_putc(hb[(io_in8(AT_ERR)>>4)&0xF]); serial_putc(hb[io_in8(AT_ERR)&0xF]);
-          serial_putc('\n'); }
-        return -1;
-    }
-    for (int i = 0; i < 256; i++) id[i] = io_in16(AT_DATA);
-    if (wait_not_busy(400000)) return -1;
-    if (0) {
-        { char hb[] = "0123456789ABCDEF";
-          serial_puts("[ATAPI] id fail st=");
-          serial_putc(hb[(io_in8(AT_STAT)>>4)&0xF]); serial_putc(hb[io_in8(AT_STAT)&0xF]);
-          serial_puts(" er="); serial_putc(hb[(io_in8(AT_ERR)>>4)&0xF]); serial_putc(hb[io_in8(AT_ERR)&0xF]);
-          serial_putc('\n'); }
-        return -1;
-    }
-    serial_puts("[ATAPI] id0=");
-    { unsigned v = id[0]; char hb[] = "0123456789ABCDEF";
-      for (int k = 12; k >= 0; k -= 4) serial_putc(hb[(v>>k)&0xF]); }
-    serial_putc('\n');
-    if (!(id[0] & 0x8000)) return -1;    /* bit15=1 → packet 设备 */
-    atapi_ok = 1;
-
-    /* READ CAPACITY (0x25): 返回 8 字节 (最后 LBA + 块长) */
-    {
-        unsigned char cp[12] = { 0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-        unsigned short cap[4];
-        if (atapi_packet(cp, cap, 4) == 0) {
-            /* READ CAPACITY 返回大端: [最后LBA][块长], 扇数 = 最后LBA+1 */
-            unsigned char *c = (unsigned char *)cap;
-            unsigned int last = ((unsigned int)c[0] << 24) | (c[1] << 16)
-                              | (c[2] << 8) | c[3];
-            atapi_sectors = last + 1;
+    for (unsigned channel = 0; channel < 2; channel++) {
+        for (unsigned slave = 0; slave < 2; slave++) {
+            unsigned char status;
+            at_base = bases[channel];
+            at_ctl = controls[channel];
+            at_slave = (unsigned char)slave;
+            ata_select(at_slave);
+            status = io_in8(at_base + ATA_STAT);
+            if (status == 0 || status == 0xFF) continue;
+            if (ata_wait_not_busy(300000) != BLK_OK) continue;
+            io_out8(at_base + ATA_SCNT, 0);
+            io_out8(at_base + ATA_LBAM, 0);
+            io_out8(at_base + ATA_LBAH, 0);
+            io_out8(at_base + ATA_CMD, 0xA1); /* IDENTIFY PACKET DEVICE */
+            if (ata_wait_drq(600000) != BLK_OK) continue;
+            for (unsigned i = 0; i < 256; i++) id[i] = io_in16(at_base + ATA_DATA);
+            if (ata_wait_not_busy(300000) != BLK_OK || !(id[0] & 0x8000)) continue;
+            atapi_decode_model(id);
+            atapi_ok = 1;
+            atapi_refresh_media();
+            return BLK_OK;
         }
     }
-    return 0;
+    return BLK_ERR_NODEV;
 }
 
 int atapi_ready(void) { return atapi_ok; }
+int atapi_media_present(void) { return media_ok; }
 unsigned int atapi_capacity(void) { return atapi_sectors; }
+const char *atapi_model(void) { return model; }
 
-/* 读 count 个 2048B 扇 (ISO LBA), 写入 buf (2048*count 字节) */
-int atapi_read_sectors_2048(unsigned lba, unsigned count, void *buf)
+int atapi_refresh_media(void)
 {
-    unsigned short *p = buf;
-    for (unsigned n = 0; n < count; n++) {
-        unsigned int b = lba + n;   /* READ(10) LBA 单位即 2048B 块 */
-        unsigned char pkt[12] = { 0x28, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-        pkt[2] = (unsigned char)(b >> 24);       /* READ(10) LBA (MSB) */
-        pkt[3] = (unsigned char)(b >> 16);
-        pkt[4] = (unsigned char)(b >> 8);
-        pkt[5] = (unsigned char)b;
-        pkt[7] = 0;                              /* 传输 1×2048B 块 */
-        pkt[8] = 1;
-        if (atapi_packet(pkt, p, 1024)) {
-            { char hb[] = "0123456789ABCDEF";
-              serial_puts("[ATAPI] read fail lba=");
-              for (int k = 28; k >= 0; k -= 4) serial_putc(hb[((lba+n)>>k)&0xF]);
-              serial_puts(" st="); serial_putc(hb[(io_in8(AT_STAT)>>4)&0xF]); serial_putc(hb[io_in8(AT_STAT)&0xF]);
-              serial_puts(" er="); serial_putc(hb[(io_in8(AT_ERR)>>4)&0xF]); serial_putc(hb[io_in8(AT_ERR)&0xF]);
-              serial_putc('\n'); }
-            return -1;
-        }
-        p += 1024;
+    int rc;
+    if (!atapi_ok) return BLK_ERR_NODEV;
+    window_lba = 0xFFFFFFFFu;
+    media_ok = 0;
+    atapi_sectors = 0;
+    rc = atapi_test_unit_ready();
+    if (rc == BLK_ERR_BUSY) rc = atapi_test_unit_ready();
+    if (rc != BLK_OK) return rc;
+    rc = atapi_read_capacity();
+    if (rc != BLK_OK) {
+        atapi_request_sense();
+        return rc;
     }
-    return 0;
+    media_ok = 1;
+    return BLK_OK;
 }
 
-/* blk 层适配: lba 为 512B 扇区号 */
+int atapi_read_sectors_2048(unsigned lba, unsigned count, void *buf)
+{
+    unsigned char *dst = (unsigned char *)buf;
+    if (!atapi_ok) return BLK_ERR_NODEV;
+    if (!media_ok) return BLK_ERR_NO_MEDIA;
+    if (!buf || !count) return BLK_ERR_IO;
+    if (lba >= atapi_sectors || count > atapi_sectors - lba) return BLK_ERR_RANGE;
+
+    for (unsigned n = 0; n < count; n++) {
+        unsigned block = lba + n;
+        unsigned char packet[12] = { 0x28, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0 };
+        int rc;
+        packet[2] = (unsigned char)(block >> 24);
+        packet[3] = (unsigned char)(block >> 16);
+        packet[4] = (unsigned char)(block >> 8);
+        packet[5] = (unsigned char)block;
+        rc = atapi_packet_raw(packet, dst + n * 2048, 2048);
+        if (rc != BLK_OK) {
+            atapi_request_sense();
+            if (sense_key == 0x02 || sense_asc == 0x3A) {
+                media_ok = 0;
+                atapi_sectors = 0;
+                return BLK_ERR_NO_MEDIA;
+            }
+            if (sense_key == 0x06 && atapi_refresh_media() == BLK_OK)
+                rc = atapi_packet_raw(packet, dst + n * 2048, 2048);
+            if (rc != BLK_OK) return rc;
+        }
+    }
+    return BLK_OK;
+}
+
 int atapi_read_sectors(unsigned lba, unsigned count, void *buf)
 {
-    /* 512B 对齐的 2048B 扇: 逐个 2048 扇读入临时再拷? 直接要求 4 扇对齐;
-     * ISO 访问都在 2048 边界, 落在中间的由调用方缓冲 */
-    static unsigned char win[2048];
-    unsigned wi = 0xFFFFFFFF;
-    unsigned char *dst = buf;
-    if (!atapi_ok) return -1;
-    if (lba % 4 == 0 && count % 4 == 0)
+    unsigned char *dst = (unsigned char *)buf;
+    if (!atapi_ok) return BLK_ERR_NODEV;
+    if (!media_ok) return BLK_ERR_NO_MEDIA;
+    if (!buf || !count) return BLK_ERR_IO;
+    if (lba >= atapi_sectors * 4u || count > atapi_sectors * 4u - lba)
+        return BLK_ERR_RANGE;
+    if ((lba & 3u) == 0 && (count & 3u) == 0)
         return atapi_read_sectors_2048(lba / 4, count / 4, buf);
-    /* 非对齐: 逐 512 扇走 2048 窗口读 (fs 层单扇访问都是这种) */
+
     for (unsigned i = 0; i < count; i++) {
-        unsigned L = lba + i;
-        if (L / 4 != wi) {
-            if (atapi_read_sectors_2048(L / 4, 1, win)) return -1;
-            wi = L / 4;
+        unsigned logical = lba + i;
+        if (logical / 4 != window_lba) {
+            int rc = atapi_read_sectors_2048(logical / 4, 1, sector_window);
+            if (rc != BLK_OK) return rc;
+            window_lba = logical / 4;
         }
-        for (int k = 0; k < 512; k++)
-            dst[i * 512 + k] = win[(L % 4) * 512 + k];
+        for (unsigned k = 0; k < 512; k++)
+            dst[i * 512 + k] = sector_window[(logical & 3u) * 512 + k];
     }
-    return 0;
+    return BLK_OK;
+}
+
+int atapi_write_sectors(unsigned lba, unsigned count, const void *buf)
+{
+    (void)lba; (void)count; (void)buf;
+    return BLK_ERR_READ_ONLY;
 }

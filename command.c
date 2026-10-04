@@ -57,7 +57,9 @@ void cmd_dir(char* arg){
     for(int i=0;i<cnt;i++){
         if(b[i].attr==0x0F||b[i].attr==0x08)continue;   /* LFN/卷标 */
         if(b[i].name[0]=='.'&&(b[i].attr&0x10)){put_str(b[i].name[1]==' '?".  <DIR>\n":".. <DIR>\n");shown++;line++;continue;}
-        put_fatname(b[i].name, b[i].ext);
+        const char *display_name = fs_list_name(i);
+        if (display_name && display_name[0]) put_cjk_str((const unsigned char*)display_name, 0x0E);
+        else put_fatname(b[i].name, b[i].ext);
         if(!wide){put_str("  ");if(b[i].attr&0x10)put_str("<DIR>         ");else{put_str("      ");put_num(b[i].size);put_str(" B");}}
         put_char('\n',0x0E);shown++;line++;
         if(page && line >= 21){
@@ -251,7 +253,7 @@ void cmd_mov(char* arg){
 
 /* ── CLS/VER/TIME ── */
 void cmd_cls(){cls();}
-void cmd_ver(){put_str("\nAMUN-DOS 6.5.3 (C)2026 AMUNOS Team\n\n");}
+void cmd_ver(){put_str("\nAMUNOS 6.5.7(dev) (C)2026 AMUNOS Team\nDFLAT 0.1\n\n");}
 
 /* ── ZH (v6.8 中文演示): 把一段 GB2312 汉字经 cjk_cell 渲染到可见 80×25 区 ──
  * "你好，AMUNOS。中文支持" (GB2312 双字节)。走 put_cjk_str → cjk_cell 汉字格
@@ -475,14 +477,14 @@ void cmd_tcc(char* arg){
 /* ═══════════════ DISPATCH ═══════════════ */
 
 /* ── 自定义命令 (v6.5.1): 返回 1=已处理
- *   CMDS.BIN 命令→ELF 对照表 (全盘 A:-D: 搜索, 跳过缺盘; 行格式 "NAME TARGET",
+ *   CMDS.BIN 命令→ELF 对照表 (全盘 A:-Z: 搜索, 跳过缺盘; 行格式 "NAME TARGET",
  *   可被 EDIT CMDS.BIN 编辑 / INSTALL 追加; ;/# 开头为注释) */
 static int cmd_custom(char* cmd, char* a1) {
     char line[112];
     int n = 0, j = 0;
 
     /* 1) 全盘 CMDS.BIN */
-    for (int d = 0; d < 6; d++) {
+    for (int d = 0; d < DEV_SLOT_COUNT; d++) {
         if (d != current_drive_idx && !fs_drive_present(d)) continue;
         drive_ctx_t octx = fs_drive_enter(d);
         FAT12Entry ce;
@@ -513,10 +515,10 @@ static int cmd_custom(char* cmd, char* a1) {
                             n = 0;
                             /* 目标已带盘符 (如 INSTALL 生成的 "A:\BIN\HW.EXE") → 原样用;
                              * 否则补来源盘盘符; 补盘符后仍相对 → 再补 \ */
-                            int dq = (tgt[0]>='A'&&tgt[0]<='D'&&tgt[1]==':') ||
-                                     (tgt[0]>='a'&&tgt[0]<='d'&&tgt[1]==':');
+                            int dq = (tgt[0]>='A'&&tgt[0]<='Z'&&tgt[1]==':') ||
+                                     (tgt[0]>='a'&&tgt[0]<='z'&&tgt[1]==':');
                             if (!dq) {
-                                line[n++] = (char)('A'+d), line[n++] = ':';
+                                line[n++] = (char)('A'+dev_letter_from_slot(d)), line[n++] = ':';
                                 if (tgt[0] != '/') line[n++] = '/';
                             }
                             for (ti = 0; tgt[ti] && n < 60; ti++) line[n++] = tgt[ti];
@@ -538,20 +540,92 @@ static int cmd_custom(char* cmd, char* a1) {
     return 0;
 }
 
-static int cmd_run_with_ext(char *cmd, char *a1) {
+static int exec_path_exists(int slot, const char *path) {
+    char p[80];
+    FAT12Entry e;
+    int i = 0, dir;
+    while (path[i] && i < 78) { p[i] = path[i]; i++; }
+    p[i] = 0;
+    drive_ctx_t c = fs_drive_enter(slot);
+    dir = fs_resolve_path(p);
+    int ok = dir >= 0 && fs_find_entry_in_dir(dir, p, &e) >= 0 && !(e.attr & 0x10);
+    fs_drive_restore(c);
+    return ok;
+}
+
+static int run_path(char *path, char *a1) {
     char line[112];
     int n = 0, i = 0;
-    while (cmd[i] && n < 8) line[n++] = cmd[i++];
-    line[n++] = '.';
-    line[n++] = 'E';
-    line[n++] = 'L';
-    line[n++] = 'F';
-    line[n++] = ' ';
-    i = 0;
-    while (a1[i] && n < 110) line[n++] = a1[i++];
+    while (path[i] && n < 108) line[n++] = path[i++];
+    if (a1[0] && n < 110) line[n++] = ' ';
+    for (i = 0; a1[i] && n < 110; i++) line[n++] = a1[i];
     line[n] = 0;
     cmd_elf(line);
     return 1;
+}
+
+static int cmd_run_with_ext(char *cmd, char *a1) {
+    static const char *exts[] = { ".ELF", ".EXE", ".COM", ".BIN" };
+    char candidate[80], absolute[96];
+    int i, d, n;
+
+    /* Explicit paths or names with an extension are passed through unchanged. */
+    for (i = 0; cmd[i]; i++)
+        if (cmd[i] == '/' || cmd[i] == ':' || cmd[i] == '.') {
+            run_path(cmd, a1);
+            return 1;
+        }
+
+    /* First honor the current directory, then search mounted volume roots. */
+    {
+        n = 0;
+        while (cmd[n] && n < 62) { candidate[n] = cmd[n]; n++; }
+        for (int x = 0; x < 4; x++) {
+            int k = n;
+            for (int y = 0; exts[x][y] && k < 78; y++) candidate[k++] = exts[x][y];
+            candidate[k] = 0;
+            if (exec_path_exists(current_drive_idx, candidate)) {
+                run_path(candidate, a1); return 1;
+            }
+            {
+                char binpath[80];
+                int z = 0;
+                binpath[z++] = '/'; binpath[z++] = 'B'; binpath[z++] = 'I'; binpath[z++] = 'N'; binpath[z++] = '/';
+                for (int q = 0; candidate[q] && z < 78; q++) binpath[z++] = candidate[q];
+                binpath[z] = 0;
+                if (exec_path_exists(current_drive_idx, binpath)) {
+                    run_path(binpath, a1); return 1;
+                }
+            }
+            for (d = 0; d < DEV_SLOT_COUNT; d++) {
+                if (!devs[d].present || d == current_drive_idx || !fs_drive_present(d)) continue;
+                if (exec_path_exists(d, candidate)) {
+                    int letter = dev_letter_from_slot(d);
+                    absolute[0] = (char)('A' + letter); absolute[1] = ':'; absolute[2] = '/';
+                    for (int z = 0; candidate[z] && z < 78; z++) absolute[3 + z] = candidate[z];
+                    absolute[3 + strlen(candidate)] = 0;
+                    run_path(absolute, a1); return 1;
+                }
+                {
+                    char binpath[80];
+                    int z = 0;
+                    binpath[z++] = '/'; binpath[z++] = 'B'; binpath[z++] = 'I'; binpath[z++] = 'N'; binpath[z++] = '/';
+                    for (int q = 0; candidate[q] && z < 78; q++) binpath[z++] = candidate[q];
+                    binpath[z] = 0;
+                    if (exec_path_exists(d, binpath)) {
+                        int letter = dev_letter_from_slot(d);
+                        absolute[0] = (char)('A' + letter); absolute[1] = ':';
+                        for (int q = 0; binpath[q] && q < 78; q++) absolute[3 + q] = binpath[q];
+                        absolute[2] = '/';
+                        for (int q = 1; binpath[q] && q < 78; q++) absolute[2 + q] = binpath[q];
+                        absolute[2 + strlen(binpath)] = 0;
+                        run_path(absolute, a1); return 1;
+                    }
+                }
+            }
+        }
+    }
+    return 0;
 }
 
 void exec_cmd(char* line){
@@ -559,7 +633,10 @@ void exec_cmd(char* line){
     while(line[i]==' ')i++;if(!line[i])return;
     if(line[i+1]==':'){
         char d=to_upper(line[i]);
-        if(d>='A'&&d<='F'){current_drive_idx=dev_slot_from_letter(d-'A');cwd_path[0]=0;cwd_cluster=0;fs_init();}
+        if(d>='A'&&d<='Z'){
+            int slot=dev_slot_from_letter(d-'A');
+            if(slot>=0){current_drive_idx=slot;cwd_path[0]=0;cwd_cluster=0;fs_init();}
+        }
         return;
     }
     while(line[i]&&line[i]!=' '&&j<15)cmd[j++]=to_upper(line[i++]);cmd[j]=0;

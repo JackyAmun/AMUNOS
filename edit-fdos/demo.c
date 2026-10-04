@@ -1,7 +1,7 @@
 #include "dflat.h"
 #include "syscall.h"
 
-char DFlatApplication[] = "DFLAT Controls";
+char DFlatApplication[] = "DFLAT 0.1";
 
 DEFMENU(DemoMenu)
     POPDOWN("~File", NULL, "Close the showcase")
@@ -15,7 +15,7 @@ void PrepEditMenu(void *wnd, struct Menu *menu) { (void)wnd; (void)menu; }
 void PrepSearchMenu(void *wnd, struct Menu *menu) { (void)wnd; (void)menu; }
 
 DIALOGBOX(ControlsDemo)
-    DB_TITLE("DFLAT Control Showcase", -1, -1, 23, 62)
+    DB_TITLE("DFLAT 0.1 Control Showcase", -1, -1, 23, 62)
     CONTROL(BOX, "Input",              1, 1, 9, 27, 0)
     CONTROL(TEXT, "Name:",             3, 2, 1, 7, ID_FILENAME)
     CONTROL(EDITBOX, NULL,             11, 2, 1, 15, ID_FILENAME)
@@ -92,7 +92,7 @@ int main(int argc, char **argv)
     cfg.ScreenLines = SCREENHEIGHT;
     if (!init_messages())
         return 1;
-    wnd = CreateWindow(APPLICATION, "DFLAT Controls", 0, 0, -1, -1,
+    wnd = CreateWindow(APPLICATION, "DFLAT 0.1", 0, 0, -1, -1,
         &DemoMenu, NULL, NULL, MOVEABLE | SIZEABLE | HASBORDER | HASSTATUSBAR);
     if (wnd == NULL)
         return 1;

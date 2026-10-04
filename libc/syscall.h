@@ -82,6 +82,10 @@
 #define SYS_CLIP_SET 59 /* 设置系统剪贴板(buf,len) */
 #define SYS_CLIP_GET 60 /* 读取系统剪贴板(buf,max) → bytes; buf NULL 返回长度 */
 #define SYS_SYSINFO 61 /* 读取内核/FS/设备摘要到 sysinfo_t */
+#define SYS_BEEP 75 /* PC Speaker: 频率 Hz、持续时间 ms */
+#define SYS_NET_MAC 76
+#define SYS_NET_SEND 77
+#define SYS_NET_RECEIVE 78
 #if 0
 #define SYS_GUI_TAREA_INSERT 62 /* TextArea 光标/选区处替换插入 */
 #define SYS_GUI_TAREA_SELECTION_GET 63 /* 读取 TextArea 选区 */
@@ -305,6 +309,18 @@ static inline void sys_cjkclear(int x, int y) {
 }
 static inline int sys_sysinfo(sysinfo_t *out) {
  return (int)syscall1(SYS_SYSINFO, (long)out);
+}
+static inline int sys_beep(unsigned frequency, unsigned duration_ms) {
+ return (int)syscall2(SYS_BEEP, (long)frequency, (long)duration_ms);
+}
+static inline int sys_net_mac(unsigned char mac[6]) {
+ return (int)syscall1(SYS_NET_MAC, (long)mac);
+}
+static inline int sys_net_send(const void *frame, unsigned length) {
+ return (int)syscall2(SYS_NET_SEND, (long)frame, (long)length);
+}
+static inline int sys_net_receive(void *frame, unsigned capacity) {
+ return (int)syscall2(SYS_NET_RECEIVE, (long)frame, (long)capacity);
 }
 
 /* ── GUI 窗口服务器包装 (archived) ── */
