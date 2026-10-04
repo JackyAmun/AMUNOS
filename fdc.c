@@ -64,7 +64,7 @@ static int msr_wait(unsigned mask, unsigned value, unsigned limit)
 
 static int fdc_out(unsigned char value)
 {
-    int rc = msr_wait(FDC_RQM | FDC_DIO, FDC_RQM, 250000);
+    int rc = msr_wait(FDC_RQM | FDC_DIO, FDC_RQM, 20000);
     if (rc != BLK_OK) return rc;
     io_out8(FDC_FIFO, value);
     return BLK_OK;
@@ -72,7 +72,7 @@ static int fdc_out(unsigned char value)
 
 static int fdc_in(unsigned char *value)
 {
-    int rc = msr_wait(FDC_RQM | FDC_DIO, FDC_RQM | FDC_DIO, 250000);
+    int rc = msr_wait(FDC_RQM | FDC_DIO, FDC_RQM | FDC_DIO, 20000);
     if (rc != BLK_OK) return rc;
     *value = io_in8(FDC_FIFO);
     return BLK_OK;
@@ -156,7 +156,7 @@ static int fdc_reset(void)
     io_out8(FDC_DOR, 0x1C); /* controller enabled, motor A on */
     io_out8(FDC_CCR, geometry.ccr);
     /* A missing VMware FDC can otherwise stall boot for a very long time. */
-    if (msr_wait(FDC_RQM, FDC_RQM, 100000) != BLK_OK) return BLK_ERR_NODEV;
+    if (msr_wait(FDC_RQM, FDC_RQM, 20000) != BLK_OK) return BLK_ERR_NODEV;
 
     for (i = 0; i < 4; i++) {
         if (fdc_sense(&st0, &pcn) != BLK_OK) return BLK_ERR_IO;
