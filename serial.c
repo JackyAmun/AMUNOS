@@ -12,7 +12,9 @@
 #define LPT1_STAT  0x379          /* bit7 = BUSY (1=不忙) */
 #define LPT1_CTRL  0x37A          /* bit0=STROBE, bit2=INIT, bit3=SELECT */
 
-/* 初始化 COM1: 115200, 8N1, FIFO, DTR|RTS */
+static int serial_available;
+
+/* Initialize COM1 and use the UART loopback mode to detect an attached device. */
 void serial_init(void) {
     io_out8(COM1 + 1, 0x00);   /* IER: 关中断 */
     io_out8(COM1 + 3, 0x80);   /* LCR: DLAB=1 */
@@ -20,12 +22,31 @@ void serial_init(void) {
     io_out8(COM1 + 1, 0x00);   /* DLM=0 */
     io_out8(COM1 + 3, 0x03);   /* LCR: 8N1, DLAB=0 */
     io_out8(COM1 + 2, 0xC7);   /* FCR: 开 FIFO + 清缓冲 */
-    io_out8(COM1 + 4, 0x03);   /* MCR: DTR|RTS */
+
+    io_out8(COM1 + 4, 0x1E);   /* MCR: loopback, IRQs/OUT lines enabled */
+    io_out8(COM1, 0xAE);
+    serial_available = (io_in8(COM1) == 0xAE);
+    io_out8(COM1 + 4, 0x03);   /* MCR: normal mode, DTR|RTS */
 }
 
-/* 输出一个字符到 COM1 (等 THR 空)。无 UART 时 LSR 读 0xFF, 不会死锁 */
+/* A missing or wedged UART must never stall kernel output or input. */
 void serial_putc(char c) {
-    while ((io_in8(COM1_LSR) & 0x20) == 0);
+    unsigned int timeout = 100000;
+    unsigned char status;
+
+    if (!serial_available) return;
+    do {
+        status = io_in8(COM1_LSR);
+        if (status == 0xFF) {
+            serial_available = 0;
+            return;
+        }
+        if (status & 0x20) break;
+    } while (--timeout);
+    if (!timeout) {
+        serial_available = 0;
+        return;
+    }
     io_out8(COM1, c);
 }
 
@@ -39,7 +60,14 @@ void serial_puts(char *s) {
 
 /* 非阻塞读一个字符: 有数据返回字符, 无返回 -1 (远程控制台/SLIP 原语) */
 int serial_getc(void) {
-    if (io_in8(COM1_LSR) & 0x01) return io_in8(COM1);
+    unsigned char status;
+    if (!serial_available) return -1;
+    status = io_in8(COM1_LSR);
+    if (status == 0xFF) {
+        serial_available = 0;
+        return -1;
+    }
+    if (status & 0x01) return io_in8(COM1);
     return -1;
 }
 

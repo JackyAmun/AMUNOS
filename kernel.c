@@ -78,6 +78,9 @@ static void demo_clock_task() {
 void kmain(){
     serial_init();
     init_idt();
+    fb_init();
+    cls();
+    put_str(fb_active() ? "[VIDEO: VBE TEXT]\n" : "[VIDEO: VGA TEXT]\n");
     put_str("[IDT] ");
     mem_init();
     put_str("[MEM] ");
@@ -93,9 +96,7 @@ void kmain(){
     put_str("[PCI] ");
     nic_init();           /* 可选 RTL8139 原始以太网轮询驱动 */
     put_str("[NIC] ");
-    fb_init();            /* 读 boot.asm 的 VBE fb 参数; 图形模式切软件文本缓冲 */
     put_str("[FB] ");
-    cls();                /* 清当前 vram (图形=软件缓冲 / 文本=0xB8000) */
     fb_font_init();       /* 从 C:HZK16 加载字库 (v6.8 中文) */
     put_str("AMUNOS 6.5.7(dev) (Multi-Drive)\n");
     serial_puts("AMUNOS 6.5.7(dev) serial ready\n");
@@ -106,8 +107,6 @@ void kmain(){
     __asm__ volatile("sti");
 
     print_prompt();
-    /* Draw the first graphical frame immediately; do not wait for PIT tick. */
-    fb_render();
 
     while(1){
         input_poll();

@@ -289,7 +289,8 @@ void fb_init(void) {
     fb_h    = *(unsigned short *)(p + 8);
     fb_bpp  = *(unsigned char *)(p + 10);
     fb_bpl  = *(unsigned short *)(p + 11);
-    fb_on   = (fb_base != 0 && fb_bpp == 16) ? 1 : 0;
+    fb_on   = (fb_base != 0 && fb_bpp == 16 && fb_w >= 640 && fb_h >= 480 &&
+               fb_bpl >= 1280) ? 1 : 0;
     if (fb_on) {
         /* 图形模式下 0xB8000 是显卡图形窗口, 内核改用软件文本缓冲;
          * kmain 随后 cls() 清空该缓冲。 */

@@ -165,17 +165,43 @@ boot_code:
     int 0x10
     cmp ax, 0x004F
     jne .vbe_done
+    xor ax, ax
+    mov ds, ax
+    mov es, ax
     mov ax, 0x4F01
     mov cx, 0x0111
     mov di, 0x1600
     int 0x10
     cmp ax, 0x004F
     jne .vbe_done
+    xor ax, ax
+    mov ds, ax
+    mov es, ax
+    mov esi, 0x1600
+    mov ax, [esi]
+    and ax, 0x0081                 ; supported mode + linear framebuffer
+    cmp ax, 0x0081
+    jne .vbe_done
+    cmp word [esi+0x12], 640
+    jb .vbe_done
+    cmp word [esi+0x14], 480
+    jb .vbe_done
+    cmp byte [esi+0x19], 16
+    jne .vbe_done
+    cmp word [esi+0x10], 1280
+    jb .vbe_done
+    cmp dword [esi+0x28], 0
+    je .vbe_done
     mov ax, 0x4F02
     mov bx, 0x4111                 ; bit14 = 线性帧缓冲
     int 0x10
     cmp ax, 0x004F
     jne .vbe_done
+    ; Reestablish real-mode data segments and the mode-info pointer after BIOS.
+    xor ax, ax
+    mov ds, ax
+    mov es, ax
+    mov esi, 0x1600
     mov ax, 0x0600                 ; base/bpl/x/y/bpp → 0x6000 (不覆盖内核)
     mov es, ax
     xor di, di
@@ -192,6 +218,9 @@ boot_code:
     mov ax, [esi+0x10]
     mov [es:di+11], ax
 .vbe_done:
+    xor ax, ax
+    mov ds, ax
+    mov es, ax
 
     ; BIOS 的 VBE/磁盘服务可能改变 IF，先屏蔽 PIC，避免切换瞬间的 IRQ0
     ; 使用实模式 IVT。内核安装 IDT 和重编程 PIC 后再恢复中断。
@@ -199,7 +228,8 @@ boot_code:
     mov al, 0xFF
     out 0x21, al
     out 0xA1, al
-    xor ax, ax                     ; 恢复 ES=0 — 不恢复 lgdt 会加载错 GDT
+    xor ax, ax                     ; 保证段基址为 0, lgdt 才能读到 GDT
+    mov ds, ax
     mov es, ax
 
     in al, 0x92                    ; A20
