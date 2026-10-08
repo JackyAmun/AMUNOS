@@ -197,9 +197,9 @@ add_opt_to(BOOT, 'KERNEL', 'BIN', 'kernel.bin')
 add_opt_to(BIN, 'TCC',  'ELF', 'tcc.elf')
 add_opt_to(BIN, 'EDIT', 'ELF', 'edit.elf')
 add_opt_to(BIN, 'SYSINFO', 'ELF', 'sysinfo.elf')
-add_opt_to(BIN, 'DFLAT', 'ELF', 'dflat-demo.elf')
 add_opt_to(BIN, 'BEEP', 'ELF', 'beep.elf')
 add_opt_to(BIN, 'NET', 'ELF', 'net.elf')
+add_opt_to(BIN, 'SHEET', 'ELF', 'sheet.elf')
 add_opt_to(BIN, 'SYSINST', 'ELF', 'sysinstall/sysinstall.elf')
 
 # ── USR\LIB\ : TCC 链接库 (cmd_tcc 注入 -L/-B) ──
@@ -242,6 +242,7 @@ add_opt_to(root, 'HZK16', '   ', 'HZK16')
 # ── U2GB  Unicode→GB2312 映射 (v6.8 UTF-8 支持): 把 UTF-8 码点查成 GB2312 字库偏移 ──
 add_opt_to(root, 'U2GB', 'BIN', 'u2gb.bin')
 add_opt_to(root, 'MBR',  'BIN', 'mbr_boot.bin')
+add_opt_to(root, 'MUSIC', 'ELF', 'music.elf')
 
 # ── TCC crt 文件留根 (TCC crt_paths="A:\" 绝对前缀, 任何盘/目录都能解析) ──
 add_opt_to(root, 'CRT1', 'O  ', 'libc/crt1.o')
@@ -255,14 +256,38 @@ CMDS_BIN = '''\
 ; 注释以 ; 或 # 开头; 用 EDIT CMDS.BIN 编辑或 INSTALL 命令追加
 EDIT /BIN/EDIT.ELF
 SYSINFO /BIN/SYSINFO.ELF
-DFLAT /BIN/DFLAT.ELF
 BEEP /BIN/BEEP.ELF
 NET /BIN/NET.ELF
+SHEET /BIN/SHEET.ELF
 SYSINSTALL /BIN/SYSINST.ELF
 '''
-if install_mode:
-    CMDS_BIN = '; AMUNOS installation media command map\nSYSINSTALL /BIN/SYSINST.ELF\n'
 add_to(root, 'CMDS', 'BIN', CMDS_BIN)
+
+if install_mode:
+    INSTALL_TXT = '''AMUNOS INSTALLATION GUIDE
+=========================
+
+This disk contains the installer and the normal AMUNOS tools, libraries,
+headers, and examples. The installer copies this complete volume.
+
+1. Attach this floppy and the destination IDE disk, then boot from the floppy.
+2. At the AMUNOS prompt, run: SYSINSTALL
+3. Select the destination by its displayed number. Never select the boot source.
+4. Choose Y to format, or N only when the destination already has a suitable
+   partition with enough free space starting at sector 2048 (IDE), or a
+   compatible floppy volume. Formatting erases the selected disk.
+5. Type Y at the final confirmation. Watch the sector counter; copying can take
+   a while on slower disks. Do not power off before completion is reported.
+6. Power off, detach this floppy, and boot from the installed disk.
+
+Back up the destination before installing. The selected disk will be changed.
+For IDE disks, the installer writes the AMUNOS boot code and active partition.
+For floppy disks, it installs the system at sector zero.
+
+Available tools include EDIT, SYSINFO, DFLAT, BEEP, NET, TCC, and SYSINSTALL.
+Development headers and libraries are under USR\\INCLUDE and USR\\LIB.
+'''
+    add_to(root, 'INSTALL', 'TXT', INSTALL_TXT)
 
 # ── 中文演示/验证样本 (v6.8.1): GB2312 中文文件名 + GB/UTF-8 内容 ──
 #   中文.TXT  = GB2312 文件名 (8.3 塞双字节); 内容为 GB2312 编码
@@ -276,22 +301,6 @@ add_to(root, 'GB_CN', 'TXT',
        '这是 GB2312 编码的中文内容\n第二行 789 ghi\n'.encode('gb2312'))
 add_long_to(root, 'A longer filename example.txt', 'LONGNAM1', 'TXT',
             'This file is addressed through a FAT long filename.\n')
-
-if install_mode:
-    # Keep the installer medium small and deterministic: boot files, the
-    # installer itself, MBR code, fonts, and the command map only.
-    def short_name(entry):
-        return bytes(entry[0:8]).rstrip(b' ').decode('latin1').upper()
-    root.entries = [e for e in root.entries
-                    if short_name(e) in ('BOOT', 'BIN', 'HZK16', 'U2GB', 'MBR', 'CMDS')]
-    for sub in all_dirs:
-        if sub.name == 'BOOT':
-            continue
-        if sub.name == 'BIN':
-            sub.entries = [e for e in sub.entries if short_name(e) == 'SYSINST']
-        else:
-            sub.entries = []
-    all_dirs = [sub for sub in all_dirs if sub.name in ('BOOT', 'BIN')]
 
 # ── 布局落盘: 根目录 + 各子目录 + FAT2 ──
 for i, e in enumerate(root.entries):

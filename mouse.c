@@ -19,6 +19,8 @@ static int mouse_present = 0;
 static int mx_px = MOUSE_PX_W / 2;    /* 初始屏幕中心 (与 QEMU GUI 光标起始一致) */
 static int my_px = MOUSE_PX_H / 2;
 static int mbuttons = 0;
+static int packet_bytes = 3;
+static volatile int wheel_steps;
 
 /* 等待 8042 输入缓冲空 (写命令前) */
 static void kbd_wait_out(void) {
@@ -39,6 +41,11 @@ static void aux_cmd(unsigned char cmd) {
 static void aux_ack(void) {
     kbd_wait_in();
     (void)io_in8(KBD_DATA_PORT);
+}
+
+static void aux_rate(unsigned char rate) {
+    aux_cmd(0xF3); aux_ack();
+    aux_cmd(rate); aux_ack();
 }
 
 /* 清空 8042 输出缓冲。
@@ -73,6 +80,10 @@ void mouse_init(void) {
 
     /* 3. 鼠标默认设置 + 启用数据上报 */
     aux_cmd(0xF6);   aux_ack();        /* 默认设置 (禁用上报) */
+    aux_rate(200); aux_rate(100); aux_rate(80);
+    aux_cmd(0xF2); aux_ack();
+    kbd_wait_in();
+    if (io_in8(KBD_DATA_PORT) == 3) packet_bytes = 4;
     aux_cmd(0xF4);   aux_ack();        /* 启用数据上报 */
 
     mouse_present = 1;
@@ -83,7 +94,7 @@ void mouse_init(void) {
  * pkt[1]: dx (有符号, 用 bit4 扩展)   pkt[2]: dy (有符号, 用 bit5 扩展)
  * dy 正值 = 鼠标向上 → 屏幕 y (向下增大) 减 dy */
 void mouse_handler(void) {
-    static unsigned char pkt[3];
+    static unsigned char pkt[4];
     static int idx = 0;
     unsigned char b;
     int n = 0;
@@ -109,9 +120,14 @@ void mouse_handler(void) {
             continue;
         }
         pkt[idx++] = b;                /* 字节 2 → 3 (dx, dy) */
-        if (idx == 3) {
+        if (idx == packet_bytes) {
             idx = 0;
             mbuttons = pkt[0] & 0x07;
+            if (packet_bytes == 4) {
+                int step = pkt[3] & 0x0f;
+                if (step & 0x08) step -= 16;
+                wheel_steps += step;
+            }
             if (pkt[0] & (0x40 | 0x80)) continue;/* 溢出包: 移动量无效 */
 
             int dx = pkt[1], dy = pkt[2];
@@ -142,3 +158,8 @@ int mouse_char_y(void)       { return my_px * 30 / MOUSE_PX_H; }
 int mouse_px_x(void)         { return mx_px; }
 int mouse_px_y(void)         { return my_px; }
 int mouse_lbutton(void)      { return mbuttons & 0x01; }
+int mouse_wheel_take(void) {
+    int steps = wheel_steps;
+    wheel_steps = 0;
+    return steps;
+}

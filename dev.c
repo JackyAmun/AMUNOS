@@ -392,6 +392,7 @@ void dev_scan(void)
         strcpy(devs[6].model, "AHCI SATA");
     }
     for (d = 0; d < 4; d++) {
+        unsigned int sectors;
         devs[d].present = 0;
         devs[d].sectors = 0;
         devs[d].model[0] = 0;
@@ -404,12 +405,21 @@ void dev_scan(void)
             serial_puts("\n");
             continue;
         }
+        sectors = *(unsigned int *)(idbuf + 120);
+        /* disk_io.asm issues 28-bit LBA commands; reject floating-bus and
+         * unsupported IDENTIFY capacities instead of exposing fake targets. */
+        if (!sectors || sectors > 0x0FFFFFFFu) {
+            serial_puts("[DEVS]  slot ");
+            ser_dec(d);
+            serial_puts(": invalid IDENTIFY capacity\n");
+            continue;
+        }
         devs[d].present = 1;
         devs[d].media_present = 1;
         devs[d].type = BLKDEV_IDE;
         devs[d].caps = BLK_CAP_READ | BLK_CAP_WRITE;
         for (int k = 0; k < 20; k++) serials[d][k] = idbuf[20 + k];
-        devs[d].sectors = *(unsigned int *)(idbuf + 120);   /* word 60-61 */
+        devs[d].sectors = sectors;                         /* word 60-61 */
         {
             /* word 27-46 型号: 大端字序 → 逐字节交换, 截 20 字符去尾空格 */
             unsigned char *w = idbuf + 54;

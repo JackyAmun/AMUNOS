@@ -428,6 +428,12 @@ static int sys_getkey(void) {
  case 18: return 139; /* PgUp */
  case 19: return 140; /* PgDn */
  case 20: return 141; /* INS (0.7 编辑器插入切换) */
+ case 21: return 142; /* F6 */
+ case 22: return 143; /* F7 */
+ case 23: return 144; /* F8 */
+ case 24: return 145; /* F9 */
+ case 25: return 146; /* F10 */
+ case 26: return 147; /* Ctrl+F4 */
  }
  return 0;
 }
@@ -567,6 +573,7 @@ void syscall_handler(unsigned *frame) {
  result = 0;
  break;
  }
+ case 82: result = mouse_wheel_take(); break;
  case 20: { /* SYS_CURSOR: 软件输入光标 '|' 定位 (x,y), 屏幕格坐标 */
  soft_cursor_at(a1, a2);
  result = 0;

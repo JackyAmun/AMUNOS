@@ -22,6 +22,7 @@
 // ── 全局状态变量 (与 kernel.c 共享) ──
 volatile int is_shift    = 0;
 volatile int caps_lock   = 0;
+volatile int num_lock    = 0;
 volatile int key_pressed = 0;
 volatile int is_ctrl     = 0;      // Ctrl 按下 (sys_getmods 查询, 编辑块选用)
 volatile int is_alt      = 0;      // Alt 按下 (sys_getmods 查询)
@@ -83,7 +84,47 @@ void keyboard_init() {
 
     // 初始化 LED 为全灭
     kbd_leds = 0;
+    num_lock = 0;
     update_leds();
+}
+
+/* The numeric keypad shares its make codes with the navigation cluster.
+ * NumLock selects digits; Shift temporarily selects navigation, matching
+ * the behavior of a conventional AT keyboard. */
+static int keypad_key(unsigned char sc)
+{
+    int numeric = num_lock ^ is_shift;
+    if (numeric) {
+        switch (sc) {
+        case 0x47: current_char = '7'; break;
+        case 0x48: current_char = '8'; break;
+        case 0x49: current_char = '9'; break;
+        case 0x4B: current_char = '4'; break;
+        case 0x4C: current_char = '5'; break;
+        case 0x4D: current_char = '6'; break;
+        case 0x4F: current_char = '1'; break;
+        case 0x50: current_char = '2'; break;
+        case 0x51: current_char = '3'; break;
+        case 0x52: current_char = '0'; break;
+        case 0x53: current_char = '.'; break;
+        default: return 0;
+        }
+        key_pressed = 1;
+        return 1;
+    }
+    switch (sc) {
+    case 0x47: key_pressed = 10; return 1; /* Home */
+    case 0x48: key_pressed = 6;  return 1; /* Up */
+    case 0x49: key_pressed = 18; return 1; /* PgUp */
+    case 0x4B: key_pressed = 4;  return 1; /* Left */
+    case 0x4D: key_pressed = 5;  return 1; /* Right */
+    case 0x4F: key_pressed = 11; return 1; /* End */
+    case 0x50: key_pressed = 7;  return 1; /* Down */
+    case 0x51: key_pressed = 19; return 1; /* PgDn */
+    case 0x52: key_pressed = 20; return 1; /* Ins */
+    case 0x53: key_pressed = 9;  return 1; /* Del */
+    default: return 0;
+    }
 }
 
 /* 键盘中断处理函数 — 由 head.asm 的 asm_keyboard_handler 调用 */
@@ -109,6 +150,7 @@ void keyboard_handler() {
         ext_scancode = 0;
         if (sc & 0x80) return;  // 忽略 break code (修复双击)
         switch (sc) {
+        case 0x1C: key_pressed = 2;  return;  // keypad Enter
         case 0x4B: key_pressed = 4;  return;  // ←
         case 0x4D: key_pressed = 5;  return;  // →
         case 0x48: key_pressed = 6;  return;  // ↑
@@ -144,6 +186,13 @@ void keyboard_handler() {
         caps_lock = !caps_lock;
         if (caps_lock) kbd_leds |= 0x04;   // 亮 Caps 灯
         else           kbd_leds &= ~0x04;  // 灭 Caps 灯
+        update_leds();
+        return;
+
+    case 0x45:                    // NumLock
+        num_lock = !num_lock;
+        if (num_lock) kbd_leds |= 0x02;
+        else           kbd_leds &= ~0x02;
         update_leds();
         return;
 
@@ -184,10 +233,15 @@ void keyboard_handler() {
                 return;
             }
         }
-        if (sc >= 0x3B && sc <= 0x3F) {  // F1-F5 功能键
-            key_pressed = 13 + (sc - 0x3B);
+        if (sc >= 0x3B && sc <= 0x44) {  // F1-F10
+            if (is_ctrl && sc == 0x3E) key_pressed = 26; // Ctrl+F4
+            else if (sc <= 0x3F) key_pressed = 13 + (sc - 0x3B);
+            else key_pressed = 21 + (sc - 0x40);
             return;
         }
+        if (keypad_key(sc)) return;
+        if (sc == 0x4A) { current_char = '-'; key_pressed = 1; return; }
+        if (sc == 0x4E) { current_char = '+'; key_pressed = 1; return; }
         if (sc < sizeof(kmap)) {
             // 根据 shift / caps_lock 状态选择映射表
             int shift = (is_shift ^ caps_lock) ? 1 : 0;

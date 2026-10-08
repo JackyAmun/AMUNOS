@@ -15,6 +15,7 @@ BOOT_BIN   = boot.bin
 STAGE2_BIN = stage2.bin
 KERNEL_BIN = kernel.bin
 A_IMG      = A.img
+A_VMDK     = A.vmdk
 B_IMG      = B.img
 C_IMG      = C.img
 HELLO_ELF  = hello.elf
@@ -25,10 +26,12 @@ DFLAT_ELF = dflat-demo.elf
 SOUND_ELF = beep.elf
 NET_ELF = net.elf
 INSTALL_ELF = sysinstall/sysinstall.elf
+MUSIC_ELF = music.elf
+SHEET_ELF = sheet.elf
 INSTALL_IMG = AMUNOS.flp
 CRT_OBJS   = libc/crt1.o libc/crti.o libc/crtn.o
 
-.PHONY: all clean run run-gui run-net run-net-gui run-flp-gui run-install install-image run-floppy
+.PHONY: all clean vmdk run run-vmdk run-gui run-vmdk-gui run-net run-net-gui run-flp-gui run-install install-image run-floppy
 
 all: $(A_IMG)
 
@@ -59,18 +62,53 @@ u2gb.bin: gen_u2gb.py
 $(A_IMG): A.vol mbr_boot.bin mkmbr.py
 	python3 mkmbr.py A.vol $@ mbr_boot.bin
 
-A.vol: $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) $(SYSINFO_ELF) $(DFLAT_ELF) $(SOUND_ELF) $(NET_ELF) $(INSTALL_ELF) $(CRT_OBJS) mka_img.py u2gb.bin
+# Keep a VMDK copy available for QEMU/VMware/DiskGenius round-trip tests.
+# Raw and VMDK images are separate files; writes to one never update the other.
+$(A_VMDK): $(A_IMG)
+	qemu-img convert -f raw -O vmdk $< $@.tmp
+	mv -f $@.tmp $@
+
+vmdk: $(A_VMDK)
+
+A.vol: $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) $(SYSINFO_ELF) $(SOUND_ELF) $(NET_ELF) $(INSTALL_ELF) $(MUSIC_ELF) $(SHEET_ELF) $(CRT_OBJS) mka_img.py u2gb.bin
 	@echo "[IMG] Building A FAT boot volume..."
 	python3 mka_img.py $@ 2048
 
-A.flp: $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) $(SYSINFO_ELF) $(DFLAT_ELF) $(SOUND_ELF) $(NET_ELF) $(INSTALL_ELF) $(CRT_OBJS) mka_img.py u2gb.bin
+A.flp: $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) $(SYSINFO_ELF) $(SOUND_ELF) $(NET_ELF) $(INSTALL_ELF) $(MUSIC_ELF) $(SHEET_ELF) $(CRT_OBJS) mka_img.py u2gb.bin
 	python3 mka_img.py $@ 0
 
-$(INSTALL_IMG): $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) $(INSTALL_ELF) mbr_boot.bin mka_img.py u2gb.bin
-	@echo "[IMG] Building minimal AMUNOS installation floppy..."
+$(INSTALL_IMG): $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) $(SYSINFO_ELF) $(SOUND_ELF) $(NET_ELF) $(INSTALL_ELF) $(MUSIC_ELF) $(SHEET_ELF) $(CRT_OBJS) mbr_boot.bin mka_img.py u2gb.bin
+	@echo "[IMG] Building full AMUNOS installation floppy..."
 	python3 mka_img.py $@ 0 install
 
 install-image: $(INSTALL_IMG)
+
+$(MUSIC_ELF): music.c libc/libc.a libc/crt0.o
+	@echo "[ELF] Building AMUNOS music player..."
+	gcc -m32 -ffreestanding -fno-builtin -fno-pie -fno-stack-protector \
+	    -fno-asynchronous-unwind-tables -fno-unwind-tables -nostdinc \
+	    -I libc -c music.c -o music.o
+	LIBGCC=$$(gcc -m32 -print-libgcc-file-name); \
+	ld -m elf_i386 -no-pie -T libc/link.ld -nostdlib -static \
+	    libc/crt0.o music.o libc/libc.a $$LIBGCC -o $@
+
+$(SHEET_ELF): sheet.c $(DFLAT_SRCS) libc/libc.a libc/crt0.o
+	@echo "[ELF] Building AMUN SHEET 1.0..."
+	mkdir -p .sheet-obj
+	for f in $(DFLAT_SRCS); do \
+	  gcc -m32 -ffreestanding -fno-builtin -fno-pie -fno-stack-protector \
+	      -fno-asynchronous-unwind-tables -fno-unwind-tables -nostdinc \
+	      -I libc -I edit-fdos/source -funsigned-char -c $$f \
+	      -o .sheet-obj/$$(basename $$f .c).o || exit 1; \
+	done
+	gcc -m32 -ffreestanding -fno-builtin -fno-pie -fno-stack-protector \
+	    -fno-asynchronous-unwind-tables -fno-unwind-tables -nostdinc \
+	    -I libc -I edit-fdos/source -funsigned-char -c sheet.c -o .sheet-obj/sheet.o
+	LIBGCC=$$(gcc -m32 -print-libgcc-file-name); \
+	ld -m elf_i386 -no-pie -T libc/link.ld -nostdlib -static \
+	    libc/crt0.o .sheet-obj/*.o libc/libc.a $$LIBGCC -o $@
+	rm -f .sheet-obj/*.o
+	rmdir .sheet-obj 2>/dev/null || true
 
 $(INSTALL_ELF): sysinstall/sysinstall.c libc/libc.a libc/crt0.o
 	@echo "[ELF] Building sysinstall/sysinstall.c -> $@"
@@ -210,11 +248,19 @@ $(NET_ELF): net.c libc/libc.a libc/crt0.o
 run: $(A_IMG)
 	qemu-system-i386 -drive file=$(A_IMG),format=raw,if=ide,index=0 -nographic
 
+# Run against the same VMDK that can later be opened by DiskGenius.
+run-vmdk: $(A_VMDK)
+	qemu-system-i386 -drive file=$(A_VMDK),format=vmdk,if=ide,index=0 -nographic
+
 # 图形模式：硬盘启动，A/B/C 均使用 raw 镜像。
 run-gui: $(A_IMG) $(B_IMG) $(C_IMG)
 	qemu-system-i386 -drive file=$(A_IMG),format=raw,if=ide,index=0 \
 	  -drive file=$(B_IMG),format=raw,if=ide,index=1 \
 	  -drive file=$(C_IMG),format=raw,if=ide,index=2 \
+	  -audiodev driver=sdl,id=audio0 -machine pc,pcspk-audiodev=audio0 -display gtk
+
+run-vmdk-gui: $(A_VMDK)
+	qemu-system-i386 -drive file=$(A_VMDK),format=vmdk,if=ide,index=0 \
 	  -audiodev driver=sdl,id=audio0 -machine pc,pcspk-audiodev=audio0 -display gtk
 
 # 网络模式：硬盘启动并挂载 B:/C: 数据盘。

@@ -183,7 +183,7 @@ static void fb_draw_box(int px, int py, unsigned short fg, unsigned short bg) {
  * 与 edit-fdos/dflat.h 的 NW/NE/SW/SE/SIDE/LINE 及 FOCUS_ 系列、SCROLL 系列、
  * BARCHAR/BOXCHAR 对应。 */
 int fb_is_boxcode(unsigned char b) {
-    if (b >= 0x80 && b <= 0x91) return 1;
+    if (b >= 0x80 && b <= 0x92) return 1;
     return 0;
 }
 
@@ -194,7 +194,7 @@ static void fb_draw_boxglyph(int px, int py, unsigned char g,
     unsigned char row[16];
     int is_line   = (g == 0x85 || g == 0x8B);            /* LINE / FOCUS_LINE     ─ */
     int is_side   = (g == 0x84 || g == 0x8A);            /* SIDE / FOCUS_SIDE     │ */
-    int is_corner = ((g >= 0x80 && g <= 0x83) || (g >= 0x86 && g <= 0x89));  /* ┌┐┘└ */
+    int is_corner = ((g >= 0x80 && g <= 0x83) || (g >= 0x86 && g <= 0x89) || g == 0x92);
     for (i = 0; i < 16; i++) row[i] = 0;
     if (is_corner) {                                      /* 角 = 竖(全高)+横(行7-8) */
         for (i = 0; i < 16; i++) row[i] = BOX_VLN;

@@ -10,7 +10,7 @@
 
 /* G L O B A L S ///////////////////////////////////////////////////////// */
 
-static char FileSpec[15], SrchSpec[15], FileName[15];
+static char FileSpec[15], SrchSpec[15], FileName[64];
 extern DBOX FileOpen, SaveAs;
 extern char BrowsePath[];   /* AMUNOS: 对话框浏览目录 (direct.c) */
 
@@ -117,6 +117,10 @@ static int DlgFnOpen(WINDOW wnd,MESSAGE msg,PARAM p1,PARAM p2)
                             base = (fn[2]) ? fn + 2 : "";
                         if (slash || (fn[0] && fn[1] == ':'))
                             CreatePath(NULL, fn, FALSE, TRUE);
+                        if (strlen(BrowsePath) + strlen(base) >= sizeof FileName) {
+                            ErrorMessage("File path is too long.");
+                            return TRUE;
+                        }
                         strcpy(FileName, BrowsePath);
                         if (base[0] && strcmp(base, "*"))
                             strcat(FileName, base);
@@ -290,4 +294,3 @@ static void StripPath(char *filespec)
 
 }
 #endif
-

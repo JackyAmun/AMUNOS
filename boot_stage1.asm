@@ -18,7 +18,7 @@ bpb_sec_per_track:  dw 18
 bpb_heads:          dw 2
 bpb_hidden_sec:     dd 0
 bpb_large_sec:      dd 0
-bpb_drive_num:      db 0x80
+bpb_drive_num:      db 0x00          ; standard floppy drive number; BIOS DL replaces it at boot
 bpb_reserved:       db 0
 bpb_ext_sig:        db 0x29
 bpb_vol_id:         dd 0x20261004

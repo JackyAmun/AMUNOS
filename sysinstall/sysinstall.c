@@ -150,6 +150,7 @@ int main(void)
     if (c != 'Y') { printf("Installation cancelled.\n"); return 0; }
 
     total = si.current_sectors;
+    printf("Copying system volume; do not power off...\n");
     for (lba = 0; lba < total; lba++) {
         if (user_cancelled()) {
             printf("\nInstallation aborted.\n");
@@ -169,7 +170,7 @@ int main(void)
             printf("Write failed at sector %u.\n", lba);
             return 1;
         }
-        if ((lba & 127) == 0 || lba + 1 == total)
+        if ((lba & 31) == 0 || lba + 1 == total)
             printf("Copied %u/%u sectors\r", lba + 1, total);
     }
     putchar('\n');

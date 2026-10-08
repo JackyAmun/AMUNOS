@@ -89,6 +89,7 @@
 #define SYS_BLK_READ 79 /* installer: read sectors from a discovered device */
 #define SYS_BLK_WRITE 80 /* installer: write sectors to a physical IDE/FDC device */
 #define SYS_FORMAT 81 /* installer/user tool: format a physical FDC/IDE device */
+#define SYS_MOUSE_WHEEL 82 /* read and clear signed PS/2 wheel delta */
 #if 0
 #define SYS_GUI_TAREA_INSERT 62 /* TextArea 光标/选区处替换插入 */
 #define SYS_GUI_TAREA_SELECTION_GET 63 /* 读取 TextArea 选区 */
@@ -258,6 +259,9 @@ static inline int sys_readdir(const char *path, int idx, char *name_out) {
 /* 读鼠标: out[0]=按钮位 (bit0 左 bit1 右) out[1]=字符列 0-79 out[2]=字符行 0-24 */
 static inline int sys_mouse(int *out) {
  return (int)syscall1(SYS_MOUSE, (long)out);
+}
+static inline int sys_mouse_wheel(void) {
+ return (int)syscall0(SYS_MOUSE_WHEEL);
 }
 /* 非阻塞按键查询: 1=有键待读 (随后 sys_getkey 不阻塞) 0=无键 (事件循环继续轮询鼠标) */
 static inline int sys_keyhit(void) {

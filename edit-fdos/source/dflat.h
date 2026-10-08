@@ -286,6 +286,7 @@ extern int CurrentMenuSelection;
 #define SW            (unsigned char) '\x82'
 #define SIDE          (unsigned char) '\x84'
 #define LINE          (unsigned char) '\x85'
+#define GRID_CROSS    (unsigned char) '\x92'
 #define LEDGE         (unsigned char) '\xc3'
 #define REDGE         (unsigned char) '\xb4'
 #define SIZETOKEN     (unsigned char) '\x04'
@@ -526,4 +527,3 @@ void Asciitable(WINDOW pwnd);	/* new 0.7c */
 #endif
 
 #endif
-

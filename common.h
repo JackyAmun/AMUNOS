@@ -283,6 +283,7 @@ int mouse_char_y(void); // 字符格行 0-24
 int mouse_px_x(void); // 原始像素 X (GUI 命中测试)
 int mouse_px_y(void); // 原始像素 Y (GUI 命中测试)
 int mouse_lbutton(void); // 左键按下? (GUI 点击投递)
+int mouse_wheel_take(void); // read and clear signed wheel steps
 
 #if 0 /* GUI syscall/API retired; sources remain in the GUI backup archive. */
 // --- 13.0 GUI 窗口服务器 (gui.c, v6.9) ---

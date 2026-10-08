@@ -194,13 +194,12 @@ static int fdc_transfer_once(unsigned lba, void *buffer, int write)
     if (cylinder >= geometry.tracks) return BLK_ERR_RANGE;
 
     if ((rc = fdc_seek(cylinder, head)) != BLK_OK) return rc;
-    if (write) {
+    if (write)
         for (i = 0; i < 512; i++) dma_buffer[i] = bytes[i];
-        if ((rc = fdc_specify(0)) != BLK_OK) return rc;
-        if ((rc = fdc_dma_program(1)) != BLK_OK) {
-            fdc_specify(1);
-            return rc;
-        }
+    if ((rc = fdc_specify(0)) != BLK_OK) return rc;
+    if ((rc = fdc_dma_program(write)) != BLK_OK) {
+        fdc_specify(1);
+        return rc;
     }
     if ((rc = fdc_out(write ? 0x45 : 0x46)) != BLK_OK) goto command_failed;
     if ((rc = fdc_out((unsigned char)(head << 2))) != BLK_OK) goto command_failed;
@@ -212,29 +211,20 @@ static int fdc_transfer_once(unsigned lba, void *buffer, int write)
     if ((rc = fdc_out(0x1B)) != BLK_OK) goto command_failed;
     if ((rc = fdc_out(0xFF)) != BLK_OK) goto command_failed;
 
-    if (!write) {
-        for (i = 0; i < 512; i++) {
-            rc = msr_wait(FDC_RQM | FDC_DIO, FDC_RQM | FDC_DIO, 250000);
-            if (rc != BLK_OK) {
-                /* No-media probing retries this path; report the final
-                 * mount result once instead of flooding the boot log. */
-                return rc;
-            }
-            bytes[i] = io_in8(FDC_FIFO);
-        }
-    }
     for (i = 0; i < 7; i++) {
         if ((rc = fdc_in(&result[i])) != BLK_OK) {
-            if (write) fdc_specify(1);
+            fdc_specify(1);
             return rc;
         }
     }
     rc = fdc_result_error(result);
-    if (write && fdc_specify(1) != BLK_OK && rc == BLK_OK) rc = BLK_ERR_IO;
+    if (fdc_specify(1) != BLK_OK && rc == BLK_OK) rc = BLK_ERR_IO;
+    if (!write && rc == BLK_OK)
+        for (i = 0; i < 512; i++) bytes[i] = dma_buffer[i];
     return rc;
 
 command_failed:
-    if (write) fdc_specify(1);
+    fdc_specify(1);
     return rc;
 }
 

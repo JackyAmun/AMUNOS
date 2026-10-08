@@ -230,6 +230,10 @@ static void collect_events(void)
         disable_timer(delaytimer);
     }
     get_mouseposition(&mx, &my);
+    {
+        int wheel = sys_mouse_wheel();
+        if (wheel) PostEvent(MOUSE_WHEEL, wheel, 0);
+    }
     if (mx != px || my != py)  {
         px = mx;
         py = my;
@@ -621,6 +625,10 @@ BOOL dispatch_message(void)
             case MOUSE_MOVED:
 		        Mwnd = MouseWindow(ev.mx, ev.my);
                 SendMessage(Mwnd, ev.event, ev.mx, ev.my);
+                break;
+            case MOUSE_WHEEL:
+                Mwnd = MouseWindow(mx, my);
+                SendMessage(Mwnd, MOUSE_WHEEL, ev.mx, 0);
                 break;
             default:
                 break;

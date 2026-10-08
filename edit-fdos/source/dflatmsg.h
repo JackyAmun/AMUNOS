@@ -54,6 +54,7 @@ DFlatMsg(RIGHT_BUTTON)       /* right button pressed         */
 DFlatMsg(LEFT_BUTTON)        /* left button pressed          */
 DFlatMsg(DOUBLE_CLICK)       /* left button double-clicked   */
 DFlatMsg(MOUSE_MOVED)        /* mouse changed position       */
+DFlatMsg(MOUSE_WHEEL)        /* signed vertical wheel steps  */
 DFlatMsg(BUTTON_RELEASED)    /* mouse button released        */
 DFlatMsg(CURRENT_MOUSE_CURSOR)/* get mouse position          */
 DFlatMsg(MOUSE_CURSOR)       /* set mouse position           */
@@ -102,4 +103,3 @@ DFlatMsg(ADDSTATUS)
 DFlatMsg(DRAWVECTOR)
 DFlatMsg(DRAWBOX)
 DFlatMsg(DRAWBAR)
-

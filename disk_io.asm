@@ -347,6 +347,10 @@ identify_drive_asm:
     jmp .fail_i
 
 .do_read_i:
+    ; An absent VMware IDE slot may float at status 0xFF, which includes
+    ; DRQ. Do not accept it as a device: ERR/BSY/DF must all be clear.
+    test al, 0xA1                 ; BSY | DF | ERR
+    jnz .fail_i
     mov edi, [ebp + 12]
     mov ecx, 256
     lea edx, [ebx + 0]

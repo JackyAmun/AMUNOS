@@ -127,6 +127,12 @@ int getkey(void)
     case 139: return PGUP;
     case 140: return PGDN;
     case 141: return INS;
+    case 142: return F6;
+    case 143: return F7;
+    case 144: return F8;
+    case 145: return F9;
+    case 146: return F10;
+    case 147: return CTRL_F4;
     case 127: return DEL;               /* AMUNOS DEL 键原始码 */
     }
 
