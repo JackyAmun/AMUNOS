@@ -31,11 +31,13 @@ void mem_init() {
 
 /* ── 分配 size 字节 ── */
 void *mem_alloc(unsigned size) {
+    if (size == 0 || size > HEAP_SIZE - sizeof(mem_block_t) - 7)
+        return 0;
     size = ALIGN8(size);
     mem_block_t *prev = 0, *cur = free_head, *nb;
 
     while (cur) {
-        if (cur->size >= size) {
+        if (cur->size >= size + sizeof(mem_block_t)) {
             /* 分裂: 剩余部分成为新的空闲块 nb */
             if (cur->size >= size + sizeof(mem_block_t) + 8) {
                 nb = (mem_block_t*)((char*)cur + sizeof(mem_block_t) + size);
@@ -56,6 +58,23 @@ void *mem_alloc(unsigned size) {
         cur = cur->next;
     }
     return 0;  /* 堆满 */
+}
+
+void mem_stats(mem_stats_t *out) {
+    mem_block_t *cur;
+    if (!out) return;
+    out->total_bytes = HEAP_SIZE;
+    out->free_bytes = 0;
+    out->largest_free_bytes = 0;
+    out->free_blocks = 0;
+    for (cur = free_head; cur; cur = cur->next) {
+        unsigned usable = cur->size > sizeof(mem_block_t) ?
+                          cur->size - sizeof(mem_block_t) : 0;
+        out->free_bytes += usable;
+        if (usable > out->largest_free_bytes)
+            out->largest_free_bytes = usable;
+        out->free_blocks++;
+    }
 }
 
 /* ── 释放 ptr ──

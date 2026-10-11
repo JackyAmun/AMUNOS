@@ -212,6 +212,8 @@ unsigned short vga_cjk_at(int x, int y); // 渲染器查询格标记 (0=ASCII/GB
 void vga_cjk_clear_all(void); // 用户程序启动前清空 (防鬼影汉字)
 void put_cjk_str(const unsigned char *s, char color); // GB2312 感知输出 (v6.8)
 void vga_cjk_place_gb(int x, int y, unsigned gb, int fg, int bg); // v6.8.1 SYS_CJKWCHAR: 绝对格放汉字
+void vga_style_set(int x, int y, int cells, int style); // framebuffer rich-text attributes
+unsigned char vga_style_at(int x, int y);
 
 void init_idt();
 void keyboard_init();
@@ -224,6 +226,24 @@ void print_prompt();
 void mem_init();
 void *mem_alloc(unsigned size);
 void mem_free(void *ptr);
+typedef struct {
+ unsigned total_bytes;
+ unsigned free_bytes;
+ unsigned largest_free_bytes;
+ unsigned free_blocks;
+} mem_stats_t;
+void mem_stats(mem_stats_t *out);
+
+/* Snapshot only: programs may inspect scheduler load but cannot mutate it. */
+typedef struct {
+ unsigned total;
+ unsigned ready;
+ unsigned running;
+ unsigned sleeping;
+ unsigned exited;
+ unsigned foreground_active;
+ unsigned ticks;
+} task_stats_t;
 
 // --- 8. 任务调度 (task.c) ---
 struct task;
@@ -235,6 +255,7 @@ void task_exit_current(void);
 void task_wait(struct task *t);
 void task_set_prog(struct task *t);
 unsigned task_ticks();
+void task_stats(task_stats_t *out);
 void *timer_schedule(unsigned *frame);
 
 // --- 9. ELF 加载器 (elf.c) ---

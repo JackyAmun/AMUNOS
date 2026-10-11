@@ -28,6 +28,10 @@ NET_ELF = net.elf
 INSTALL_ELF = sysinstall/sysinstall.elf
 MUSIC_ELF = music.elf
 SHEET_ELF = sheet.elf
+STATUS_ELF = status.elf
+WRITE_ELF = write.elf
+MEM_ELF = meminfo.elf
+HEX_ELF = hex.elf
 INSTALL_IMG = AMUNOS.flp
 CRT_OBJS   = libc/crt1.o libc/crti.o libc/crtn.o
 
@@ -52,6 +56,8 @@ $(KERNEL_BIN): $(OBJS) linker.ld
 	@echo "[LD] Linking..."
 	$(LD) $(LDFLAGS) -o $@ $(OBJS)
 
+fb.o: fonts/latin_font.h fonts/font_profiles.h
+
 # ── A.img: FAT12 system disk (boot+kernel + built-in files) ──
 # u2gb.bin (Unicode→GB2312 映射) 是 A.img 的依赖: 若被删/重新生成, A.img 会重建,
 # 避免内核 fb_font_init 加载不到 U2GB → UTF-8 汉字全画成 □。
@@ -70,14 +76,14 @@ $(A_VMDK): $(A_IMG)
 
 vmdk: $(A_VMDK)
 
-A.vol: $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) $(SYSINFO_ELF) $(SOUND_ELF) $(NET_ELF) $(INSTALL_ELF) $(MUSIC_ELF) $(SHEET_ELF) $(CRT_OBJS) mka_img.py u2gb.bin
+A.vol: $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) $(SYSINFO_ELF) $(MEM_ELF) $(HEX_ELF) $(SOUND_ELF) $(NET_ELF) $(INSTALL_ELF) $(MUSIC_ELF) $(SHEET_ELF) $(STATUS_ELF) $(WRITE_ELF) $(CRT_OBJS) mka_img.py u2gb.bin fonts/HZK16
 	@echo "[IMG] Building A FAT boot volume..."
 	python3 mka_img.py $@ 2048
 
-A.flp: $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) $(SYSINFO_ELF) $(SOUND_ELF) $(NET_ELF) $(INSTALL_ELF) $(MUSIC_ELF) $(SHEET_ELF) $(CRT_OBJS) mka_img.py u2gb.bin
+A.flp: $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) $(SYSINFO_ELF) $(MEM_ELF) $(HEX_ELF) $(SOUND_ELF) $(NET_ELF) $(INSTALL_ELF) $(MUSIC_ELF) $(SHEET_ELF) $(STATUS_ELF) $(WRITE_ELF) $(CRT_OBJS) mka_img.py u2gb.bin fonts/HZK16
 	python3 mka_img.py $@ 0
 
-$(INSTALL_IMG): $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) $(SYSINFO_ELF) $(SOUND_ELF) $(NET_ELF) $(INSTALL_ELF) $(MUSIC_ELF) $(SHEET_ELF) $(CRT_OBJS) mbr_boot.bin mka_img.py u2gb.bin
+$(INSTALL_IMG): $(BOOT_BIN) $(STAGE2_BIN) $(KERNEL_BIN) tcc.elf $(EDIT_ELF) $(SYSINFO_ELF) $(MEM_ELF) $(HEX_ELF) $(SOUND_ELF) $(NET_ELF) $(INSTALL_ELF) $(MUSIC_ELF) $(SHEET_ELF) $(STATUS_ELF) $(WRITE_ELF) $(CRT_OBJS) mbr_boot.bin mka_img.py u2gb.bin fonts/HZK16
 	@echo "[IMG] Building full AMUNOS installation floppy..."
 	python3 mka_img.py $@ 0 install
 
@@ -216,6 +222,61 @@ $(SYSINFO_ELF): sysinfo.c libc/libc.a libc/crt0.o
 	ld -m elf_i386 -no-pie -T libc/link.ld -nostdlib -static \
 	    libc/crt0.o sysinfo.o libc/libc.a $$LIBGCC -o sysinfo.elf
 	@echo "[SYSINFO.ELF] size: $$(wc -c < sysinfo.elf) bytes"
+
+$(STATUS_ELF): status.c $(DFLAT_SRCS) libc/libc.a libc/crt0.o
+	@echo "[ELF] Building status.c -> status.elf (DFLAT system monitor)"
+	rm -rf .status-obj && mkdir -p .status-obj
+	for f in $(DFLAT_SRCS); do \
+	  gcc -m32 -ffreestanding -fno-builtin -fno-pie -fno-stack-protector \
+	      -fno-asynchronous-unwind-tables -fno-unwind-tables -nostdinc \
+	      -I libc -I edit-fdos/source -funsigned-char -c $$f \
+	      -o .status-obj/$$(basename $$f .c).o || exit 1; \
+	done
+	gcc -m32 -ffreestanding -fno-builtin -fno-pie -fno-stack-protector \
+	    -fno-asynchronous-unwind-tables -fno-unwind-tables -nostdinc \
+	    -I libc -I edit-fdos/source -funsigned-char -c status.c \
+	    -o .status-obj/status.o
+	LIBGCC=$$(gcc -m32 -print-libgcc-file-name); \
+	ld -m elf_i386 -no-pie -T libc/link.ld -nostdlib -static \
+	    libc/crt0.o .status-obj/*.o libc/libc.a $$LIBGCC -o $@
+	rm -rf .status-obj
+	@echo "[STATUS.ELF] size: $$(wc -c < status.elf) bytes"
+
+$(MEM_ELF): meminfo.c libc/libc.a libc/crt0.o
+	@echo "[ELF] Building MEM command..."
+	gcc -m32 -ffreestanding -fno-builtin -fno-pie -fno-stack-protector \
+	    -fno-asynchronous-unwind-tables -fno-unwind-tables -nostdinc \
+	    -I libc -c meminfo.c -o meminfo.o
+	LIBGCC=$$(gcc -m32 -print-libgcc-file-name); \
+	ld -m elf_i386 -no-pie -T libc/link.ld -nostdlib -static \
+	    libc/crt0.o meminfo.o libc/libc.a $$LIBGCC -o $@
+
+$(HEX_ELF): hex.c libc/libc.a libc/crt0.o
+	@echo "[ELF] Building HEX binary and ELF inspector..."
+	gcc -m32 -ffreestanding -fno-builtin -fno-pie -fno-stack-protector \
+	    -fno-asynchronous-unwind-tables -fno-unwind-tables -nostdinc \
+	    -I libc -c hex.c -o hex.o
+	LIBGCC=$$(gcc -m32 -print-libgcc-file-name); \
+	ld -m elf_i386 -no-pie -T libc/link.ld -nostdlib -static \
+	    libc/crt0.o hex.o libc/libc.a $$LIBGCC -o $@
+
+$(WRITE_ELF): write_dflat.c $(DFLAT_SRCS) libc/libc.a libc/crt0.o
+	@echo "[ELF] Building AMUN WRITE 0.2(DEV)..."
+	rm -rf .write-obj && mkdir -p .write-obj
+	for f in $(DFLAT_SRCS); do \
+	  gcc -m32 -ffreestanding -fno-builtin -fno-pie -fno-stack-protector \
+	      -fno-asynchronous-unwind-tables -fno-unwind-tables -nostdinc \
+	      -I libc -I edit-fdos/source -funsigned-char -c $$f \
+	      -o .write-obj/$$(basename $$f .c).o || exit 1; \
+	done
+	gcc -m32 -ffreestanding -fno-builtin -fno-pie -fno-stack-protector \
+	    -fno-asynchronous-unwind-tables -fno-unwind-tables -nostdinc \
+	    -I libc -I edit-fdos/source -funsigned-char -c write_dflat.c -o .write-obj/write_dflat.o
+	LIBGCC=$$(gcc -m32 -print-libgcc-file-name); \
+	ld -m elf_i386 -no-pie -T libc/link.ld -nostdlib -static \
+	    libc/crt0.o .write-obj/*.o libc/libc.a $$LIBGCC -o $@
+	rm -rf .write-obj
+	@echo "[WRITE.ELF] size: $$(wc -c < write.elf) bytes"
 
 $(SOUND_ELF): beep.c libc/libc.a libc/crt0.o
 	@echo "[ELF] Building beep.elf"

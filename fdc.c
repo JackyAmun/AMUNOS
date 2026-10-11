@@ -281,6 +281,7 @@ int fdc_media_changed(void)
 int fdc_probe_media(void *boot_sector)
 {
     static const fdc_geometry_t probes[] = {
+        { 36, 2, 80, 3, "FLOPPY 2.88M" },
         { 18, 2, 80, 0, "FLOPPY 1.44M" },
         { 15, 2, 80, 0, "FLOPPY 1.20M" },
         {  9, 2, 80, 2, "FLOPPY 720K" },
@@ -306,12 +307,10 @@ int fdc_probe_media(void *boot_sector)
         if (!total)
             total = (unsigned)b[32] | ((unsigned)b[33] << 8) |
                     ((unsigned)b[34] << 16) | ((unsigned)b[35] << 24);
-        if (bps == 512 && spt >= 8 && spt <= 36 && heads >= 1 && heads <= 2 &&
-            total >= (unsigned)spt * heads) {
-            geometry.sectors_per_track = spt;
-            geometry.heads = heads;
-            geometry.tracks = (unsigned short)(total / ((unsigned)spt * heads));
-        }
+        if (bps != 512 || spt != geometry.sectors_per_track ||
+            heads != geometry.heads ||
+            total < (unsigned)spt * heads || total > fdc_capacity())
+            continue;
         return BLK_OK;
     }
     geometry.sectors_per_track = 18;

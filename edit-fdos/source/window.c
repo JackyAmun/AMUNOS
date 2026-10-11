@@ -486,6 +486,16 @@ int LineLength(char *ln)
         cp++;
         --len;
     }
+    cp = ln;
+    while ((cp = strchr(cp, CHANGESTYLE)) != NULL) {
+        cp++;
+        if (*cp) { len -= 2; cp++; }
+    }
+    cp = ln;
+    while ((cp = strchr(cp, RESETSTYLE)) != NULL) {
+        cp++;
+        --len;
+    }
     return len;
 }
 
@@ -525,4 +535,3 @@ void PutWindowLine(WINDOW wnd, void *s, int x, int y)
 			*en = sv;
 	}
 }
-

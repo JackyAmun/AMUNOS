@@ -284,7 +284,7 @@ static void cmd_format(char *arg){
     if(current_drive_idx==slot) fs_init();
     put_str("Format complete.\n");
 }
-void cmd_ver(){put_str("\nAMUNOS 6.5.7(dev) (C)2026 AMUNOS Team\nDFLAT 0.1\n\n");}
+void cmd_ver(){put_str("\nAMUNOS 6.5.7(DEV2) (C)2026 AMUNOS Team\nDFLAT 0.1\n\n");}
 
 /* ── ZH (v6.8 中文演示): 把一段 GB2312 汉字经 cjk_cell 渲染到可见 80×25 区 ──
  * "你好，AMUNOS。中文支持" (GB2312 双字节)。走 put_cjk_str → cjk_cell 汉字格

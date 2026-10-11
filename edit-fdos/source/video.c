@@ -145,6 +145,7 @@ void wputs(WINDOW wnd, void *s, int x, int y)
         unsigned short *cp1=ln;
         int fg=foreground;
         int bg=background;
+        int style=0;
         int len;
         int off=0;
         unsigned char *str=s;
@@ -177,6 +178,19 @@ void wputs(WINDOW wnd, void *s, int x, int y)
                 continue;
                 }
 
+            if (*str == CHANGESTYLE && str[1])
+                {
+                style = str[1];
+                str += 2;
+                continue;
+                }
+            if (*str == RESETSTYLE)
+                {
+                style = 0;
+                str++;
+                continue;
+                }
+
             /* ── v6.8.1 中文显示: UTF-8 3 字节 / GB2312 双字节占两格。
                  softbuf 两格 0xDB 占位入 ln (列号连续/不拆字), 同时调
                  sys_cjkwchar 设 cjk_cell 记 GB 码 → fb_render 用 HZK16 画。
@@ -190,7 +204,10 @@ void wputs(WINDOW wnd, void *s, int x, int y)
                             | (unsigned)(str[2] & 0x3F);
                 int cx = GetLeft(wnd) + x;
                 if (cx + 1 < SCREENWIDTH && CharInView(wnd, x, y))
+                    {
                     sys_cjkwchar(cx, y1, sys_utf8togb(cp), foreground, background);
+                    sys_text_style(cx, y1, 2, style);
+                    }
                 *cp1++ = 0xDB | (clr(foreground, background) << 8);
                 *cp1++ = 0xDB | (clr(foreground, background) << 8);
                 str += 3; x += 2; x2 += 2;
@@ -200,7 +217,10 @@ void wputs(WINDOW wnd, void *s, int x, int y)
                 unsigned gb = ((unsigned)*str << 8) | (unsigned)str[1];
                 int cx = GetLeft(wnd) + x;
                 if (cx + 1 < SCREENWIDTH && CharInView(wnd, x, y))
+                    {
                     sys_cjkwchar(cx, y1, gb, foreground, background);
+                    sys_text_style(cx, y1, 2, style);
+                    }
                 *cp1++ = 0xDB | (clr(foreground, background) << 8);
                 *cp1++ = 0xDB | (clr(foreground, background) << 8);
                 str += 2; x += 2; x2 += 2;
@@ -213,7 +233,10 @@ void wputs(WINDOW wnd, void *s, int x, int y)
             else
 #endif
             if (CharInView(wnd, x, y))
+                {
                 sys_cjkclear(GetLeft(wnd)+x, y1);
+                sys_text_style(GetLeft(wnd)+x, y1, 1, style);
+                }
             *cp1 = (*str & 255) | (clr(foreground, background) << 8);
 
             if (ClipString)

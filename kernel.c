@@ -98,8 +98,8 @@ void kmain(){
     put_str("[NIC] ");
     put_str("[FB] ");
     fb_font_init();       /* 从 C:HZK16 加载字库 (v6.8 中文) */
-    put_str("AMUNOS 6.5.7(dev) (Multi-Drive)\n");
-    serial_puts("AMUNOS 6.5.7(dev) serial ready\n");
+    put_str("AMUNOS 6.5.7(DEV2) (Multi-Drive)\n");
+    serial_puts("AMUNOS 6.5.7(DEV2) serial ready\n");
     task_init();
     /* Keep boot single-task until the timer context-switch frame is fixed.
      * VMware delivers the first PIT tick early enough to expose that path;

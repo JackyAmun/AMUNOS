@@ -118,6 +118,8 @@ static int sys_open(char *path, int flags) {
  int i;
  for (i = 0; path[i] && i < 62; i++) full[i] = path[i];
  full[i] = 0;
+ for (i = 0; full[i]; i++)
+     if ((unsigned char)full[i] < 0x20) return -1;
 
  /* v6.5.1: 盘符限定路径 "A:\..." — 切盘解析, 记入 fd.drive, 退出还原 */
  int saved_drive = current_drive_idx, saved_cwd = cwd_cluster;
@@ -701,6 +703,20 @@ void syscall_handler(unsigned *frame) {
  }
  case 74: /* SYS_CJKCLEAR: DFLAT 覆盖字符前清除汉字左/右格标记 */
  vga_cjk_ascii((int)a1, (int)a2);
+ result = 0;
+ break;
+ case 83: /* SYS_TEXT_STYLE: a1=x, a2=y, a3 low16=cells high8=style */
+ vga_style_set((int)a1, (int)a2, (int)(a3 & 0xffff), (int)((a3 >> 16) & 0xff));
+ result = 0;
+ break;
+ case 84: /* SYS_MEM_INFO: fixed kernel heap, not physical RAM */
+ if (!a1) { result = -1; break; }
+ mem_stats((mem_stats_t*)a1);
+ result = 0;
+ break;
+ case 85: /* SYS_TASK_INFO: read-only cooperative scheduler summary */
+ if (!a1) { result = -1; break; }
+ task_stats((task_stats_t*)a1);
  result = 0;
  break;
  case 68: result = dflat_cursor_set(a1, a2, a3); break;

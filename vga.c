@@ -28,6 +28,21 @@ unsigned long vga_vram_base(void) { return (unsigned long)vram; }
  *     0xFFFF     = 汉字右格 (fb_render 跳过, 左格已覆盖两格宽)
  *   汉字经 put_cjk_str 写入: softbuf 两格放占位字符 (0xDB), 渲染器按此表画汉字。 */
 static unsigned short cjk_cell[VGA_COLS * VGA_ROWS];
+/* Per-cell framebuffer text effects. Kept outside VGA attributes so DFLAT
+ * colors remain entirely under application control. */
+static unsigned char text_style[VGA_COLS * VGA_ROWS];
+
+void vga_style_set(int x, int y, int cells, int style) {
+    int i;
+    if (y < 0 || y >= VGA_ROWS || cells < 1) return;
+    for (i = 0; i < cells && x + i < VGA_COLS; i++)
+        if (x + i >= 0) text_style[y * VGA_COLS + x + i] = (unsigned char)style;
+}
+
+unsigned char vga_style_at(int x, int y) {
+    if (x < 0 || x >= VGA_COLS || y < 0 || y >= VGA_ROWS) return 0;
+    return text_style[y * VGA_COLS + x];
+}
 
 /* 在 (x,y) 放一个汉字 (占两格); gb = (gbH<<8)|gbL (0xA1A1..0xF7FE) */
 void vga_cjk_set(int x, int y, unsigned gb) {
@@ -49,6 +64,7 @@ void vga_cjk_box(int x, int y) {
 void vga_cjk_ascii(int x, int y) {
     if (x < 0 || x >= VGA_COLS || y < 0 || y >= VGA_ROWS) return;
     int o = y * VGA_COLS + x;
+    text_style[o] = 0;
     if (cjk_cell[o] == 0xFFFF) { cjk_cell[o] = 0; if (x > 0) cjk_cell[o - 1] = 0; }
     else if (cjk_cell[o] != 0)  { cjk_cell[o] = 0; if (x + 1 < VGA_COLS) cjk_cell[o + 1] = 0; }
 }
@@ -60,7 +76,10 @@ unsigned short vga_cjk_at(int x, int y) {
 /* 用户程序启动前清空 (其将重绘整屏; 不清则 shell 残留的汉字标记会
  * 在 EDIT 清屏后仍渲染出鬼影汉字)。 */
 void vga_cjk_clear_all(void) {
-    for (int i = 0; i < VGA_COLS * VGA_ROWS; i++) cjk_cell[i] = 0;
+    for (int i = 0; i < VGA_COLS * VGA_ROWS; i++) {
+        cjk_cell[i] = 0;
+        text_style[i] = 0;
+    }
 }
 /* v6.8.1 (SYS_CJKWCHAR): 在绝对格 (x,y) 放一个汉字 (占两格). EDIT 等用户程序
  * 绕开 put_cjk_str 的光标式写入, 于任意文本位置置汉字做本地化显示。
@@ -456,6 +475,7 @@ static void scroll_up() {
         }
         for (int col = 0; col < VGA_COLS; col++) {
             cjk_cell[row * VGA_COLS + col] = cjk_cell[(row + 1) * VGA_COLS + col];
+            text_style[row * VGA_COLS + col] = text_style[(row + 1) * VGA_COLS + col];
         }
     }
     // 最后一行填空格
@@ -464,6 +484,7 @@ static void scroll_up() {
         last[col * 2]     = ' ';
         last[col * 2 + 1] = 0x0E;
         cjk_cell[(VGA_ROWS - 1) * VGA_COLS + col] = 0;
+        text_style[(VGA_ROWS - 1) * VGA_COLS + col] = 0;
     }
 }
 

@@ -20,22 +20,30 @@ import struct, sys, os
 path = sys.argv[1] if len(sys.argv) > 1 else 'A.vol'
 partition_lba = int(sys.argv[2]) if len(sys.argv) > 2 else 2048
 install_mode = len(sys.argv) > 3 and sys.argv[3].lower() == 'install'
-d = bytearray(2880 * 512)
+volume_sectors = 8192 if partition_lba else 5760
+d = bytearray(volume_sectors * 512)
 
 STAGE2_SECTORS = 4
 KERNEL_START = 1 + STAGE2_SECTORS
 KERNEL_SECTORS = 384
 RESV   = KERNEL_START + KERNEL_SECTORS
-FATSEC = 9                # sectors per FAT
+SPC = 2                  # 1 KB clusters keep FAT12 below 4085 data clusters
+FATSEC = 12              # 4096 FAT12 entries, enough for the 8 MB IDE volume
+CLUSTER_BYTES = SPC * 512
 ROOTENT= 224              # root directory entries
 FAT1   = RESV * 512       # offset of FAT1
 FAT2   = FAT1 + FATSEC * 512
 ROOT   = FAT2 + FATSEC * 512              # = sector 403
-DATA   = ROOT + (ROOTENT * 32)            # = sector 417
+DATA   = ROOT + (ROOTENT * 32)            # sector 427 with 12-sector FATs
+MAX_CLUSTER = min(0xFEF, 1 + (volume_sectors - DATA // 512) // SPC)
 
 # ── stage1 + stage2 + kernel preamble ──
 with open('boot.bin', 'rb') as f:
     d[0:512] = f.read(512)
+struct.pack_into('<B', d, 13, SPC)
+struct.pack_into('<H', d, 19, volume_sectors)
+struct.pack_into('<H', d, 22, FATSEC)
+struct.pack_into('<H', d, 24, 36 if partition_lba == 0 else 18)
 # All generated boot volumes use the graphical text renderer.  The loader
 # checks this marker before requesting VBE mode.
 d[0x1F0:0x1F4] = b'VBE!'
@@ -72,7 +80,7 @@ def alloc_clusters(n):
     """Allocate n consecutive clusters, chain them to EOF, return first."""
     global clu
     c = clu; clu += n
-    if c + n - 1 > 0xFE0:
+    if c + n - 1 > MAX_CLUSTER:
         raise SystemExit('disk full')
     for i in range(n):
         nxt = (c + i + 1) if i < n - 1 else 0xFFF
@@ -97,7 +105,7 @@ def mkdir(name8, parent, cap):
     """Create a subdir `name8` inside `parent` (a Dir), capacity `cap` entries.
     Allocates the cluster chain, writes . / .. entries, returns the Dir."""
     global all_dirs
-    ncl = max(1, (cap * 32 + 511) // 512)
+    ncl = max(1, (cap * 32 + CLUSTER_BYTES - 1) // CLUSTER_BYTES)
     c = alloc_clusters(ncl)
     sub = Dir(name8, c)
     sub.entries.append(mk_entry('.', '   ', 0x10, c, 0))
@@ -109,13 +117,14 @@ def mkdir(name8, parent, cap):
 def add_to(parent, name8, ext3, content, attr=0x20):
     """Write a file into `parent`, multi-cluster. Returns cluster count."""
     C = content if isinstance(content, (bytes, bytearray)) else content.encode()
-    nc = (len(C) + 511) // 512
+    nc = (len(C) + CLUSTER_BYTES - 1) // CLUSTER_BYTES
     if nc == 0:
         nc = 1
     c = alloc_clusters(nc)
     for i in range(nc):
-        doff = DATA + (c + i - 2) * 512
-        d[doff:doff + 512] = C[i * 512:(i + 1) * 512].ljust(512, b'\x00')
+        doff = DATA + (c + i - 2) * CLUSTER_BYTES
+        d[doff:doff + CLUSTER_BYTES] = \
+            C[i * CLUSTER_BYTES:(i + 1) * CLUSTER_BYTES].ljust(CLUSTER_BYTES, b'\x00')
     parent.entries.append(mk_entry(name8, ext3, attr, c, len(C)))
     return nc
 
@@ -200,6 +209,18 @@ add_opt_to(BIN, 'SYSINFO', 'ELF', 'sysinfo.elf')
 add_opt_to(BIN, 'BEEP', 'ELF', 'beep.elf')
 add_opt_to(BIN, 'NET', 'ELF', 'net.elf')
 add_opt_to(BIN, 'SHEET', 'ELF', 'sheet.elf')
+add_opt_to(BIN, 'STATUS', 'ELF', 'status.elf')
+add_opt_to(BIN, 'MEM', 'ELF', 'meminfo.elf')
+add_opt_to(BIN, 'HEX', 'ELF', 'hex.elf')
+add_opt_to(BIN, 'WRITE', 'ELF', 'write.elf')
+add_to(root, 'SAMPLE', 'AWD',
+       '#!AWD/2\n@PAGE-LINES 18\n@BODY\n'
+       '{@F0C}AMUN WRITE SAMPLE\n'
+       '{@F0D}BOLD TEXT{@F0C}  NORMAL TEXT\n'
+       '{@F1C}CENTERED PARAGRAPH\n'
+       '{@F0C}SEARCH AND REPLACE WORK HERE.\n'
+       '{@F04}SMALL  {@F0C}NORMAL  {@F08}LARGE\n'
+       '{@F0C}中文字体测试\n')
 add_opt_to(BIN, 'SYSINST', 'ELF', 'sysinstall/sysinstall.elf')
 
 # ── USR\LIB\ : TCC 链接库 (cmd_tcc 注入 -L/-B) ──
@@ -238,7 +259,7 @@ add_opt_to(USR_SRC, 'INP', 'C  ', 'inp.c')     # 输入测试源码 (可在 OS �
 add_opt_to(USR_SRC, 'AMUNRUN', 'C  ', 'amunrun.c')
 
 # ── HZK16 汉字点阵字库 (v6.8 中文渲染): 内核 fb_font_init 从 A:HZK16 加载 ──
-add_opt_to(root, 'HZK16', '   ', 'HZK16')
+add_opt_to(root, 'HZK16', '   ', 'fonts/HZK16')
 # ── U2GB  Unicode→GB2312 映射 (v6.8 UTF-8 支持): 把 UTF-8 码点查成 GB2312 字库偏移 ──
 add_opt_to(root, 'U2GB', 'BIN', 'u2gb.bin')
 add_opt_to(root, 'MBR',  'BIN', 'mbr_boot.bin')
@@ -259,6 +280,10 @@ SYSINFO /BIN/SYSINFO.ELF
 BEEP /BIN/BEEP.ELF
 NET /BIN/NET.ELF
 SHEET /BIN/SHEET.ELF
+STATUS /BIN/STATUS.ELF
+MEM /BIN/MEM.ELF
+HEX /BIN/HEX.ELF
+WRITE /BIN/WRITE.ELF
 SYSINSTALL /BIN/SYSINST.ELF
 '''
 add_to(root, 'CMDS', 'BIN', CMDS_BIN)
@@ -306,7 +331,7 @@ add_long_to(root, 'A longer filename example.txt', 'LONGNAM1', 'TXT',
 for i, e in enumerate(root.entries):
     d[ROOT + i * 32:ROOT + i * 32 + 32] = e
 for sub in all_dirs:
-    base = DATA + (sub.cluster - 2) * 512
+    base = DATA + (sub.cluster - 2) * CLUSTER_BYTES
     for i, e in enumerate(sub.entries):
         d[base + i * 32:base + i * 32 + 32] = e
 d[FAT2:FAT2 + FATSEC * 512] = d[FAT1:FAT1 + FATSEC * 512]

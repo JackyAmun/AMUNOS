@@ -186,3 +186,21 @@ void task_sleep(int ticks) {
 
 /* ── 系统滴答 (供 TIME 等使用) ── */
 unsigned task_ticks() { return system_ticks; }
+
+void task_stats(task_stats_t *out) {
+    int i;
+    if (!out) return;
+    out->total = (unsigned)task_count;
+    out->ready = out->running = out->sleeping = out->exited = 0;
+    for (i = 0; i < task_count; i++) {
+        switch (tasks[i].state) {
+        case TASK_READY:   out->ready++; break;
+        case TASK_RUNNING: out->running++; break;
+        case TASK_SLEEP:   out->sleeping++; break;
+        case TASK_EXITED:  out->exited++; break;
+        default: break;
+        }
+    }
+    out->foreground_active = prog_active ? 1u : 0u;
+    out->ticks = system_ticks;
+}

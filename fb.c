@@ -15,7 +15,8 @@
  * QEMU SeaBIOS 返回的字库指针错位, 直接复制会得到乱码 (v6.8 修复)。
  */
 #include "common.h"
-#include "latin_font.h"
+#include "fonts/latin_font.h"
+#include "fonts/font_profiles.h"
 
 #define VGA_BASE  0xB8000
 #define COLS      80
@@ -31,6 +32,7 @@ static unsigned int *u2gb = 0;        /* Unicode→GB2312 表 (堆): 高16位=Un
 static int u2gb_n = 0;                /* u2gb 条目数 */
 static unsigned char rendered_cells[ROWS][COLS][2];
 static unsigned short rendered_cjk[ROWS][COLS];
+static unsigned char rendered_style[ROWS][COLS];
 static int rendered_valid;
 static int rendered_mouse_x = -1, rendered_mouse_y = -1;
 static int rendered_cursor_x = -1, rendered_cursor_y = -1;
@@ -103,9 +105,9 @@ static void fb_text_overlays(const unsigned char *vram) {
 }
 
 static void fb_draw_glyph(int px, int py, unsigned char idx,
-                          unsigned short fg, unsigned short bg);
+                          unsigned short fg, unsigned short bg, int style);
 static void fb_draw_cjk(int px, int py, unsigned char gbH, unsigned char gbL,
-                        unsigned short fg, unsigned short bg);
+                        unsigned short fg, unsigned short bg, int style);
 static void fb_draw_box(int px, int py, unsigned short fg, unsigned short bg);
 static void fb_draw_boxglyph(int px, int py, unsigned char g,
                              unsigned short fg, unsigned short bg);
@@ -113,8 +115,10 @@ static void fb_draw_boxglyph(int px, int py, unsigned char g,
 static void fb_draw_text_cell(const unsigned char *vram, int col, int row) {
     const unsigned char *cell;
     unsigned short fg, bg, ck;
+    int style;
     if (col < 0 || col >= COLS || row < 0 || row >= ROWS) return;
     ck = vga_cjk_at(col, row);
+    style = vga_style_at(col, row);
     if (ck == 0xFFFF && col > 0) {
         col--;
         ck = vga_cjk_at(col, row);
@@ -127,36 +131,73 @@ static void fb_draw_text_cell(const unsigned char *vram, int col, int row) {
         fb_draw_box(col * 8, row * 16, fg, bg);
     else if (ck != 0)
         fb_draw_cjk(col * 8, row * 16, (unsigned char)(ck >> 8),
-                    (unsigned char)ck, fg, bg);
+                    (unsigned char)ck, fg, bg, style);
     else if (fb_is_boxcode(cell[0]))
         fb_draw_boxglyph(col * 8, row * 16, cell[0], fg, bg);
     else
-        fb_draw_glyph(col * 8, row * 16, cell[0], fg, bg);
+        fb_draw_glyph(col * 8, row * 16, cell[0], fg, bg, style);
 }
 
 /* 画一个 8×16 拉丁字形 (内嵌字库 latin_font8x16, 256 字形 × 16B) */
 static void fb_draw_glyph(int px, int py, unsigned char idx,
-                          unsigned short fg, unsigned short bg) {
+                          unsigned short fg, unsigned short bg, int style) {
     const unsigned char *g = LATIN_FONT + idx * 16;
+    int size = style & 0x0c;
+    int profile = size == 0x04 ? 0 : size == 0x0c ? 1 : 2;
+    int width = amun_font_profiles[profile].latin_width;
+    int height = amun_font_profiles[profile].latin_height;
+    int top = (16 - height) / 2;
+    int left;
+    if ((style & 0x40) && width > 5) width--;
+    left = (8 - width) / 2;
     for (int r = 0; r < 16; r++) {
         unsigned char bits = g[r];
-        for (int c = 0; c < 8; c++)
-            fb_put_px(px + c, py + r, (bits & (0x80 >> c)) ? fg : bg);
+        for (int c = 0; c < 8; c++) fb_put_px(px + c, py + r, bg);
+    }
+    for (int r = 0; r < height; r++) {
+        int src_r = (r * 16) / height;
+        unsigned char bits = g[src_r];
+        int skew = (style & 0x02) ? (height - 1 - r) / 6 : 0;
+        for (int c = 0; c < width; c++) {
+            int src_c = (c * 8) / width;
+            int on = bits & (0x80 >> src_c);
+            if (!on && (style & 0x01) && src_c > 0)
+                on = bits & (0x80 >> (src_c - 1));
+            if (on && left + c + skew < 8)
+                fb_put_px(px + left + c + skew, py + top + r, fg);
+        }
     }
 }
 
 /* 画一个 16×16 汉字字形 (HZK16: 32 字节/字, 每行 2 字节位图, MSB 左)
  * GB2312 码 → 字库偏移 = ((gbH-0xA1)*94 + (gbL-0xA1))*32 */
 static void fb_draw_cjk(int px, int py, unsigned char gbH, unsigned char gbL,
-                        unsigned short fg, unsigned short bg) {
+                        unsigned short fg, unsigned short bg, int style) {
     if (!hzk16 || gbH < 0xA1 || gbH > 0xF7 || gbL < 0xA1) return;
     const unsigned char *g = hzk16 + ((unsigned)(gbH - 0xA1) * 94 + (gbL - 0xA1)) * 32;
-    for (int r = 0; r < 16; r++) {
-        unsigned char b0 = g[r * 2], b1 = g[r * 2 + 1];
-        for (int c = 0; c < 8; c++)
-            fb_put_px(px + c, py + r, (b0 & (0x80 >> c)) ? fg : bg);
-        for (int c = 0; c < 8; c++)
-            fb_put_px(px + 8 + c, py + r, (b1 & (0x80 >> c)) ? fg : bg);
+    int size = style & 0x0c;
+    int profile = size == 0x04 ? 0 : size == 0x0c ? 1 : 2;
+    int width = amun_font_profiles[profile].cjk_width;
+    int height = amun_font_profiles[profile].cjk_height;
+    int top = (16 - height) / 2, left;
+    if ((style & 0x40) && width > 12) width -= 2;
+    left = (16 - width) / 2;
+    for (int r = 0; r < 16; r++)
+        for (int c = 0; c < 16; c++) fb_put_px(px + c, py + r, bg);
+    for (int r = 0; r < height; r++) {
+        int sr = (r * 16) / height;
+        unsigned char b0 = g[sr * 2], b1 = g[sr * 2 + 1];
+        int skew = (style & 0x02) ? (height - 1 - r) / 6 : 0;
+        for (int c = 0; c < width; c++) {
+            int sc = (c * 16) / width;
+            int on = sc < 8 ? (b0 & (0x80 >> sc)) : (b1 & (0x80 >> (sc - 8)));
+            if (!on && (style & 0x01) && sc > 0) {
+                int pc = sc - 1;
+                on = pc < 8 ? (b0 & (0x80 >> pc)) : (b1 & (0x80 >> (pc - 8)));
+            }
+            if (on && left + c + skew < 16)
+                fb_put_px(px + left + c + skew, py + top + r, fg);
+        }
     }
 }
 
@@ -239,15 +280,17 @@ void fb_render(void) {
         for (int col = 0; col < COLS; col++) {
             const unsigned char *cell = vram + (row * COLS + col) * 2;
             unsigned short ck = vga_cjk_at(col, row);
+            unsigned char style = vga_style_at(col, row);
             int dirty = !rendered_valid || cell[0] != rendered_cells[row][col][0] ||
                         cell[1] != rendered_cells[row][col][1] ||
-                        ck != rendered_cjk[row][col];
+                        ck != rendered_cjk[row][col] || style != rendered_style[row][col];
             if ((col == rendered_mouse_x && row == rendered_mouse_y) ||
                 (col == rendered_cursor_x && row == rendered_cursor_y)) dirty = 1;
             if (dirty) fb_draw_text_cell(vram, col, row);
             rendered_cells[row][col][0] = cell[0];
             rendered_cells[row][col][1] = cell[1];
             rendered_cjk[row][col] = ck;
+            rendered_style[row][col] = style;
         }
     }
     rendered_valid = 1;
@@ -270,10 +313,10 @@ void fb_put_str_cjk(int cellx, int celly, const unsigned char *s,
     unsigned short bg = vga_rgb565[bg_idx & 15];
     while (s[0] && cnt < 40) {
         if ((unsigned char)s[0] >= 0xA1 && s[1]) {        /* GB2312 双字节 */
-            fb_draw_cjk(px, py, (unsigned char)s[0], (unsigned char)s[1], fg, bg);
+            fb_draw_cjk(px, py, (unsigned char)s[0], (unsigned char)s[1], fg, bg, 0);
             px += 16; s += 2;
         } else {                                          /* ASCII */
-            fb_draw_glyph(px, py, (unsigned char)s[0], fg, bg);
+            fb_draw_glyph(px, py, (unsigned char)s[0], fg, bg, 0);
             px += 16; s++;
         }
         cnt++;

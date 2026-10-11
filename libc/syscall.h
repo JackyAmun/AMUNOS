@@ -90,6 +90,9 @@
 #define SYS_BLK_WRITE 80 /* installer: write sectors to a physical IDE/FDC device */
 #define SYS_FORMAT 81 /* installer/user tool: format a physical FDC/IDE device */
 #define SYS_MOUSE_WHEEL 82 /* read and clear signed PS/2 wheel delta */
+#define SYS_TEXT_STYLE 83 /* mark text cells for framebuffer rich rendering */
+#define SYS_MEM_INFO 84 /* kernel allocator totals and fragmentation */
+#define SYS_TASK_INFO 85 /* read-only cooperative scheduler summary */
 #if 0
 #define SYS_GUI_TAREA_INSERT 62 /* TextArea 光标/选区处替换插入 */
 #define SYS_GUI_TAREA_SELECTION_GET 63 /* 读取 TextArea 选区 */
@@ -135,6 +138,23 @@ typedef struct {
  unsigned int dev_sectors[7];
  char dev_model[7][21];
 } sysinfo_t;
+
+typedef struct {
+ unsigned int total_bytes;
+ unsigned int free_bytes;
+ unsigned int largest_free_bytes;
+ unsigned int free_blocks;
+} mem_info_t;
+
+typedef struct {
+ unsigned int total;
+ unsigned int ready;
+ unsigned int running;
+ unsigned int sleeping;
+ unsigned int exited;
+ unsigned int foreground_active;
+ unsigned int ticks;
+} task_info_t;
 
 /* ── 内联汇编封装 ── */
 static inline long syscall0(long nr) {
@@ -315,8 +335,17 @@ static inline void sys_cjkwchar(int x, int y, unsigned gb, int fg, int bg) {
 static inline void sys_cjkclear(int x, int y) {
     syscall2(SYS_CJKCLEAR, x, y);
 }
+static inline void sys_text_style(int x, int y, int cells, int style) {
+    syscall3(SYS_TEXT_STYLE, x, y, (long)((cells & 0xffff) | ((style & 0xff) << 16)));
+}
 static inline int sys_sysinfo(sysinfo_t *out) {
  return (int)syscall1(SYS_SYSINFO, (long)out);
+}
+static inline int sys_mem_info(mem_info_t *out) {
+ return (int)syscall1(SYS_MEM_INFO, (long)out);
+}
+static inline int sys_task_info(task_info_t *out) {
+ return (int)syscall1(SYS_TASK_INFO, (long)out);
 }
 static inline int sys_blk_read(int slot, unsigned int lba, void *buf) {
  return (int)syscall3(SYS_BLK_READ, slot, lba, (long)buf);

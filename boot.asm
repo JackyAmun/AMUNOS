@@ -19,7 +19,7 @@ bpb_root_entries:   dw 224
 bpb_total_sec:      dw 2880
 bpb_media:          db 0xF0
 bpb_sec_per_fat:    dw 9
-bpb_sec_per_track:  dw 18           ; CHS 分块路径使用
+bpb_sec_per_track:  dw 36           ; generated floppy is 2.88 MB
 bpb_heads:          dw 2            ; CHS 分块路径使用
 bpb_hidden_sec:     dd 0
 bpb_large_sec:      dd 0

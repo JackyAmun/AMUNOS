@@ -11,7 +11,7 @@ HELLO.C -> TCC HELLO.C -o HELLO.ELF -> HELLO.ELF
 
 ## 当前版本
 
-`AMUNOS 6.5.7(dev)` 使用 `DFLAT 0.1` 作为当前文本窗口与控件框架版本。
+`AMUNOS 6.5.7(DEV2)` 使用 `DFLAT 0.1` 作为当前文本窗口与控件框架版本。
 
 发行镜像 `A.img` 默认包含：
 

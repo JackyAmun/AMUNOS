@@ -310,6 +310,17 @@ extern int CurrentMenuSelection;
 #define SHORTCUTCHAR '~'    /* prefix: shortcut key display */
 #define CHANGECOLOR  (unsigned char) 174 /* prefix to change colors  */
 #define RESETCOLOR   (unsigned char) 175 /* reset colors to default  */
+/* WRITE 0.1 rich-text tokens. They live outside ASCII, GB2312 lead bytes,
+ * and the private DFLAT border range, so they are invisible formatting data
+ * in .AWD documents rather than printable text. */
+#define CHANGESTYLE  (unsigned char) 0x93
+#define RESETSTYLE   (unsigned char) 0x94
+#define STYLE_BOLD   0x01
+#define STYLE_ITALIC 0x02
+#define STYLE_NORMAL 0x00
+#define STYLE_SMALL  0x04
+#define STYLE_LARGE  0x08
+#define STYLE_SIZE_MASK 0x0c
 #define LISTSELECTOR   4    /* selected list box entry      */
 /* --------- message prototypes ----------- */
 BOOL init_messages(void);
@@ -379,6 +390,8 @@ BOOL isAncestor(WINDOW, WINDOW);
 #define TextLine(wnd, sel) \
       (wnd->text + *((wnd->TextPointers) + sel))
 void WriteTextLine(WINDOW, RECT *, int, BOOL);
+/* Optional per-cell effect hook used by rich-text clients after text paint. */
+extern void (*DFlatStylePaintHook)(WINDOW, int);
 #define TextBlockMarked(wnd) (  wnd->BlkBegLine ||    \
                                 wnd->BlkEndLine ||    \
                                 wnd->BlkBegCol  ||    \

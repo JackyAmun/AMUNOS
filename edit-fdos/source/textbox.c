@@ -11,6 +11,7 @@ static char *GetTextLine(WINDOW, int);
 
 BOOL VSliding;
 BOOL HSliding;
+void (*DFlatStylePaintHook)(WINDOW, int);
 
 /* ------------ ADDTEXT Message -------------- */
 static BOOL AddTextMsg(WINDOW wnd, char *txt)
@@ -760,6 +761,8 @@ void WriteTextLine(WINDOW wnd, RECT *rcc, int y, BOOL reverse)
             while (ct > 0 && *lp)    {
                 if (*(unsigned char *)lp == CHANGECOLOR)    { lp += 3; continue; }
                 else if (*(unsigned char *)lp == RESETCOLOR) { lp++;  continue; }
+                else if (*(unsigned char *)lp == CHANGESTYLE && lp[1]) { lp += 2; continue; }
+                else if (*(unsigned char *)lp == RESETSTYLE) { lp++; continue; }
                 if (*lp >= 0xE0 && *lp <= 0xEF && lp[1]     /* UTF-8 3 字节 */
                     && lp[2])    { lp += 3; ct -= 2; continue; }
                 if (*lp >= 0xA1 && *lp <= 0xF7 && lp[1]     /* GB2312 双字节 */
@@ -777,6 +780,10 @@ void WriteTextLine(WINDOW wnd, RECT *rcc, int y, BOOL reverse)
                 if (*(unsigned char *)lp == CHANGECOLOR)
                     lp += 3;
                 else if (*(unsigned char *)lp == RESETCOLOR)
+                    lp++;
+                else if (*(unsigned char *)lp == CHANGESTYLE && lp[1])
+                    lp += 2;
+                else if (*(unsigned char *)lp == RESETSTYLE)
                     lp++;
                 else
                     lp++, --ct;
@@ -832,6 +839,8 @@ void WriteTextLine(WINDOW wnd, RECT *rcc, int y, BOOL reverse)
     writeline(wnd, line+dif,
                 RectLeft(rc)+BorderAdj(wnd),
                     y-wnd->wtop+TopBorderAdj(wnd), FALSE);
+    if (DFlatStylePaintHook)
+        DFlatStylePaintHook(wnd, y);
     free(svlp);
 }
 
@@ -904,5 +913,3 @@ int TextLineNumber(WINDOW wnd, char *lp)
     }
     return lineno-1;
 }
-
-

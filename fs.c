@@ -864,7 +864,7 @@ static int name_exists(int dir_cluster, char* fat_name) {
 }
 
 /* ── 创建文件 (在指定目录中, 支持多簇) ── */
-#define MAX_FILE_CLUSTERS 256  // 最大 256 簇 = 128KB
+#define MAX_FILE_CLUSTERS 512  // 1KB clusters on the system disk: up to 512KB
 static int fs_create_file_in_dir_inner(int dir_cluster, char* name, char* data, int size) {
     if (fs_iso) { put_str("Read-only medium.\n"); return -1; }
     char fat_name[11];
