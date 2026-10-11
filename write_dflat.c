@@ -644,9 +644,15 @@ static int CanvasProc(WINDOW wnd, MESSAGE msg, PARAM p1, PARAM p2)
         }
     }
     if (msg == SETFOCUS) {
-        sys_dflat_cursor_visible(TRUE);
-        repaint();
-        return TRUE;
+        /* NORMAL owns DFLAT's inFocus/childfocus chain.  Do not consume this
+         * message here: doing so leaves the painted canvas without keyboard
+         * delivery.  The custom part begins only after focus is established. */
+        int result = DefaultWndProc(wnd, msg, p1, p2);
+        if (p1) {
+            sys_dflat_cursor_visible(TRUE);
+            repaint();
+        }
+        return result;
     }
     if (msg == MOUSE_WHEEL) {
         top_line -= (int)p1 > 0 ? 3 : -3;
